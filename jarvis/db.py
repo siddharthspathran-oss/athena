@@ -171,17 +171,29 @@ def add_chunks(kind: str, rows: list[dict], vecs: np.ndarray | None,
     per-source progress that says how far they reach - in one transaction,
     so the two can never disagree."""
     with connect() as con:
+        todo = list(enumerate(rows))
+        if progress is not None:
+            # Incremental indexing runs in voice, the HUD and the popup, each
+            # with its own in-process lock only. Two of them could read the
+            # same progress, embed the same turns and both store them (83
+            # duplicate chunks in a test). Take the write lock, then skip
+            # what another process stored meanwhile.
+            con.execute("BEGIN IMMEDIATE")
+            have = {(s, p) for s, p in con.execute(
+                "SELECT source, pos FROM chunks WHERE kind=?", (kind,))}
+            todo = [(i, r) for i, r in todo
+                    if (str(r.get("source", "")), int(r.get("pos", 0))) not in have]
         con.executemany(
             "INSERT INTO chunks(kind, source, title, pos, at, text, vec) VALUES (?,?,?,?,?,?,?)",
             [(kind, str(r.get("source", "")), str(r.get("title", "")), int(r.get("pos", 0)),
               float(r.get("at", 0)), str(r["text"]),
               _blob(vecs[i]) if vecs is not None else None)
-             for i, r in enumerate(rows)])
+             for i, r in todo])
         for source, done in (progress or {}).items():
             con.execute("INSERT INTO progress(kind, source, done) VALUES (?,?,?) "
-                        "ON CONFLICT(kind, source) DO UPDATE SET done=excluded.done",
+                        "ON CONFLICT(kind, source) DO UPDATE SET done=MAX(done, excluded.done)",
                         (kind, source, int(done)))
-    return len(rows)
+    return len(todo)
 
 
 def progress(kind: str) -> dict[str, int]:

@@ -173,15 +173,81 @@ def check_recall(bad: list[str]) -> None:
         recall.DATA, recall._embed = saved
 
 
+def check_backlog_and_recap(bad: list[str]) -> None:
+    """A search with weeks of unindexed history must still answer quickly -
+    it once sat on "recalling" while it embedded everything first - and
+    "what did we talk about" must answer from history without embedding."""
+    import time as _time
+    from datetime import datetime, timedelta
+
+    from jarvis import recall
+
+    tmp = Path(tempfile.mkdtemp())
+    use_folder(tmp)
+    (tmp / "chats").mkdir()
+    now = _time.time()
+    with db.connect() as con:
+        rows = []
+        for day in range(30):                      # a month of speaking, 40 turns a day
+            t0 = now - (30 - day) * 86400
+            for i in range(20):
+                rows.append((t0 + i * 60, "user", f"day {day} question {i} about filters"))
+                rows.append((t0 + i * 60 + 5, "assistant", f"answer {i}"))
+        # Late yesterday, so it is among the latest ten things said that day.
+        late = datetime.combine((datetime.now() - timedelta(days=1)).date(),
+                                datetime.min.time()) + timedelta(hours=23, minutes=59)
+        rows.append((late.timestamp(), "user", "open the signals and systems notes"))
+        rows.append((now - 30, "user", "remember my locker number 42"))
+        rows.append((now - 5, "user", "Athena, what did you talk about?"))
+        con.executemany("INSERT INTO voice_log(t, role, content) VALUES (?,?,?)", rows)
+
+    calls = {"n": 0}
+
+    def slow_embed(texts, kind):
+        calls["n"] += len(texts)
+        _time.sleep(0.02 * len(texts))             # ~0.6 s per batch of 32
+        return fake_embed_many(texts)
+
+    saved = recall.DATA, recall._embed
+    recall.DATA, recall._embed = tmp, slow_embed
+    try:
+        t0 = _time.time()
+        recall.search("filters")
+        took = _time.time() - t0
+        if took > 5:
+            bad.append(f"search with a month of backlog took {took:.1f}s before answering")
+        # The rest is indexed in the background, not lost.
+        deadline = _time.time() + 60
+        while recall.backlog() and _time.time() < deadline:
+            _time.sleep(0.2)
+        if recall.backlog():
+            bad.append("background indexing did not finish the backlog")
+        n = db.count("chat")
+        recall.update_index()
+        if db.count("chat") != n:
+            bad.append("the backlog was indexed twice")
+
+        said = recall.recent("")
+        if "locker number 42" not in said or "what did you talk about" in said.lower():
+            bad.append(f"recap of today: {said[:160]!r}")
+        said = recall.recent("yesterday")
+        if "signals and systems" not in said:
+            bad.append(f"recap of yesterday: {said[:160]!r}")
+    finally:
+        recall.DATA, recall._embed = saved
+        _time.sleep(0.1)
+
+
 if __name__ == "__main__":
     original = db.DB_FILE
     bad: list[str] = []
     try:
-        for check in (check_migration, check_search, check_history, check_recall):
+        for check in (check_migration, check_search, check_history, check_recall,
+                      check_backlog_and_recap):
             check(bad)
     finally:
         use_folder(original.parent)
     for b in bad:
         print("FAIL", b)
-    print(f"4 groups of checks, fts5={'yes' if db._ready['fts'] else 'no'}, {len(bad)} failure(s)")
+    print(f"5 groups of checks, fts5={'yes' if db._ready['fts'] else 'no'}, {len(bad)} failure(s)")
     sys.exit(1 if bad else 0)

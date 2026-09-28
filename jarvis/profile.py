@@ -414,7 +414,7 @@ def start_learner(is_idle=lambda: True, log=lambda s: None) -> None:
                         log(f"memory {note[:90]}")
                 if is_idle():
                     from . import recall
-                    n = recall.update_index()
+                    n = recall.update_index(wait=False)   # a search may be indexing
                     if n:
                         log(f"memory indexed {n} new conversation snippet(s)")
                 if is_idle() and _style_due():

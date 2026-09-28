@@ -307,6 +307,17 @@ def search_past_conversations(query: str) -> str:
     return recall.search(query)
 
 
+@tool(tags=TAG)
+def recent_conversations(when: str = "") -> str:
+    """Say what the user and Athena talked about recently, without a topic:
+    "what did we talk about", "what did I ask you yesterday", "recap".
+
+    when: "today", "yesterday", or empty for the most recent day
+    """
+    from .. import recall
+    return recall.recent(when)
+
+
 @tool(tags=TAG, timeout=0)
 def learn_my_writing_style() -> str:
     """Study how the user writes (their typed messages, and the WhatsApp and

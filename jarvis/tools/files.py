@@ -698,6 +698,42 @@ def open_file(path: str) -> str:
             f"I showed {p.name} in File Explorer instead ({where}).")
 
 
+@tool(tags=TAG, timeout=60)
+def find_document(query: str) -> str:
+    """Find a file or folder by what the user calls it and open it; if nothing
+    is named that, look inside the indexed documents for it. Use for "search
+    my documents for X", "find X on my PC", "look for my X notes".
+
+    query: the file's name or subject, in the user's words
+    """
+    # "Athena, search my documents for signal and system" reached the model,
+    # which said it was opening the file and opened nothing (28 Sep 2026).
+    # A name is looked up in the file index first, as open_file does; only
+    # when no file is called that is it treated as a subject to search for.
+    q = (query or "").strip().strip("\"'.")
+    if not q:
+        return "Search for what?"
+    p, note = _resolve(q, want_dir=None)
+    if p is not None:
+        return open_file(str(p)) + (f" {note}" if note else "")
+
+    try:
+        from .. import db
+        from .knowledge import _embed_query
+
+        if db.count("doc"):
+            hits = db.search("doc", q, k=3, embed=_embed_query, min_score=0.5)
+            names = list(dict.fromkeys(h["title"] for h in hits))
+            if hits:
+                # "open it" (agent._direct_it) then opens the best one.
+                _remember(Path(hits[0]["source"]))
+                return (f"No file is called '{q}', but it comes up in "
+                        f"{', '.join(names)}. Say 'open it' to open {names[0]}.")
+    except Exception:
+        pass
+    return note
+
+
 @tool(tags=TAG)
 def open_folder(name: str = "explorer") -> str:
     """Open File Explorer, or a folder in it.

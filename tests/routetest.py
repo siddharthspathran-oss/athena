@@ -110,6 +110,16 @@ ROUTES = {
     "what did we decide about the butterworth filter":
         ("search_past_conversations", {"query": "the butterworth filter"}),
     "learn my writing style": ("learn_my_writing_style", {}),
+    "Athena, what did you talk about?": ("recent_conversations", {"when": ""}),
+    "what did we talk about yesterday": ("recent_conversations", {"when": "yesterday"}),
+    "what did I ask you today": ("recent_conversations", {"when": "today"}),
+    "recap": ("recent_conversations", {"when": ""}),
+    "what did we talk about the butterworth filter":
+        ("search_past_conversations", {"query": "the butterworth filter"}),
+    "Athena, search my documents for signal and system": ("find_document", {"query": "signal and system"}),
+    "find the lab manual on my pc": ("find_document", {"query": "lab manual"}),
+    "look for my dsp notes in my files": ("find_document", {"query": "dsp notes"}),
+    "search for flights to goa": None,
     # files and folders
     "open downloads": ("open_folder", {"name": "downloads"}),
     "oopen downloads": ("open_folder", {"name": "downloads"}),

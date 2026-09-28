@@ -62,6 +62,55 @@ python run.py voice     # talk to it
 python run.py tools     # list everything it can do
 ```
 
+## Sounding human and answering fast
+
+Four things make an assistant feel instant, and Athena does all of them
+locally:
+
+1. **A natural voice.** Kokoro (on the GPU) or Piper (on the CPU) instead of
+   the Windows voice. Athena starts speaking on the first sentence while the
+   rest is still being made. Fetch the voices once, about 450 MB:
+
+   ```bash
+   pip install kokoro-onnx piper-tts
+   pip uninstall -y onnxruntime && pip install onnxruntime-gpu   # Kokoro on the GPU
+   python run.py voice-setup
+   ```
+
+   With `voice.engine: auto`, Athena times each engine at start-up and keeps
+   the first one that speaks faster than real time. The console says which,
+   for example `[voice: kokoro on the GPU, 0.05s per second of speech]`.
+   Anything that fails falls back to the Windows voice.
+2. **Knowing when you've stopped.** A speech detector (Silero, inside
+   faster-whisper) ends the sentence when your *voice* stops: about 0.45 s,
+   instead of 0.65 s of silence. It also ends it at all with a fan or music
+   running, and noise with no voice in it never reaches Whisper.
+3. **Answering at once.** A soft tone the moment Athena hears her name. "On
+   it." before a multi-step task. Replies that start while the rest is being
+   written.
+4. **Hearing only you.** See *Wake word* below.
+
+`python run.py failures` lists what went wrong lately: misheard commands,
+"I couldn't", rescues, tool errors, slow answers. The most common cases come
+first, so you know what to fix next.
+
+### Wake word
+
+Without a wake-word engine, Whisper transcribes every sound in the room to
+look for "Athena". That costs GPU time all day and is how a video's dialogue
+can be taken for a command. A dedicated detector (openWakeWord, free and
+local) listens for the name itself, and Whisper runs only after it.
+
+- **Today, no training:** `pip install openwakeword`, set
+  `voice.wake_model: "hey_jarvis"` and say "Hey Jarvis". Athena's commands
+  already accept "Jarvis" in front.
+- **"Athena" itself:** train a model once with openWakeWord's
+  *automatic_model_training* notebook on Google Colab (free GPU, about an
+  hour, no recordings of your own needed). Type `athena` as the phrase,
+  download the resulting `athena.onnx` into `data/`, and restart voice. It is
+  used ahead of `wake_model`. Tune `voice.wake_threshold`: raise it if it
+  wakes on its own, lower it if it misses you.
+
 ## Starting with Windows
 
 ```bash

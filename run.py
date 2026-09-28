@@ -7,6 +7,8 @@
     python run.py voice      talk to it, it talks back
     python run.py doctor     check that everything is installed and working
     python run.py tools      list every tool it can use
+    python run.py voice-setup   download the natural voices (Kokoro / Piper)
+    python run.py failures   what went wrong lately, most common first
 
     python run.py autostart on      start with Windows (modes from config.yaml)
     python run.py autostart off     stop starting with Windows
@@ -349,6 +351,20 @@ def main() -> int:
             for n in names:
                 print("   ", n)
         return 0
+
+    if mode == "failures":
+        # What went wrong lately, most common first: what to fix next.
+        from jarvis import failures
+
+        days = float(sys.argv[2]) if len(sys.argv) > 2 else 30
+        print(failures.report(days))
+        return 0
+
+    if mode in ("voice-setup", "voices"):
+        # Download the natural voices (Kokoro for the GPU, Piper for the CPU).
+        from jarvis import tts
+
+        return tts.setup(sys.argv[2] if len(sys.argv) > 2 else "auto")
 
     if mode in ("help", "h", "?"):
         print(__doc__)

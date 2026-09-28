@@ -443,9 +443,12 @@ class _OpenWakeWord:
     def __init__(self, path, threshold: float):
         from openwakeword.model import Model
         from openwakeword.utils import download_models
-        download_models(model_names=[])     # the shared feature models, once
+        # A path is a model trained for "Athena"; a bare name ("hey_jarvis")
+        # is one of openWakeWord's ready-made ones, fetched once.
+        builtin = not str(path).endswith((".onnx", ".tflite"))
+        download_models(model_names=[str(path)] if builtin else [])
         self.m = Model(wakeword_models=[str(path)],
-                       inference_framework="onnx" if str(path).endswith(".onnx") else "tflite")
+                       inference_framework="onnx" if builtin or str(path).endswith(".onnx") else "tflite")
         self.threshold = threshold
 
     def process(self, frame) -> int:
@@ -469,6 +472,16 @@ def _porcupine():
         return None
     from ..cloud import get_key
     from ..config import DATA
+    ready = str(cfg.get("voice.wake_model", "") or "").strip()
+    if ready and not (DATA / "athena.onnx").exists():
+        # No "Athena" model trained yet: a ready-made phrase ("hey_jarvis",
+        # "alexa", "hey_mycroft") gives the dedicated detector today.
+        try:
+            eng = _OpenWakeWord(ready, float(cfg.get("voice.wake_threshold", 0.5)))
+            print(f"[wake word: openWakeWord listening for '{ready.replace('_', ' ')}' - Whisper only runs after it]")
+            return eng
+        except Exception as e:
+            print(f"[wake word: {ready} failed ({str(e)[:120]}) - Whisper listens for the name]")
     for name in ("athena.onnx", "athena.tflite"):
         if (DATA / name).exists():
             try:
@@ -554,6 +567,19 @@ def _strip_wake(text: str, wake: str, at_start: bool = True) -> tuple[bool, str]
     return False, text
 
 
+def _for_speech(text: str) -> str:
+    """Written text as it should be said: file names and symbols a neural
+    voice would otherwise spell out or trip over."""
+    import re as _re
+
+    t = _re.sub(r"\.pdf\b", " PDF", text, flags=_re.I)          # "notes PDF"
+    t = _re.sub(r"\.(?:docx?|pptx?|xlsx?|txt|png|jpe?g|mp4|zip)\b", "", t, flags=_re.I)
+    t = t.replace("_", " ").replace("&", " and ").replace("%", " percent")
+    t = _re.sub(r"\band/or\b", "and or", t, flags=_re.I)
+    t = _re.sub(r"(?<=\w)/(?=\w)", " or ", t)
+    return _re.sub(r"\s+", " ", t).strip()
+
+
 class Speaker:
     """Text-to-speech on its own thread so speaking never blocks listening.
 
@@ -572,6 +598,14 @@ class Speaker:
         self.current = ""            # what is being said now - for echo checks
         self.started: list[float] = []   # when each piece began playing - for timings
         self._backend = "none"
+        # The neural voice (jarvis/tts.py), once loaded: this thread turns text
+        # into audio while a player thread speaks the previous sentence, so
+        # there is no gap between them. Every stop() bumps _gen, and anything
+        # made before it is dropped rather than played.
+        self._neural = None
+        self._gen = 0
+        self._synthing = threading.Event()
+        self._play_q: queue.Queue = queue.Queue()
         threading.Thread(target=self._loop, daemon=True).start()
         self._ready.wait(timeout=10)
 
@@ -624,11 +658,27 @@ class Speaker:
                     print("[voice: cloned voice not set up - using the Windows voice]")
             except Exception as e:
                 print(f"[voice: cloned voice failed ({e}) - using the Windows voice]")
+        else:
+            # Loaded in the background: until it is ready (a few seconds at
+            # start-up), the Windows voice speaks, so nothing waits on it.
+            threading.Thread(target=self._load_neural, daemon=True, name="tts-load").start()
 
         while True:
             text = self.q.get()
             if text is None:
                 return
+            if self._neural is not None:
+                gen = self._gen
+                self._synthing.set()
+                try:
+                    audio = self._neural.synth(_for_speech(text))
+                    if gen == self._gen and len(audio):
+                        self._play_q.put((gen, text, audio, self._neural.sample_rate))
+                    continue
+                except Exception as e:
+                    print(f"[{self._neural.name} failed: {str(e)[:100]} - Windows voice for this one]")
+                finally:
+                    self._synthing.clear()
             if clone:
                 self._speaking.set()
                 try:
@@ -662,6 +712,43 @@ class Speaker:
             finally:
                 self._speaking.clear()
 
+    def _load_neural(self) -> None:
+        try:
+            from .. import tts
+            engine = tts.load()
+        except Exception as e:
+            print(f"[voice: neural voice unavailable ({str(e)[:100]}) - Windows voice]")
+            return
+        if engine is None:
+            return
+        threading.Thread(target=self._play_loop, daemon=True, name="tts-play").start()
+        self._neural = engine
+        self._backend = engine.name
+
+    def _play_loop(self) -> None:
+        import sounddevice as sd
+
+        while True:
+            gen, text, audio, rate = self._play_q.get()
+            if gen != self._gen:
+                continue                            # made before a stop: never play it
+            self._speaking.set()
+            self.current = text
+            self.started.append(time.time())
+            try:
+                sd.play(audio, rate)
+                end = time.time() + len(audio) / rate + 0.05
+                while time.time() < end:
+                    if gen != self._gen:
+                        sd.stop()                   # "Athena, stop": silence now
+                        break
+                    time.sleep(0.03)
+            except Exception as e:
+                print(f"[voice playback failed: {str(e)[:100]}]")
+            finally:
+                if self._play_q.empty():
+                    self._speaking.clear()
+
     def say(self, text: str) -> None:
         # Strip markdown noise that sounds wrong when read aloud
         clean = text.replace("*", "").replace("`", "").replace("#", "")
@@ -669,16 +756,20 @@ class Speaker:
         self.q.put(clean[:600])
 
     def busy(self) -> bool:
-        """True while there is still speech queued or actually playing."""
-        return not self.q.empty() or self._speaking.is_set()
+        """True while there is still speech queued, being made, or playing."""
+        return (not self.q.empty() or self._speaking.is_set()
+                or self._synthing.is_set() or not self._play_q.empty())
 
     def stop(self) -> None:
         """Stop talking now and drop anything still queued."""
-        try:
-            while True:
-                self.q.get_nowait()
-        except queue.Empty:
-            pass
+        self._gen += 1
+        for q in (self.q, self._play_q):
+            try:
+                while True:
+                    q.get_nowait()
+            except queue.Empty:
+                pass
+        self._speaking.clear()
         self._stop.set()
 
     def wait_until_done(self, timeout: float = 20.0) -> bool:
@@ -780,6 +871,46 @@ def is_hallucination(text: str) -> bool:
     return False
 
 
+_EARCON = {"path": None}
+
+
+def earcon() -> None:
+    """A soft two-note tone the moment Athena knows she is being spoken to.
+
+    Assistants feel instant because something answers at once, long before
+    the answer does. Played by Windows from a small WAV file, asynchronously
+    and on its own, so it never waits and never cuts off Athena's voice
+    (sounddevice has one shared output stream; winsound does not use it).
+    """
+    if not cfg.get("voice.earcon", True):
+        return
+    try:
+        import winsound
+
+        if _EARCON["path"] is None:
+            import wave
+
+            from ..config import DATA
+            rate = 22050
+            notes = []
+            for freq, dur in ((880, 0.07), (1320, 0.09)):
+                t = np.arange(int(rate * dur)) / rate
+                env = np.minimum(1, np.minimum(t / 0.008, (dur - t) / 0.03))   # no clicks
+                notes.append(0.18 * np.sin(2 * np.pi * freq * t) * env)
+            pcm = (np.concatenate(notes) * 32767).astype(np.int16)
+            path = DATA / "earcon.wav"
+            with wave.open(str(path), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(rate)
+                w.writeframes(pcm.tobytes())
+            _EARCON["path"] = str(path)
+        winsound.PlaySound(_EARCON["path"], winsound.SND_FILENAME | winsound.SND_ASYNC
+                           | winsound.SND_NODEFAULT)
+    except Exception:
+        pass
+
+
 def chime(kind: str = "ask") -> None:
     """A short tone so a spoken question is unmistakably a question.
 
@@ -828,6 +959,7 @@ class Listener:
         # without a barge-in listen, and stale sound must not pile up.
         self.blocks: queue.Queue[np.ndarray] = queue.Queue(maxsize=600)
         self._stream = None
+        self.last_wait = 0.0      # how long the last sentence waited for its end
 
     def _callback(self, indata, _frames, _t, status) -> None:
         try:
@@ -953,6 +1085,10 @@ class Listener:
         speaking = False
         last_voice = time.time()
         stalls = 0
+        vad = _vad() if cfg.get("voice.vad", True) else None
+        vad_silence = float(cfg.get("voice.vad_silence", 0.45))
+        heard_speech = False
+        next_check = 0
 
         self._ensure_stream()
         while True:
@@ -977,6 +1113,7 @@ class Listener:
                 if not speaking:
                     speaking = True
                     captured = []
+                    heard_speech, next_check = False, 0
                 last_voice = time.time()
                 captured.append(block)
 
@@ -984,7 +1121,12 @@ class Listener:
                 # the silence threshold, so without a hard cap this records
                 # forever and the assistant appears frozen.
                 if len(captured) * BLOCK / SAMPLE_RATE >= (cap or MAX_UTTERANCE_S):
-                    return np.concatenate(captured).flatten(), False
+                    audio = np.concatenate(captured).flatten()
+                    if vad is not None and not heard_speech and not _has_speech(vad, audio):
+                        speaking, captured = False, []
+                        continue                      # 15 s of music: nothing said
+                    self.last_wait = 0.0
+                    return audio, False
             elif speaking:
                 captured.append(block)
                 if time.time() - last_voice > silence_timeout:
@@ -992,7 +1134,69 @@ class Listener:
                     if len(audio) / SAMPLE_RATE < MIN_SPEECH_S:
                         speaking = False
                         continue
+                    # A cough, a door, a keyboard: loud but not a voice. Not
+                    # sent to Whisper at all - that is where "subtitles by"
+                    # and a repeated primer come from.
+                    if vad is not None and not heard_speech and not _has_speech(vad, audio):
+                        speaking, captured = False, []
+                        continue
+                    self.last_wait = silence_timeout
                     return audio, False
+
+            # The speech detector ends a sentence sooner than the loudness
+            # rule - a voice stopping, not the room going quiet - and ends it
+            # at all in a room that never goes quiet (music, a fan).
+            if vad is not None and speaking and len(captured) >= next_check:
+                next_check = len(captured) + 1              # every 100 ms block
+                window = np.concatenate(captured[-12:]).flatten()   # last 1.2 s
+                gap = _silence_after_speech(vad, window)
+                if gap is not None:
+                    heard_speech = True
+                    if gap >= vad_silence and len(captured) * BLOCK / SAMPLE_RATE >= MIN_SPEECH_S:
+                        self.last_wait = gap
+                        return np.concatenate(captured).flatten(), False
+
+# ---------------------------------------------------------------- speech detector
+# Silero VAD, as shipped inside faster-whisper - no extra package. It tells a
+# voice from a fan, music, a cough or a keyboard, which a loudness threshold
+# cannot, so a sentence ends when the voice stops (about 0.45 s, instead of
+# 0.65 s of quiet), and noise never reaches Whisper at all.
+
+_VAD = {"fn": None, "tried": False}
+
+
+def _vad():
+    if not _VAD["tried"]:
+        _VAD["tried"] = True
+        try:
+            from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+            opts = VadOptions(threshold=float(cfg.get("voice.vad_threshold", 0.5)),
+                              min_silence_duration_ms=100, speech_pad_ms=0)
+            get_speech_timestamps(np.zeros(SAMPLE_RATE // 2, dtype=np.float32), opts)   # load it now
+            _VAD["fn"] = lambda audio: get_speech_timestamps(audio, opts)
+        except Exception as e:
+            print(f"[speech detector unavailable ({str(e)[:80]}) - ending sentences on loudness]")
+    return _VAD["fn"]
+
+
+def _silence_after_speech(vad, audio: np.ndarray) -> float | None:
+    """Seconds since speech last ended in `audio`, or None if it holds none."""
+    try:
+        spans = vad(audio.astype(np.float32))
+    except Exception:
+        return None
+    if not spans:
+        return None
+    return (len(audio) - spans[-1]["end"]) / SAMPLE_RATE
+
+
+def _has_speech(vad, audio: np.ndarray) -> bool:
+    try:
+        return bool(vad(audio.astype(np.float32)))
+    except Exception:
+        return True                       # unsure: let Whisper decide, as before
+
 
 def _register_cuda_dlls() -> None:
     """Let ctranslate2 find the CUDA libraries it needs.
@@ -1331,6 +1535,7 @@ def _voice_loop() -> None:
                 if pp is not None and not _ENGAGED:
                     # The wake-word engine listens for the name; Whisper waits.
                     pre = listener.wait_for_wake(pp)
+                    earcon()                     # heard the name: say so at once
                     _engage(True)
                     _orb_state("listening")
                     # The command usually follows the name without a pause.
@@ -1352,7 +1557,7 @@ def _voice_loop() -> None:
                     audio = listener.record_utterance(timeout, max_wait=wait_cap)
                     if audio is None:
                         continue
-                t_stop = time.time() - timeout     # you stopped talking about here
+                t_stop = time.time() - listener.last_wait     # you stopped talking about here
 
                 # Priming the decoder with the words we expect makes a small model
                 # far better at proper nouns - "Athena" instead of "Here's your wrist".
@@ -1462,6 +1667,8 @@ def _voice_loop() -> None:
                         _engage(False)
                         continue
                     # Addressed by name, or still inside the follow-up window.
+                    if pre != "word":            # the wake engine already chimed
+                        earcon()
                     _engage(True)
                     _orb_state("thinking")
                     if heard_wake:
@@ -1539,7 +1746,7 @@ def _voice_loop() -> None:
                                 break
                     parts = []
                     if t_stop:
-                        parts += [f"end-of-speech wait {timeout:.2f}s", f"hear {t_heard - t_stop - timeout:.2f}s"]
+                        parts += [f"end-of-speech wait {listener.last_wait:.2f}s", f"hear {t_heard - t_stop - listener.last_wait:.2f}s"]
                     parts.append(f"think {t_done - t_ask:.2f}s")
                     if first:
                         parts.append(f"first word {first - (t_stop or t_ask):.2f}s after "

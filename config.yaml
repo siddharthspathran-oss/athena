@@ -125,15 +125,44 @@ voice:
   # faster than default pays off on every command.
   # Was 2; slowed to 0 on request (25 Sep 2026) - easier to follow.
   tts_rate: 0
-  # "clone" speaks in the voice from data/voice_ref.wav (Coqui XTTS-v2, local);
-  # "sapi" is the Windows voice above. clone falls back to sapi on any failure.
-  engine: "sapi"
+  # Who speaks:
+  #   auto   - Kokoro on the GPU if it fits, else Piper on the CPU, else the
+  #            Windows voice above. Fetch the voices once: python run.py voice-setup
+  #   kokoro / piper - that one only
+  #   sapi   - the Windows voice (tts_voice, tts_rate)
+  #   clone  - the voice from data/voice_ref.wav (Coqui XTTS-v2, local)
+  # Every one falls back to the Windows voice on any failure.
+  engine: "auto"
   # 1.0 = the sample's own pace. 0.9 is a little slower, as asked.
   clone_speed: 0.9
   # auto = GPU when ~2.6 GB of VRAM is free, else CPU (slower, but it never
   # pushes the everyday model off the card).
   clone_device: "auto"
   follow_up_seconds: 7
+  # After Athena asks something ("Which one?", "Want me to open it?"), how
+  # long she listens for the answer without the wake word.
+  reply_seconds: 10
+
+  # --- natural voice (jarvis/tts.py); which one speaks is `engine` below ---
+  tts_speed: 1.05
+  kokoro_voice: "af_heart"      # af_bella, af_nicole, bf_emma, am_adam ...
+  piper_voice: "en_US-hfc_female-medium"
+
+  # --- hearing ---
+  # Silero speech detector (inside faster-whisper): a sentence ends when your
+  # voice stops (vad_silence), not when the room goes quiet, and noise with
+  # no voice in it - music, a cough, a fan - never reaches Whisper.
+  vad: true
+  vad_silence: 0.45
+  # A soft two-note tone the moment Athena knows you are talking to her.
+  earcon: true
+  # A dedicated wake-word detector, so Whisper stops transcribing every sound
+  # in the room. data/athena.onnx if you have trained one (see README, "Wake
+  # word"); until then a ready-made phrase works today - say "Hey Jarvis":
+  #     wake_model: "hey_jarvis"
+  # Needs: pip install openwakeword. Empty = Whisper listens for "Athena".
+  wake_model: ""
+  wake_threshold: 0.5
   # Write everything it transcribes to data/voice.log, including speech
   # that was not addressed to Athena. Off by default: anything said near
   # this machine should not land in a file. Turn on only to debug.

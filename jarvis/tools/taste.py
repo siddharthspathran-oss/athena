@@ -60,17 +60,12 @@ _NOISE = {"play", "the", "music", "song", "songs", "some", "thank", "thanks", "y
 def _seed() -> None:
     """Import past plays from the conversation history, once."""
     LOG.parent.mkdir(parents=True, exist_ok=True)
+    from .. import db
+
     rows = []
-    for name in ("voice_history.jsonl", "journal.jsonl"):
-        p = DATA / name
-        if not p.exists():
-            continue
+    for table in ("voice_log", "journal"):
         last_user = ""
-        for ln in p.read_text(encoding="utf-8", errors="replace").splitlines():
-            try:
-                r = json.loads(ln)
-            except ValueError:
-                continue
+        for r in db.rows(table):
             if r.get("role") == "user":
                 last_user = str(r.get("content", ""))
                 continue

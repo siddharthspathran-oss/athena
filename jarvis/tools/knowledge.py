@@ -1,26 +1,23 @@
 """Ask questions about your own documents (local RAG).
 
-Deliberately simple: documents are chunked, embedded with Ollama's
-nomic-embed-text, and stored as a numpy matrix in data/index.npz.
-For a personal document collection a brute-force cosine search is
-instant and has no database to go wrong.
+Documents are chunked, embedded with Ollama's nomic-embed-text, and kept in
+data/athena.db (jarvis/db.py) with a full-text index beside the vectors, so
+a question finds passages by meaning and by exact words - a course code or
+a clause number that an embedding blurs.
 """
 from __future__ import annotations
 
-import json
 import time
 import unicodedata
 from pathlib import Path
 
 import numpy as np
 
-from ..config import DATA, cfg, expand
+from ..config import cfg, expand
 from ..registry import tool
 
 TAG = ["knowledge"]
 
-INDEX_FILE = DATA / "index.npz"
-META_FILE = DATA / "index_meta.json"
 EMBED_MODEL = "nomic-embed-text"
 
 
@@ -127,14 +124,10 @@ def _embed(texts: list[str]) -> np.ndarray:
     return arr / np.clip(norms, 1e-9, None)
 
 
-# ---------- index io ----------
+# ---------- index ----------
 
-def _load_index() -> tuple[np.ndarray | None, list[dict]]:
-    if not INDEX_FILE.exists() or not META_FILE.exists():
-        return None, []
-    vecs = np.load(INDEX_FILE)["vectors"]
-    meta = json.loads(META_FILE.read_text(encoding="utf-8"))
-    return vecs, meta
+def _embed_query(text: str) -> np.ndarray:
+    return _embed([text])[0]
 
 
 @tool(tags=TAG, timeout=0)
@@ -144,13 +137,16 @@ def index_documents(folder: str = "", rebuild: bool = False) -> str:
     folder: folder to index, or empty to use knowledge.sources from config.yaml
     rebuild: true to discard the existing index and start fresh
     """
+    from .. import db
+
     sources = [folder] if folder else cfg.get("knowledge.sources", ["~/Documents"])
     exts = set(cfg.get("knowledge.extensions", [".txt", ".md", ".pdf", ".docx"]))
     size = int(cfg.get("knowledge.chunk_size", 1000))
     overlap = int(cfg.get("knowledge.chunk_overlap", 150))
 
-    old_vecs, old_meta = (None, []) if rebuild else _load_index()
-    seen = {m["path"] for m in old_meta}
+    if rebuild:
+        db.clear("doc")
+    seen = db.sources("doc")
 
     new_chunks: list[str] = []
     new_meta: list[dict] = []
@@ -173,28 +169,20 @@ def index_documents(folder: str = "", rebuild: bool = False) -> str:
                 continue
             for i, ch in enumerate(_chunk(text, size, overlap)):
                 new_chunks.append(ch)
-                new_meta.append({"path": str(p), "name": p.name, "chunk": i, "text": ch})
+                new_meta.append({"source": str(p), "title": p.name, "pos": i, "text": ch})
             files_done += 1
 
     if not new_chunks:
-        total = len(old_meta)
-        return f"Nothing new to index. The index holds {total} chunk(s)."
+        return f"Nothing new to index. The index holds {db.count('doc')} chunk(s)."
 
-    # embed in batches so a big folder does not blow up memory
-    vecs_parts: list[np.ndarray] = []
+    # Embed and store in batches: a big folder never sits in memory at once,
+    # and an interruption keeps every batch already stored.
     t0 = time.time()
     for i in range(0, len(new_chunks), 64):
-        vecs_parts.append(_embed(new_chunks[i:i + 64]))
-    new_vecs = np.vstack(vecs_parts)
-
-    vectors = new_vecs if old_vecs is None else np.vstack([old_vecs, new_vecs])
-    meta = old_meta + new_meta
-
-    np.savez_compressed(INDEX_FILE, vectors=vectors)
-    META_FILE.write_text(json.dumps(meta), encoding="utf-8")
+        db.add_chunks("doc", new_meta[i:i + 64], _embed(new_chunks[i:i + 64]))
 
     return (f"Indexed {files_done} new file(s) into {len(new_chunks)} chunk(s) "
-            f"in {time.time() - t0:.0f}s. Index now holds {len(meta)} chunk(s).")
+            f"in {time.time() - t0:.0f}s. Index now holds {db.count('doc')} chunk(s).")
 
 
 @tool(tags=TAG)
@@ -204,44 +192,55 @@ def search_documents(question: str, top_k: int = 0) -> str:
     question: what you want to know
     top_k: how many passages to return, 0 to use the config default
     """
-    vectors, meta = _load_index()
-    if vectors is None or not meta:
+    from .. import db
+
+    if not db.count("doc"):
         return "No document index yet. Run index_documents first."
 
     k = top_k or int(cfg.get("knowledge.top_k", 5))
-    try:
-        q = _embed([question])[0]
-    except Exception as e:
-        return f"ERROR: embedding failed ({e}). Run: ollama pull {EMBED_MODEL}"
+    failed: list[Exception] = []
 
-    scores = vectors @ q
-    top = np.argsort(-scores)[:k]
+    def embed(text: str) -> np.ndarray:
+        try:
+            return _embed_query(text)
+        except Exception as e:
+            failed.append(e)
+            raise
+
+    # A failed embedding leaves db.search with exact words only, which is
+    # still an answer while Ollama or the model is missing.
+    hits = db.search("doc", question, k=k, embed=embed)
+    note = (f"(Searching by exact words only - embedding failed ({failed[0]}). "
+            f"Run: ollama pull {EMBED_MODEL})\n\n") if failed else ""
+    if not hits:
+        return note + "Nothing in your indexed documents matches that."
 
     out = []
-    for rank, idx in enumerate(top, 1):
-        m = meta[int(idx)]
-        out.append(f"[{rank}] {m['name']} (relevance {scores[idx]:.2f})\n{m['text'][:700]}")
-    return "\n\n---\n\n".join(out)
+    for rank, h in enumerate(hits, 1):
+        how = f"relevance {h['score']:.2f}" if h["score"] is not None else "exact words"
+        out.append(f"[{rank}] {h['title']} ({how})\n{h['text'][:700]}")
+    return note + "\n\n---\n\n".join(out)
 
 
 @tool(tags=TAG)
 def index_status() -> str:
     """Report what is currently in the document index."""
-    vectors, meta = _load_index()
-    if vectors is None or not meta:
+    from .. import db
+
+    n = db.count("doc")
+    if not n:
         return "The document index is empty. Run index_documents to build it."
-    files = sorted({m["name"] for m in meta})
-    preview = "\n".join(f"  {n}" for n in files[:20])
+    files = db.titles("doc")
+    preview = "\n".join(f"  {name}" for name in files[:20])
     more = f"\n  ... and {len(files) - 20} more" if len(files) > 20 else ""
-    size_mb = INDEX_FILE.stat().st_size / 1e6
-    return (f"{len(meta)} chunk(s) from {len(files)} file(s), {size_mb:.1f} MB on disk.\n"
+    return (f"{n} chunk(s) from {len(files)} file(s); athena.db is {db.size_mb():.1f} MB.\n"
             f"{preview}{more}")
 
 
 @tool(tags=TAG, destructive=True)
 def clear_index() -> str:
     """Delete the document index entirely."""
-    for f in (INDEX_FILE, META_FILE):
-        if f.exists():
-            f.unlink()
+    from .. import db
+
+    db.clear("doc")
     return "Document index cleared."

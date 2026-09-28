@@ -5,9 +5,10 @@ Past conversations
 Every saved chat, and every spoken exchange, is cut into short overlapping
 windows of a few turns and embedded with nomic-embed-text (already used for
 document search), so "what did we decide about Q6 last week" finds the
-conversation by meaning rather than exact words. The index is data/
-chat_index.npz plus a JSON sidecar; it is brought up to date by the idle
-learner and again, cheaply, before every search. Local only.
+conversation by meaning - and, through the full-text index beside it, by
+the exact words too ("Q6", "RGZ1004"). It lives in data/athena.db
+(jarvis/db.py), and is brought up to date by the idle learner and again,
+cheaply, before every search. Local only.
 
 nomic-embed-text is trained with task prefixes - "search_document:" on what
 is stored, "search_query:" on what is asked - and ranks noticeably worse
@@ -32,12 +33,8 @@ from datetime import datetime
 
 import numpy as np
 
-from .config import DATA, cfg
-from .store import StoreError, load_json, save_json
+from .config import DATA
 
-VECS = DATA / "chat_index.npz"
-META = DATA / "chat_index.json"
-VOICE_LOG = DATA / "voice_history.jsonl"     # spoken turns, kept for search
 WINDOW, STEP = 6, 3                           # messages per chunk, stride
 
 
@@ -48,20 +45,8 @@ def _embed(texts: list[str], kind: str) -> np.ndarray:
     return embed([f"search_{kind}: {t}" for t in texts])
 
 
-def _load() -> tuple[np.ndarray | None, dict]:
-    try:
-        meta = load_json(META, {"done": {}, "chunks": []})
-    except StoreError:
-        meta = {"done": {}, "chunks": []}
-    vecs = None
-    if VECS.exists() and meta["chunks"]:
-        try:
-            vecs = np.load(VECS)["v"]
-            if len(vecs) != len(meta["chunks"]):
-                vecs, meta = None, {"done": {}, "chunks": []}   # out of step: rebuild
-        except Exception:
-            vecs, meta = None, {"done": {}, "chunks": []}
-    return vecs, meta
+def _embed_query(text: str) -> np.ndarray:
+    return _embed([text], "query")[0]
 
 
 def _turns(msgs: list[dict]) -> list[str]:
@@ -77,7 +62,7 @@ def _turns(msgs: list[dict]) -> list[str]:
 
 def _sources() -> list[tuple[str, str, float, list[str]]]:
     """(source id, title, time, turns) for every chat and the voice log."""
-    from . import chats
+    from . import db
 
     out = []
     for path in (DATA / "chats").glob("*.json"):
@@ -88,13 +73,8 @@ def _sources() -> list[tuple[str, str, float, list[str]]]:
         msgs = d.get("messages") if isinstance(d, dict) else d
         title = (d.get("title") if isinstance(d, dict) else "") or "chat"
         out.append((path.stem, title, path.stat().st_mtime, _turns(msgs or [])))
-    if VOICE_LOG.exists():
-        rows = []
-        for line in VOICE_LOG.read_text(encoding="utf-8").splitlines():
-            try:
-                rows.append(json.loads(line))
-            except ValueError:
-                pass
+    rows = db.rows("voice_log")
+    if rows:
         # One pseudo-chat per day of speaking.
         by_day: dict[str, list[dict]] = {}
         for r in rows:
@@ -106,10 +86,12 @@ def _sources() -> list[tuple[str, str, float, list[str]]]:
 
 def update_index() -> int:
     """Embed whatever is new since last time. Returns chunks added."""
-    vecs, meta = _load()
-    new_chunks, new_texts = [], []
+    from . import db
+
+    done_by = db.progress("chat")
+    new_chunks, new_texts, reached = [], [], {}
     for sid, title, when, turns in _sources():
-        done = int(meta["done"].get(sid, 0))
+        done = int(done_by.get(sid, 0))
         if len(turns) <= done:
             continue
         start = max(0, done - WINDOW + STEP)          # overlap with the last chunk
@@ -117,32 +99,25 @@ def update_index() -> int:
             win = turns[i:i + WINDOW]
             if not win:
                 continue
-            new_chunks.append({"sid": sid, "title": title, "when": when,
+            new_chunks.append({"source": sid, "title": title, "at": when, "pos": i,
                                "text": "\n".join(win)})
             new_texts.append("\n".join(win))
             if i + WINDOW >= len(turns):
                 break
-        meta["done"][sid] = len(turns)
+        reached[sid] = len(turns)
     if not new_texts:
         return 0
     parts = [_embed(new_texts[i:i + 32], "document") for i in range(0, len(new_texts), 32)]
-    added = np.vstack(parts)
-    vecs = added if vecs is None else np.vstack([vecs, added])
-    meta["chunks"].extend(new_chunks)
-    np.savez_compressed(VECS, v=vecs)
-    save_json(META, meta)
-    return len(new_chunks)
+    # Chunks and how far each source has been read are stored together, so
+    # a crash can neither lose the progress nor index the same turns twice.
+    return db.add_chunks("chat", new_chunks, np.vstack(parts), progress=reached)
 
 
 def note_voice(role: str, content: str) -> None:
     """Keep a spoken turn for search (the learner's journal is emptied)."""
-    if role in ("user", "assistant") and content:
-        try:
-            with VOICE_LOG.open("a", encoding="utf-8") as f:
-                f.write(json.dumps({"t": time.time(), "role": role,
-                                    "content": content[:1500]}) + "\n")
-        except OSError:
-            pass
+    from . import db
+
+    db.log("voice_log", role, content)
 
 
 def _ago(ts: float) -> str:
@@ -157,31 +132,27 @@ def _ago(ts: float) -> str:
 
 
 def search(query: str, k: int = 4) -> str:
+    from . import db
+
     try:
         update_index()
     except Exception:
         pass                                   # search what is there
-    vecs, meta = _load()
-    if vecs is None:
+    if not db.count("chat"):
         return "I don't have any past conversations indexed yet."
-    q = _embed([query], "query")[0]
-    scores = vecs @ q
-    order = np.argsort(-scores)
+    hits = db.search("chat", query, k=k * 2, embed=_embed_query, min_score=0.45)
     picked, seen = [], set()
-    for i in order:
-        c = meta["chunks"][int(i)]
-        key = (c["sid"], c["text"][:80])
-        if key in seen or scores[i] < 0.45:
+    for h in hits:
+        key = (h["source"], h["text"][:80])
+        if key in seen:
             continue
         seen.add(key)
-        picked.append((float(scores[i]), c))
+        picked.append(h)
         if len(picked) >= k:
             break
     if not picked:
         return f"I couldn't find anything we talked about that matches '{query}'."
-    out = []
-    for score, c in picked:
-        out.append(f"— {c['title']} ({_ago(c['when'])}):\n{c['text'][:700]}")
+    out = [f"— {h['title']} ({_ago(h['at'])}):\n{h['text'][:700]}" for h in picked]
     return "From our past conversations:\n\n" + "\n\n".join(out)
 
 

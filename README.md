@@ -227,6 +227,23 @@ The model has three memory tools:
 
 Facts saved by one window reach the others without a restart.
 
+The searchable part - indexed documents, past conversations, spoken history
+and the learner's journal - lives in one SQLite file, `data/athena.db`
+(`jarvis/db.py`). Each chunk keeps its embedding next to a full-text index,
+and a search merges both rankings. So "what did we say about RGZ1004" or
+"MATH2065" finds the exact code, which an embedding alone blurs. With Ollama
+down, search still works by exact words. There is no server and nothing
+running in the background.
+
+The first start imports the old `index.npz`, `chat_index.npz`,
+`voice_history.jsonl` and `journal.jsonl` and renames them `*.migrated`, so
+nothing is embedded again. `memory.json` and `profile.md` stay as files you
+can edit by hand.
+
+```bash
+python tests/memorydbtest.py
+```
+
 ## A note on `winapi.py`
 
 Window control, media keys, typing and screenshots go through direct Win32

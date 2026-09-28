@@ -11,8 +11,8 @@ ten minutes, the local model reads what was said and proposes additions,
 updates and removals, which are applied here - dedupe, a size limit, and a
 filter that keeps passwords, OTPs, card and account numbers and keys out
 whatever the model proposes. Spoken commands are not saved as chats, so the
-voice and hotkey windows note each exchange in data/journal.jsonl for this
-to read; that journal is emptied as it is learned from.
+voice and hotkey windows note each exchange in a journal (in data/athena.db)
+for this to read; it is emptied as it is learned from.
 
 All of it runs on the local model and stays in data/. The short profile
 does travel with a request that already goes to a hosted model (a study
@@ -21,7 +21,6 @@ question, a multi-step task), because a request without it forgets you.
 from __future__ import annotations
 
 import difflib
-import json
 import re
 import threading
 import time
@@ -33,7 +32,6 @@ from .config import DATA, cfg
 from .store import StoreError, load_json, save_json
 
 PROFILE = DATA / "profile.md"
-JOURNAL = DATA / "journal.jsonl"
 PROGRESS = DATA / "learned.json"
 
 SECTIONS = {
@@ -231,14 +229,9 @@ def show() -> str:
 
 def journal(role: str, content: str) -> None:
     """Note one turn of a spoken or popup exchange, for the learner."""
-    if role not in ("user", "assistant") or not content:
-        return
-    try:
-        with JOURNAL.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"t": time.time(), "role": role,
-                                "content": content[:1500]}) + "\n")
-    except OSError:
-        pass
+    from . import db
+
+    db.log("journal", role, content)
 
 
 # ---------------------------------------------------------------- learning
@@ -374,17 +367,15 @@ def learn_pending(quiet_minutes: float = 10) -> list[str]:
         prog["chats"][cid] = len(msgs)
         save_json(PROGRESS, prog)
 
-    if JOURNAL.exists() and JOURNAL.stat().st_mtime <= cutoff:
-        rows = []
-        for line in JOURNAL.read_text(encoding="utf-8").splitlines():
-            try:
-                rows.append(json.loads(line))
-            except ValueError:
-                pass
+    from . import db
+
+    last = db.last_time("journal")
+    if last is not None and last <= cutoff:          # the spoken session has gone quiet
+        rows = db.rows("journal")
+        for i in range(0, len(rows), 40):
+            notes += _learn_from(_render(rows[i:i + 40]))
         if rows:
-            for i in range(0, len(rows), 40):
-                notes += _learn_from(_render(rows[i:i + 40]))
-        JOURNAL.unlink(missing_ok=True)
+            db.drop_rows("journal", rows[-1]["id"])  # only what was read; newer turns stay
     return notes
 
 

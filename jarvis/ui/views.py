@@ -64,7 +64,7 @@ def calendar(days: int = 7) -> dict:
 
 
 def memory() -> dict:
-    from .. import profile, recall
+    from .. import db, profile
     from ..memory import MEM_FILE
     from ..store import load_json
 
@@ -77,7 +77,7 @@ def memory() -> dict:
                      for k, t in profile.SECTIONS.items()],
         "facts": [{"key": k, "value": v} for k, v in facts.items()],
         "chats": len(list((DATA / "chats").glob("*.json"))),
-        "snippets": len((recall._load()[1] or {}).get("chunks", [])),
+        "snippets": db.count("chat"),
         "file": str(profile.PROFILE),
     }
 

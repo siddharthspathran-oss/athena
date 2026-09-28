@@ -684,13 +684,13 @@ def _gather_overview() -> dict:
         out["schedule"], out["unread"], out["schedule_error"] = [], None, str(e)[:120]
     # Memory.
     try:
-        from .. import profile, recall
+        from .. import db, profile
         items = [i for i in profile.load() if i.live()]
         out["memory"] = {
             "learned": len(items),
             "sections": {k: sum(1 for i in items if i.section == k) for k in profile.SECTIONS},
             "chats": len(list((DATA / "chats").glob("*.json"))),
-            "snippets": len((recall._load()[1] or {}).get("chunks", [])),
+            "snippets": db.count("chat"),
             "style": any(i.section == "style" for i in items),
         }
     except Exception:

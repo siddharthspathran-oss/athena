@@ -269,6 +269,11 @@ class Agent:
                 return answer
 
         tools = registry.schemas(user_input)
+        # The model is shown only the tools this request seems to need
+        # (registry.select). If that guess was wrong it says so - "I can't",
+        # or claims an action it had no tool for - and gets one more try
+        # with every tool, rather than a wrong answer.
+        widened = len(tools) >= len(registry.schemas(user_input, everything=True))
         max_steps = int(cfg.get("llm.max_steps", 8))
         used_tools = False
         nudged = False
@@ -280,18 +285,24 @@ class Agent:
             else:
                 blocked = [False]
 
-                def out(sentence: str, used=used_tools) -> None:
-                    # The same guard as below, applied before the sentence is
-                    # said: an unbacked "Screen locked." is never spoken.
+                def out(sentence: str, used=used_tools, wide=widened) -> None:
+                    # The same guards as below, applied before the sentence is
+                    # said: an unbacked "Screen locked." is never spoken, nor
+                    # an "I can't" that is about to be retried with every tool.
                     if self.cancelled:
                         return
-                    if blocked[0] or (not used and _claims_action(sentence)):
+                    if blocked[0] or (not used and (
+                            _claims_action(sentence)
+                            or (not wide and not self.spoken and _CANT.search(sentence)))):
                         blocked[0] = True
                         return
                     self.spoken += (" " if self.spoken else "") + sentence
                     self.speak(sentence)
+                # Spoken replies are meant to be a dozen words; 600 tokens of
+                # runaway is ten seconds of generating nobody wants to hear.
                 msg = self.llm.chat_stream(self.memory.build(), tools, out,
-                                           stop=lambda: self.cancelled)
+                                           stop=lambda: self.cancelled,
+                                           max_tokens=cfg.get("llm.voice_max_tokens", 300))
                 if self.cancelled:
                     return "(interrupted)"
 
@@ -313,12 +324,20 @@ class Agent:
                     self.memory.add_raw({"role": "tool", "name": name, "content": result})
                     continue
 
+                if not used_tools and not widened and not self.spoken and _CANT.search(answer):
+                    widened = True
+                    tools = registry.schemas(user_input, everything=True)
+                    continue
+
                 # A small model will happily reply "Screen locked." without
                 # having locked anything. Wording in the system prompt does not
                 # reliably stop it, so catch the claim and demand the tool.
                 if not used_tools and _claims_action(answer):
                     if not nudged:
                         nudged = True
+                        if not widened:     # maybe the tool it needed was not shown
+                            widened = True
+                            tools = registry.schemas(user_input, everything=True)
                         self.memory.add_raw({
                             "role": "user",
                             "content": (
@@ -419,6 +438,15 @@ _ACTION_CLAIMS = re.compile(
     # down the PC." went through unchecked on 24 Sep 2026 with nothing run.
     r"shutting|shut|restart|reboot|organi[sz]|cop|typ|clear|cancel"
     r")(s|ed|ing|e|es|d)?\b",
+    re.IGNORECASE,
+)
+
+# "I can't do that" with no tool used: on a narrowed tool list the right
+# tool may simply not have been shown, so the request is retried with all.
+_CANT = re.compile(
+    r"\b(?:cannot|can't|can not|could not|couldn't|unable to|not able to|no tool|"
+    r"don't have (?:a |the |any )?(?:tool|way|ability|access)|"
+    r"do not have (?:a |the |any )?(?:tool|way|ability|access)|not possible for me)\b",
     re.IGNORECASE,
 )
 

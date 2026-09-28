@@ -312,4 +312,8 @@ class Orb:
             self.root.withdraw()
             self._shown = False
 
-        self.root.after(33, self._tick)      # ~30 fps
+        # ~30 fps while on screen. Hidden - which is most of the day - there
+        # is nothing to draw, so check ten times a second instead of thirty
+        # once the frames are built.
+        busy = self._shown or not self._ready
+        self.root.after(33 if busy else 100, self._tick)

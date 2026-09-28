@@ -80,7 +80,11 @@ class Tool:
         except TypeError as e:
             return f"ERROR: wrong arguments for {self.name}: {e}"
         except Exception as e:
-            return f"ERROR in {self.name}: {e}\n{traceback.format_exc(limit=2)}"
+            # The traceback is for whoever reads the console. Handed to the
+            # model it is a few hundred tokens of file paths it cannot act on,
+            # and it sometimes read them out.
+            traceback.print_exc(limit=3)
+            return f"ERROR in {self.name}: {type(e).__name__}: {e}"
 
 
 REGISTRY: dict[str, Tool] = {}
@@ -133,12 +137,19 @@ def _parse_doc(doc: str) -> tuple[str, dict[str, str]]:
     return " ".join(summary_parts), params
 
 
-def tool(_fn: Callable | None = None, *, destructive: bool = False, tags: list[str] | None = None):
-    """Register a function as a model-callable tool."""
+def tool(_fn: Callable | None = None, *, destructive: bool = False, tags: list[str] | None = None,
+         brief: str | None = None):
+    """Register a function as a model-callable tool.
+
+    brief replaces the docstring's summary in what the model is shown, for
+    tools whose docstring is mostly notes for whoever maintains the code.
+    """
 
     def wrap(fn: Callable) -> Callable:
         sig = inspect.signature(fn)
         summary, param_docs = _parse_doc(fn.__doc__ or "")
+        if brief:
+            summary = brief
 
         # Every tool module uses `from __future__ import annotations`, so the
         # raw annotations are strings ("bool", not bool). Resolving them is
@@ -190,20 +201,134 @@ _SHOP_WORDS = re.compile(r"\b(store|shop|ragazza|orders?|stock|products?|prices?
                          r"customers?|ship(?:ped|ping)?|tracking|inventory|mrp)\b", re.I)
 
 
-def schemas(request: str = "") -> list[dict[str, Any]]:
-    """All tool schemas, in the shape Ollama's `tools=` parameter expects.
+# ---------------------------------------------------------------- selection
+# Every tool at once is 92 definitions, ~35k characters - more than the whole
+# 8k context window qwen2.5 is given (28 Sep 2026). Ollama then cut the prompt
+# to fit, so the model lost part of the tool list and the conversation, read
+# ~9k tokens again on every cache miss, and picked badly among near-identical
+# names. So the model sees a fixed core plus the groups a request mentions.
+#
+# Order is fixed on purpose: Ollama reuses its KV cache for an identical
+# prefix, and the system prompt and tool list come first. The core always
+# renders the same, so it stays cached whatever groups follow it.
+#
+# The most common commands never reach the model at all (agent.route), so
+# the core is what an unrouted request is likely to need. A tool not named
+# anywhere below is treated as core, so a newly added tool is never hidden.
+CORE_TOOLS = [
+    "open_app", "close_app", "open_file", "open_folder", "find_files",
+    "web_search", "read_webpage", "open_url", "get_weather",
+    "remember", "recall", "add_reminder", "music", "set_volume",
+    "battery", "system_info", "take_screenshot", "look_at_screen", "explain",
+    "list_skills",
+]
 
-    Tools tagged "route_only" run only from their exact phrases (agent.route),
-    never on the model's initiative: asked to turn gaming mode *off*, the model
-    called free_gpu five times, unloading itself between every step.
+_W = r"(?:\w*)"         # any ending: "remind" covers reminder, reminders, reminded
+TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
+    ("files", re.compile(
+        r"\b(?:files?|folders?|director(?:y|ies)|pdfs?|docx?|documents?|downloads?|desktop|"
+        r"delet|mov|renam|cop(?:y|ies)|writ|wrote|sav|size|organi[sz]|sort|tidy|clean|"
+        r"path|drives?|zip|images?|photos?|pictures?|videos?|excel|word|csv|txt|notes?|"
+        r"read|contents?|list|show|where|explorer)" + _W, re.I),
+     ["list_folder", "read_file", "write_file", "move_file", "delete_file",
+      "organize_folder", "folder_size", "reveal_path"]),
+    ("media", re.compile(
+        r"\b(?:songs?|tracks?|music|spotify|play|playlist|album|artist|pause|skip|"
+        r"volume|loud|quiet|mute|listen)" + _W, re.I),
+     ["play_track", "play_song", "play_my_taste", "play_my_playlist", "get_volume"]),
+    ("schedule", re.compile(
+        r"\b(?:remind|alarm|timer|tasks?|to-?dos?|deadline|assignment|due|schedul|calendar|"
+        r"timetable|class|lecture|meeting|brief|today|tomorrow|tonight|week|agenda|"
+        r"time|date|day|free|busy|cancel)" + _W, re.I),
+     ["list_reminders", "cancel_reminder", "add_task", "complete_task", "list_tasks",
+      "check_deadlines", "daily_brief", "get_datetime", "show_timetable", "set_timetable",
+      "add_calendar_feed", "list_calendar_feeds", "connect_google"]),
+    ("messaging", re.compile(
+        r"\b(?:whatsapp|messag|text|msg|call|ring|dial|phone|mobile|contacts?|e-?mail|mail|"
+        r"inbox|send|sent|reply|number|tell|hang)" + _W, re.I),
+     ["whatsapp_message", "whatsapp_call", "compose_email", "list_contacts", "add_contact",
+      "remove_contact", "call_me", "call_number", "end_call"]),
+    ("apps", re.compile(
+        r"\b(?:windows?|minimi[sz]|maximi[sz]|focus|switch|resiz|snap|running|apps?|"
+        r"programs?|installed|type|typing|click|button|field|press|clipboard|paste|"
+        r"lock|shut|restart|reboot|sleep|power|log\s*off|report|doing|cpu|ram|memory|"
+        r"gpu|slow|task\s*manager)" + _W, re.I),
+     ["list_running_apps", "list_installed_apps", "list_windows", "focus_window",
+      "resize_window", "type_text", "clipboard", "lock_screen", "power_action",
+      "app_read", "app_click", "app_type", "system_report"]),
+    ("browser", re.compile(
+        r"\b(?:browser|website|web\s*site|site|page|form|fill|log\s*in|login|sign\s*in|"
+        r"sign\s*up|tab|url|link|chrome|comet|edge|opera|download|google|youtube|"
+        r"online|buy|order|checkout)" + _W, re.I),
+     ["browser_open", "browser_read", "browser_fill", "browser_click", "download_file"]),
+    ("places", re.compile(
+        r"\b(?:book|reserv|table|appointment|restaurant|cafe|hotel|clinic|hospital|doctor|"
+        r"salon|shop|store|hours|open\s+now|opening|closing|address|near)" + _W, re.I),
+     ["place_info", "book_reservation", "call_number"]),
+    ("memory", re.compile(
+        r"\b(?:remember|forget|forgot|know\s+about\s+me|recall|conversation|talk|discuss|"
+        r"decid|said|style|writing|profile|learn)" + _W, re.I),
+     ["forget", "what_you_remember", "remember_about_me", "forget_about",
+      "search_past_conversations", "learn_my_writing_style"]),
+    ("knowledge", re.compile(
+        r"\b(?:index|documents?|my\s+notes|knowledge|according|lease|contract|"
+        r"search\s+my|in\s+my\s+(?:files|docs|documents|notes))" + _W, re.I),
+     ["search_documents", "index_documents", "index_status", "clear_index"]),
+    ("settings", re.compile(
+        r"\b(?:wi-?fi|bluetooth|settings?|network|internet|headphones?|earbuds|airpods|"
+        r"speaker|display|brightness|sound|connect|pair)" + _W, re.I),
+     ["wifi", "bluetooth", "list_bluetooth_devices", "open_windows_settings"]),
+    ("shell", re.compile(
+        r"\b(?:powershell|command|terminal|cmd|script|process|kill|install|uninstall|"
+        r"ip\s+address|ping|registry|service|environment)" + _W, re.I),
+     ["run_powershell"]),
+    ("routines", re.compile(r"\b(?:routines?|workflows?|mode)\b", re.I),
+     ["run_routine", "list_routines"]),
+]
 
-    Tools tagged "store" reach real customers, so the model only sees them when
-    the request is about the shop: asked "what can you do?", the local model
-    once made up a "mark order RGZ1004 shipped" call (27 Sep 2026).
+
+def _grouped() -> set[str]:
+    return {n for _, _, names in TOOL_GROUPS for n in names}
+
+
+def _visible(t: Tool, shop: bool) -> bool:
+    """Tools tagged "route_only" run only from their exact phrases
+    (agent.route), never on the model's initiative: asked to turn gaming mode
+    *off*, the model called free_gpu five times, unloading itself between
+    every step.
+
+    Tools tagged "store" reach real customers, so the model only sees them
+    when the request is about the shop: asked "what can you do?", the local
+    model once made up a "mark order RGZ1004 shipped" call (27 Sep 2026).
     """
+    return "route_only" not in t.tags and ("store" not in t.tags or shop)
+
+
+def select(request: str = "", everything: bool = False) -> list[str]:
+    """Names of the tools the model is shown for this request, in a fixed order."""
+    from .config import cfg
+
     shop = bool(_SHOP_WORDS.search(request or ""))
-    return [t.schema for t in REGISTRY.values()
-            if "route_only" not in t.tags and ("store" not in t.tags or shop)]
+    if everything or not cfg.get("llm.tool_selection", True):
+        return [n for n, t in REGISTRY.items() if _visible(t, shop)]
+
+    grouped = _grouped()
+    names = [n for n in CORE_TOOLS if n in REGISTRY]
+    # Anything registered but never placed in a group counts as core.
+    names += [n for n in REGISTRY if n not in grouped and n not in names]
+    for _, pattern, members in TOOL_GROUPS:
+        if pattern.search(request or ""):
+            names += [n for n in members if n in REGISTRY and n not in names]
+    return [n for n in names if _visible(REGISTRY[n], shop)]
+
+
+def schemas(request: str = "", everything: bool = False) -> list[dict[str, Any]]:
+    """Tool schemas for this request, in the shape Ollama's `tools=` expects.
+
+    everything=True returns every tool the request may see, for the retry
+    when the model says it cannot do something with the narrower set.
+    """
+    return [REGISTRY[n].schema for n in select(request, everything)]
 
 
 def get(name: str) -> Tool | None:

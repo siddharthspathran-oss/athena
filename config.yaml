@@ -16,6 +16,18 @@ llm:
   # 5 minutes means the first command after a pause pays a reload plus a
   # re-read of every tool definition - several seconds of dead time.
   keep_alive: "10m"   # idle this long -> the model leaves the GPU (27 Sep 2026: was 30m)
+  # Show the model only the tools a request needs: a fixed core (open app,
+  # files, web, reminders, music...) plus the groups its words point at
+  # (registry.TOOL_GROUPS). All 92 at once is ~9k tokens - more than
+  # context_window - so the prompt was being cut and every cache miss re-read
+  # it. If the model says it cannot do something, it is retried once with
+  # every tool. false = always send everything.
+  tool_selection: true
+  # How much conversation the model sees, in characters (~4 per token).
+  # Older turns are dropped first; the request being worked on never is.
+  history_chars: 12000
+  # Ceiling on one spoken reply. Voice answers are a dozen words.
+  voice_max_tokens: 300
 
 assistant:
   name: "Athena"

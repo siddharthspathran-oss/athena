@@ -87,9 +87,16 @@ def level(rms: float) -> None:
     now = time.time()
     if now - _last_level_write < 0.08:
         return
+    value = round(min(1.0, float(rms) * 12), 2)
+    # A quiet room reads exactly 0 from this laptop's mic array, over and
+    # over: rewriting the file twelve times a second to say so again was the
+    # voice process's busiest disk work while idle. The heartbeat keeps the
+    # timestamp fresh.
+    if value == _state["level"]:
+        return
     _last_level_write = now
     with _lock:
-        _state["level"] = round(min(1.0, float(rms) * 12), 3)
+        _state["level"] = value
         _write()
 
 

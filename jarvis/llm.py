@@ -255,7 +255,8 @@ class LLM:
         return resp.message
 
     def chat_stream(self, messages: list[dict], tools: list[dict] | None,
-                    on_sentence, stop=lambda: False) -> Any:
+                    on_sentence, stop=lambda: False,
+                    max_tokens: int | None = None) -> Any:
         """chat(), streamed: each finished sentence of the reply goes to
         on_sentence as soon as the model has written it, so the voice can
         start talking while the rest is still being generated. Returns a
@@ -272,7 +273,7 @@ class LLM:
             keep_alive=cfg.get("llm.keep_alive", "30m"),
             options={"temperature": cfg.get("llm.temperature", 0.3),
                      "num_ctx": cfg.get("llm.context_window", 8192),
-                     "num_predict": int(cfg.get("llm.max_tokens", 600))},
+                     "num_predict": int(max_tokens or cfg.get("llm.max_tokens", 600))},
         ):
             if stop():
                 break                       # interrupted: stop generating now

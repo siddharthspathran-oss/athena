@@ -225,6 +225,12 @@ In `config.yaml`:
   conversation stays quick. See *Class work is checked before you see it*.
 - **More patience on complex requests** — raise `llm.max_steps`.
 - **Less wandering** — lower `llm.temperature`.
+- **Which tools the model sees** — `llm.tool_selection`. On by default: each
+  request gets a fixed core of ~20 tools plus the groups its words point at
+  (`TOOL_GROUPS` in `jarvis/registry.py`), about a third of the prompt that
+  all 92 took. If the model says it can't do something, it is retried once
+  with everything. A new tool not listed in any group is always shown.
+- **How much history it reads** — `llm.history_chars` (default 12000).
 
 ## Honest limitations
 

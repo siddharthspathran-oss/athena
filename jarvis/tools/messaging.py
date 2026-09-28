@@ -476,7 +476,9 @@ _IN_CALL = ("End call", "Mute", "Unmute", "Turn off camera",
             "Turn on camera", "Speaker", "Hang up")
 
 
-@tool(tags=TAG, destructive=True)
+@tool(tags=TAG, destructive=True,
+      brief="Place a WhatsApp voice or video call to a saved contact or a phone number. "
+            "It checks the chat is the right person before calling, and stops if it cannot.")
 def whatsapp_call(to: str, video: bool = False) -> str:
     """Place a WhatsApp voice or video call to a contact.
 
@@ -606,7 +608,9 @@ def _resolve_recipient(to: str) -> tuple[str, str] | str:
     return number, label
 
 
-@tool(tags=TAG)
+@tool(tags=TAG,
+      brief="Send a WhatsApp message to a saved contact or a phone number. "
+            "It checks the chat is the right person before typing and sending.")
 def whatsapp_message(to: str, text: str) -> str:
     """Send a WhatsApp message to a contact.
 

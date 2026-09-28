@@ -587,6 +587,18 @@ def _log(line: str) -> None:
 
 
 _cpu = {"now": 0.0, "hist": []}
+_status_seen = {"t": 0.0}
+
+
+def _watched() -> bool:
+    """True while a HUD has asked for readings in the last 15 seconds.
+
+    The samplers used to run from the first HUD poll until the server
+    exited - an nvidia-smi process every two seconds and a CPU reading every
+    second, all day, with no window open to show them. They now stop when
+    nobody is looking and start again on the next poll.
+    """
+    return time.time() - _status_seen["t"] < 15
 
 
 def _cpu_sampler() -> None:
@@ -599,10 +611,11 @@ def _cpu_sampler() -> None:
     """
     import psutil
 
-    while True:
+    while _watched():
         v = psutil.cpu_percent(interval=1.0)
         _cpu["now"] = v
         _cpu["hist"] = (_cpu["hist"] + [v])[-24:]
+    _cpu["started"] = False
 
 
 _gpu: dict = {"now": None}
@@ -617,7 +630,7 @@ def _gpu_sampler() -> None:
     """
     import subprocess
 
-    while True:
+    while _watched():
         try:
             out = subprocess.run(
                 ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,"
@@ -631,6 +644,7 @@ def _gpu_sampler() -> None:
         except Exception:
             _gpu["now"] = None
         time.sleep(2.0)
+    _gpu["started"] = False
 
 
 # ---------------------------------------------------------------- overview
@@ -729,9 +743,12 @@ def _system_status() -> dict:
     """Real readings for the side panels - nothing on the HUD is decoration."""
     import psutil
 
+    _status_seen["t"] = time.time()
     if not _cpu.get("started"):
         _cpu["started"] = True
         threading.Thread(target=_cpu_sampler, daemon=True, name="cpu").start()
+    if not _gpu.get("started"):
+        _gpu["started"] = True
         threading.Thread(target=_gpu_sampler, daemon=True, name="gpu").start()
 
     vm = psutil.virtual_memory()

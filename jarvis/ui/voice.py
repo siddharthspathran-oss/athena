@@ -1109,7 +1109,8 @@ def _voice_loop() -> None:
             if reply_audio is None:
                 continue
 
-            segs, _ = stt.transcribe(reply_audio, language="en", beam_size=5)
+            segs, _ = stt.transcribe(reply_audio, language="en", beam_size=5,
+                                     without_timestamps=True)
             reply = " ".join(s.text for s in segs).strip().lower()
             print(f"you > {reply}   [answering {tool_name}]")
 
@@ -1234,9 +1235,12 @@ def _voice_loop() -> None:
             return None
         # Primed for the words that matter here: with the general prompt and
         # a single beam, "Athena, stop" came back as "Athena, copy, plug".
+        # No timestamps: nothing here reads them, and this runs on the same
+        # GPU as the model while it is still writing the answer.
         segs, _ = stt.transcribe(audio, language="en", beam_size=5,
                                  initial_prompt=_BARGE_PROMPT,
-                                 condition_on_previous_text=False)
+                                 condition_on_previous_text=False,
+                                 without_timestamps=True)
         heard = fix_mishearings(" ".join(s.text for s in segs).strip())
         if cfg.get("voice.log_barge_in", False) or log_ignored:
             # What the mic made of itself-plus-you while Athena was busy, so a

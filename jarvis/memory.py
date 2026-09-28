@@ -127,9 +127,20 @@ class Memory:
         results that answer it, so trimming happens in whole turns: drop from
         the front, then discard any tool results left orphaned at the start.
         """
-        if len(self.messages) <= self.max_messages:
+        budget = _history_budget()
+        if len(self.messages) <= self.max_messages and _size(self.messages) <= budget:
             return
         while len(self.messages) > self.max_messages:
+            self.messages.pop(0)
+        # Forty messages is no limit when tool results run to 4,000 characters
+        # each: the history outgrew the context window, and Ollama then cut
+        # the prompt itself - from wherever it liked. Drop oldest first, but
+        # never the request being worked on or anything after it.
+        while _size(self.messages) > budget:
+            current = max((i for i, m in enumerate(self.messages) if m.get("role") == "user"),
+                          default=len(self.messages) - 1)
+            if current <= 0:
+                break
             self.messages.pop(0)
         # a leading 'tool' message whose assistant call was just dropped is
         # meaningless to the model and rejected by some backends
@@ -190,6 +201,26 @@ class Memory:
                     out[i] = {**out[i], "content": f"{out[i]['content']}\n[{_stamp()}]"}
                     break
         return out
+
+
+def _size(messages: list[dict[str, Any]]) -> int:
+    return sum(len(str(m.get("content") or "")) + len(str(m.get("tool_calls") or ""))
+               for m in messages)
+
+
+def _history_budget() -> int:
+    """How many characters of conversation the model is shown (llm.history_chars).
+
+    About four characters a token: 12,000 is ~3k tokens, which leaves the
+    system prompt, the tools this request needs and the reply room inside an
+    8k window.
+    """
+    from .config import cfg
+
+    try:
+        return int(cfg.get("llm.history_chars", 12000))
+    except (TypeError, ValueError):
+        return 12000
 
 
 def _stamp() -> str:

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from datetime import datetime
 
@@ -84,16 +85,37 @@ def _sources() -> list[tuple[str, str, float, list[str]]]:
     return out
 
 
-def update_index() -> int:
-    """Embed whatever is new since last time. Returns chunks added."""
+_index_lock = threading.Lock()
+
+
+def update_index(max_chunks: int | None = None, wait: bool = True) -> int:
+    """Embed whatever is new since last time. Returns chunks added.
+
+    max_chunks stops after roughly that many, newest conversations first,
+    leaving the rest for the next call. Only one indexer runs at a time; with
+    wait=False a call that finds one already running returns 0 at once
+    instead of queueing behind it.
+    """
+    if not _index_lock.acquire(blocking=wait):
+        return 0
+    try:
+        return _index(max_chunks)
+    finally:
+        _index_lock.release()
+
+
+def _index(max_chunks: int | None) -> int:
     from . import db
 
     done_by = db.progress("chat")
     new_chunks, new_texts, reached = [], [], {}
-    for sid, title, when, turns in _sources():
+    # Newest first, so a capped run indexes what is most likely asked about.
+    for sid, title, when, turns in sorted(_sources(), key=lambda s: -s[2]):
         done = int(done_by.get(sid, 0))
         if len(turns) <= done:
             continue
+        if max_chunks is not None and len(new_chunks) >= max_chunks:
+            break                        # whole sources only: progress stays exact
         start = max(0, done - WINDOW + STEP)          # overlap with the last chunk
         for i in range(start, len(turns), STEP):
             win = turns[i:i + WINDOW]
@@ -113,11 +135,87 @@ def update_index() -> int:
     return db.add_chunks("chat", new_chunks, np.vstack(parts), progress=reached)
 
 
+def _index_in_background() -> None:
+    def run():
+        try:
+            update_index(wait=True)
+        except Exception as e:
+            print(f"[recall: background indexing failed: {e}]")
+    if not _index_lock.locked():
+        threading.Thread(target=run, daemon=True, name="recall-index").start()
+
+
+def backlog() -> int:
+    """How many conversation turns are not indexed yet (cheap: no embedding)."""
+    from . import db
+
+    done_by = db.progress("chat")
+    return sum(max(0, len(turns) - int(done_by.get(sid, 0)))
+               for sid, _, _, turns in _sources())
+
+
 def note_voice(role: str, content: str) -> None:
     """Keep a spoken turn for search (the learner's journal is emptied)."""
     from . import db
 
     db.log("voice_log", role, content)
+
+
+# "what did we talk about" asked of recent() itself - never part of the answer.
+_RECAP_ASK = re.compile(r"\b(?:what\s+(?:did|have|were)\s+(?:we|you|i)\s+(?:been\s+)?"
+                        r"(?:talk|talking|talked|chat|speak|discuss|ask)|recap)\b", re.I)
+
+
+def recent(when: str = "") -> str:
+    """What was talked about today, yesterday, or on the latest day there was
+    anything - read straight from the history, no embedding, so it answers at
+    once. The user's side only: that is what the conversation was about."""
+    from . import db
+
+    items: list[tuple[float, str]] = []
+    for r in db.rows("voice_log"):
+        if r["role"] == "user" and not _RECAP_ASK.search(r["content"]):
+            items.append((r["t"], r["content"]))
+    for path in (DATA / "chats").glob("*.json"):
+        try:
+            d = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        msgs = d.get("messages") if isinstance(d, dict) else d
+        asked = [str(m.get("content") or "") for m in msgs or [] if m.get("role") == "user"
+                 and not is_nudge(str(m.get("content") or ""))
+                 and not _RECAP_ASK.search(str(m.get("content") or ""))]
+        if asked:
+            title = (d.get("title") if isinstance(d, dict) else "") or asked[0]
+            items.append((path.stat().st_mtime, f"{title} (typed chat)"))
+    if not items:
+        return "We haven't talked about anything yet that I kept."
+
+    w = (when or "").strip().lower()
+    today = datetime.now().date()
+    if "yesterday" in w:
+        from datetime import timedelta
+        day = today - timedelta(days=1)
+    elif "today" in w:
+        day = today
+    else:                                   # latest day with anything
+        day = datetime.fromtimestamp(max(t for t, _ in items)).date()
+    picked = sorted((t, x) for t, x in items if datetime.fromtimestamp(t).date() == day)
+    label = ("today" if day == today else "yesterday" if (today - day).days == 1
+             else day.strftime("on %A %d %B"))
+    if not picked:
+        return f"We didn't talk about anything {label}."
+    seen, lines = set(), []
+    for t, x in picked:
+        text = re.sub(r"\s+", " ", x).strip().rstrip("?.!")
+        key = text.lower()[:60]
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"{text[:80]} ({datetime.fromtimestamp(t).strftime('%H:%M')})")
+    shown = lines[-10:]
+    more = f" - and {len(lines) - 10} earlier" if len(lines) > 10 else ""
+    return f"{label.capitalize()} you asked me about: " + "; ".join(shown) + more + "."
 
 
 def _ago(ts: float) -> str:
@@ -134,12 +232,24 @@ def _ago(ts: float) -> str:
 def search(query: str, k: int = 4) -> str:
     from . import db
 
+    # A search used to index everything not yet indexed before it answered:
+    # after a busy week that was minutes of embedding inside one request, and
+    # "what did we talk about" sat on "recalling" (28 Sep 2026). Now it takes
+    # a small, recent slice here - skipped if the learner is already at it -
+    # and leaves the rest to a background thread.
     try:
-        update_index()
+        update_index(max_chunks=48, wait=False)
     except Exception:
         pass                                   # search what is there
+    behind = ""
+    try:
+        if backlog():
+            _index_in_background()
+            behind = "\n\n(Still indexing older conversations - ask again in a minute for those.)"
+    except Exception:
+        pass
     if not db.count("chat"):
-        return "I don't have any past conversations indexed yet."
+        return "I don't have any past conversations indexed yet." + behind
     hits = db.search("chat", query, k=k * 2, embed=_embed_query, min_score=0.45)
     picked, seen = [], set()
     for h in hits:
@@ -151,9 +261,9 @@ def search(query: str, k: int = 4) -> str:
         if len(picked) >= k:
             break
     if not picked:
-        return f"I couldn't find anything we talked about that matches '{query}'."
+        return f"I couldn't find anything we talked about that matches '{query}'." + behind
     out = [f"— {h['title']} ({_ago(h['at'])}):\n{h['text'][:700]}" for h in picked]
-    return "From our past conversations:\n\n" + "\n\n".join(out)
+    return "From our past conversations:\n\n" + "\n\n".join(out) + behind
 
 
 # ---------------------------------------------------------------- style

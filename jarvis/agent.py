@@ -1034,6 +1034,7 @@ def route(text: str) -> tuple[str, dict] | None:
     """
     said = _fix_verb(clean_speech(text))
     return (_direct_power(said) or _direct_basic(said) or _direct_memory(said)
+            or _direct_find_document(said)
             or _direct_store(said)
             or _direct_routine(said) or _direct_it(said)
             or _direct_reminder(said) or _direct_track(said)
@@ -1107,6 +1108,41 @@ _MEM_ASK = re.compile(
     r"(?:\s+(?:is|again|please))*\W*$", re.I)
 
 
+# "what did we talk about?", "what did I ask you yesterday", "recap" - no
+# topic, so a search by meaning had nothing to look for; it searched for
+# "yesterday", or for nothing (28 Sep 2026). recent_conversations reads the
+# day's history instead.
+_MEM_RECAP = re.compile(
+    r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|so)\W+)*(?:"
+    r"what\s+(?:did|have|were)\s+(?:we|you|i)\s+(?:been\s+)?(?:talk(?:ing|ed)?|chat(?:ting|ted)?|"
+    r"speak(?:ing)?|discuss(?:ing|ed)?)(?:\s+about)?"
+    r"|what\s+did\s+i\s+ask(?:\s+you)?(?:\s+about)?"
+    r"|(?:give\s+me\s+a\s+)?recap(?:\s+of\s+(?:our|the)\s+(?:conversation|chat))?"
+    r")(?:\s+(?P<when>today|yesterday|earlier(?:\s+today)?|last\s+time|recently|before|so\s+far))?\W*$",
+    re.I)
+
+
+# "search my documents for signals and systems", "find the lab manual on my
+# PC", "look for my DSP notes in my files".
+_DOC_FIND = re.compile(
+    r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|now|just)\W+)*(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:please\s+)?(?:search|find|look\s+for|look\s+up|locate|check)\s+"
+    r"(?:(?:in|through)\s+)?(?:my|the)\s+(?:documents?|docs|files|pc|computer|laptop|downloads|"
+    r"drives?|folders?|notes)\s+(?:for|about)\s+(?:the\s+|my\s+)?(?P<a>.+?)(?:\s+please)?\W*$"
+    r"|^\W*(?:(?:athena|jarvis|hey|ok|okay|please|now|just)\W+)*(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:please\s+)?(?:search|find|look\s+for|locate)\s+(?:for\s+)?(?:the\s+|my\s+)?(?P<b>.+?)"
+    r"\s+(?:in|on|from)\s+(?:my|the)\s+(?:documents?|docs|files|pc|computer|laptop|downloads|drives?|folders?)"
+    r"(?:\s+please)?\W*$", re.I)
+
+
+def _direct_find_document(text: str) -> tuple[str, dict] | None:
+    m = _DOC_FIND.match(text.strip())
+    if not m:
+        return None
+    q = (m.group("a") or m.group("b") or "").strip(" .?")
+    return ("find_document", {"query": q}) if q else None
+
+
 def _direct_memory(text: str) -> tuple[str, dict] | None:
     t = text.strip()
     for pattern in (_MEM_FACT_AFTER, _MEM_FACT_IS, _MEM_FACT_BARE):
@@ -1116,6 +1152,9 @@ def _direct_memory(text: str) -> tuple[str, dict] | None:
             value = m.group("value").strip(" ,.")
             if label and value:
                 return "remember", {"what": value, "label": label}
+    m = _MEM_RECAP.match(t)
+    if m:
+        return "recent_conversations", {"when": (m.group("when") or "").strip().lower()}
     m = _MEM_ASK.match(t)
     if m:
         try:

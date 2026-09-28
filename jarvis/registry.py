@@ -281,7 +281,7 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
         r"delet|mov|renam|cop(?:y|ies)|writ|wrote|sav|size|organi[sz]|sort|tidy|clean|"
         r"path|drives?|zip|images?|photos?|pictures?|videos?|excel|word|csv|txt|notes?|"
         r"read|contents?|list|show|where|explorer)" + _W, re.I),
-     ["list_folder", "read_file", "write_file", "move_file", "delete_file",
+     ["find_document", "list_folder", "read_file", "write_file", "move_file", "delete_file",
       "organize_folder", "folder_size", "reveal_path"]),
     ("media", re.compile(
         r"\b(?:songs?|tracks?|music|spotify|play|playlist|album|artist|pause|skip|"
@@ -319,7 +319,7 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
     ("memory", re.compile(
         r"\b(?:remember|forget|forgot|know\s+about\s+me|recall|conversation|talk|discuss|"
         r"decid|said|style|writing|profile|learn)" + _W, re.I),
-     ["forget", "search_past_conversations", "learn_my_writing_style",
+     ["forget", "search_past_conversations", "recent_conversations", "learn_my_writing_style",
       # route_only: reached from their phrases, never shown to the model
       "what_you_remember", "remember_about_me", "forget_about"]),
     ("knowledge", re.compile(

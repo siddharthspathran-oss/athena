@@ -100,6 +100,9 @@ def warm(voice: bool = True, load: bool = False) -> None:
     load=True is the start-up call, which loads the model on purpose.
     """
     try:
+        from . import gaming
+        if gaming.on() and not load:
+            return      # Ollama still lists a model it just freed; warming would reload it mid-game
         llm = LLM()
         loaded = [m.model for m in llm.client.ps().models]
         if not load and not any(m.split(":")[0] == str(llm.model).split(":")[0]
@@ -1491,14 +1494,16 @@ _BASIC = [
 # the model and took seconds; from a menu click that reads as broken.
 _BASIC += [
     # Gaming mode off: load the model back. Checked before "on" below.
-    (re.compile(_BASIC_LEAD + r"(?:(?:turn|switch|shut)\s+off|stop|exit|end|disable|leave|quit|cancel)\s+(?:the\s+)?gaming\s+mode\W*$|"
-                + _BASIC_LEAD + r"gaming\s+mode\s+(?:off|over|done|finished)\W*$|"
+    (re.compile(_BASIC_LEAD + r"(?:(?:turn|switch|shut)\s+off|stop|exit|end|disable|leave|quit|cancel)\s+(?:the\s+)?gam(?:e|er|ing)\s+mode\W*$|"
+                + _BASIC_LEAD + r"gam(?:e|er|ing)\s+mode\s+(?:off|over|done|finished)\W*$|"
+                + _BASIC_LEAD + r"(?:i'?m\s+)?done\s+(?:gaming|playing)\W*$|"
                 + _BASIC_LEAD + r"(?:back\s+to\s+|switch\s+to\s+)?normal\s+mode\W*$|"
                 + _BASIC_LEAD + r"(?:re)?load\s+(?:the\s+|your\s+)?(?:ai\s+)?models?(?:\s+back)?\W*$", re.I),
      "load_gpu", {}),
     # Frees the GPU for a game or an editor. Routed, so it works even when the
     # model itself is the thing filling the VRAM.
-    (re.compile(_BASIC_LEAD + r"(?:(?:turn\s+on|start|enable|switch\s+to|go\s+(?:in)?to|enter)\s+)?gaming\s+mode(?:\s+on)?\W*$|"
+    (re.compile(_BASIC_LEAD + r"(?:(?:turn\s+on|start|enable|switch\s+to|go\s+(?:in)?to|enter)\s+)?gam(?:e|er|ing)\s+mode(?:\s+on)?\W*$|"
+                + _BASIC_LEAD + r"(?:i'?m\s+(?:going\s+to\s+|gonna\s+)?(?:start\s+)?(?:gaming|playing\s+(?:a\s+)?games?)|time\s+to\s+game)(?:\s+now)?\W*$|"
                 + _BASIC_LEAD + r"(?:free|clear|release|empty)\s+(?:up\s+)?(?:the\s+|my\s+|some\s+)?(?:gpu|vram|graphics\s+(?:card|memory)|video\s+memory)\W*$|"
                 + _BASIC_LEAD + r"unload\s+(?:the\s+|all\s+(?:the\s+)?|your\s+)?(?:ai\s+)?models?\W*$", re.I),
      "free_gpu", {}),

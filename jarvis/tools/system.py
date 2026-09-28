@@ -1194,7 +1194,12 @@ def load_gpu() -> str:
 
     llm = LLM()
     try:
-        llm.chat([{"role": "user", "content": "hi"}])      # loading it is the whole point
+        # Loading it is the whole point - with the voice prompt, so the first
+        # command afterwards finds it already cached.
+        from ..agent import warm
+        warm(voice=True, load=True)
+        if llm.processor() == "not loaded":
+            llm.chat([{"role": "user", "content": "hi"}])
     except Exception as e:
         return f"ERROR: could not load the model ({str(e)[:80]})."
     where = llm.processor()

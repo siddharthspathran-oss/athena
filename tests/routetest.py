@@ -82,6 +82,11 @@ ROUTES = {
     "what is my ip address": ("pc_status", {"what": "ip"}),
     "whats on my calendar today": ("daily_brief", {"day": "today", "full": False}),
     "what is an ip address": ("explain", {"question": "what is an ip address"}),
+    # "Game mode on." went to the model, which claimed it without a tool
+    "Game mode on.": ("free_gpu", {}),
+    "gamer mode": ("free_gpu", {}),
+    "turn off game mode": ("load_gpu", {}),
+    "done gaming": ("load_gpu", {}),
     "free up space on my c drive": None,
     "what is a cpu": None,
     "tell me about space": None,

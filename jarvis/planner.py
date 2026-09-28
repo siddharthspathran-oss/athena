@@ -86,6 +86,7 @@ app_read. Press several controls in a row with ONE app_click, comma-separated \
 ("33, 34, 28, 27, 40") - every step you take costs the user seconds. Read the app again \
 only when you need to see what changed.
 - Never type passwords, PINs, OTPs or card details; tell the user to type them.
+- Lookups that do not depend on each other can be asked for together, and run at the same time: {{"tools": [{{"tool": "battery", "args": {{}}}}, {{"tool": "get_weather", "args": {{"city": "Delhi"}}}}]}}. Only for finding things out - an action (open, send, click, type, delete) always goes alone.
 - Do only what was asked. Keep the final reply to one or two plain sentences.
 
 Tools:
@@ -164,8 +165,65 @@ def _chat(messages: list[dict], models: list[str] | None = None) -> tuple[str, s
 _MORE_TO_DO = re.compile(r"\b(?:let me|i(?:'ll| will)|next,? i|now i(?:'ll| will)|i am going to|i'm going to)\b", re.I)
 
 
+def _shareable_facts() -> str:
+    """Saved facts, minus anything that looks like a secret: this goes to a
+    hosted model, and a wifi password saved for the local one stays local."""
+    from .memory import load_facts
+    from .profile import _SECRET
+
+    lines = [f"- {k}: {v}" for k, v in load_facts().items()
+             if not _SECRET.search(f"{k} {v}")]
+    return "\n".join(lines[:40])
+
+
+# Tools that only look something up - safe to run side by side. Anything
+# that drives a window, the browser or the outside world goes one at a time.
+PARALLEL_SAFE = {
+    "battery", "system_info", "system_report", "get_datetime", "get_volume", "get_weather",
+    "web_search", "read_webpage", "daily_brief", "show_timetable", "list_calendar_feeds",
+    "list_reminders", "list_tasks", "check_deadlines", "recall", "search_documents",
+    "search_past_conversations", "recent_conversations", "index_status", "find_files",
+    "list_folder", "read_file", "folder_size", "place_info", "list_running_apps",
+    "list_installed_apps", "list_windows", "list_contacts", "list_routines", "list_skills",
+    "what_you_remember", "list_bluetooth_devices",
+}
+
+
+def run_parallel(calls: list[tuple[str, dict]]) -> list[str]:
+    """Run tool calls, side by side when every one is a lookup, and return
+    their results in the order asked. "Battery, weather and tomorrow's
+    classes" took the three one after another - the brief alone is a few
+    seconds of calendar and mail."""
+    tools = [registry.get(n) for n, _ in calls]
+    if len(calls) > 1 and all(t is not None and n in PARALLEL_SAFE and not t.destructive
+                              for (n, _), t in zip(calls, tools)):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(6, len(calls))) as pool:
+            return list(pool.map(lambda c: registry.get(c[0]).run(**c[1]), calls))
+    return [t.run(**a) if t is not None else f"ERROR: there is no tool '{n}'."
+            for (n, a), t in zip(calls, tools)]
+
+
 class Stuck(RuntimeError):
     """The planner could not run at all - caller should fall back."""
+
+
+def _log_step(name: str, args: dict, result: str) -> None:
+    try:                             # step log, to see why a task went wrong
+        with open(PLAN_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {name} {json.dumps(args, default=str)[:200]}\n"
+                    f"    -> {result[:1500]}\n")
+    except OSError:
+        pass
+
+
+def _shrink(messages: list[dict]) -> None:
+    """Older results shrink to a line: the whole history is resent every
+    step, and on a free tier it is what runs the quota out."""
+    for m in messages:
+        if m["role"] == "user" and m["content"].startswith("Result of ") and len(m["content"]) > 400:
+            m["content"] = m["content"][:350] + "\n[...older result shortened]"
 
 
 def run(request: str, on_step: Callable[[str, dict, str], None] | None = None,
@@ -178,9 +236,19 @@ def run(request: str, on_step: Callable[[str, dict, str], None] | None = None,
     about = profile.prompt_text()
     # A task that names its tools sends only those. The full list is ~2,500
     # tokens on every step, and Groq's free tier allows ~8,000 a minute: a
-    # booking ran out of quota after 87 s on 25 Sep 2026.
+    # booking ran out of quota after 87 s on 25 Sep 2026. Otherwise the tools
+    # the request points at, as the local model gets them, plus a few
+    # related ones - fewer tokens each step is a faster step.
+    if only is None and cfg.get("planner.narrow_tools", True):
+        picked = registry.select(request)
+        only = picked + registry.related(request, picked, k=15)
     system = _SYSTEM.format(tools=_tool_list(only), now=now) + (
         f"\n\nAbout the user (from earlier conversations):\n{about}" if about else "")
+    facts = _shareable_facts()
+    if facts:
+        # "find my roll number and email it to the professor" needs the roll
+        # number, and the planner never saw memory.json (28 Sep 2026).
+        system += "\n\nThings the user asked Athena to remember:\n" + facts
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": request}]
     max_steps = int(cfg.get("planner.max_steps", 10))
@@ -236,6 +304,26 @@ def run(request: str, on_step: Callable[[str, dict, str], None] | None = None,
                                  "only reply with done when nothing is left to do."})
                 continue
             return said or "Done."
+        batch = step.get("tools")
+        if isinstance(batch, list) and batch:
+            calls = []
+            for item in batch[:6]:
+                if isinstance(item, dict):
+                    a = item.get("args") or item.get("arguments") or {}
+                    calls.append((str(item.get("tool", "")), a if isinstance(a, dict) else {}))
+            if calls:
+                results = run_parallel(calls)
+                for (n, a), r in zip(calls, results):
+                    ran.append(n)
+                    _log_step(n, a, r)
+                    if on_step:
+                        on_step(n, a, r)
+                _shrink(messages)
+                share = max(600, result_chars // len(calls))
+                messages.append({"role": "user", "content": "\n\n".join(
+                    f"Result of {n}:\n{r[:share]}" for (n, _), r in zip(calls, results))
+                    + "\n\nNext step?"})
+                continue
         name = str(step.get("tool", ""))
         # Models disagree on the shape: {"tool", "args"}, "arguments",
         # "parameters", or the arguments laid out beside "tool" - which is
@@ -262,19 +350,10 @@ def run(request: str, on_step: Callable[[str, dict, str], None] | None = None,
                         f"Done so far: {', '.join(ran) or 'nothing'}.")
             result = t.run(**args)
             ran.append(name)
-            try:                             # step log, to see why a task went wrong
-                with open(PLAN_LOG, "a", encoding="utf-8") as f:
-                    f.write(f"{time.strftime('%H:%M:%S')} {name} {json.dumps(args)[:200]}\n"
-                            f"    -> {result[:1500]}\n")
-            except OSError:
-                pass
+            _log_step(name, args, result)
             if on_step:
                 on_step(name, args, result)
-        # Older results shrink to a line: the whole history is resent every
-        # step, and on a free tier it is what runs the quota out.
-        for m in messages:
-            if m["role"] == "user" and m["content"].startswith("Result of ") and len(m["content"]) > 400:
-                m["content"] = m["content"][:350] + "\n[...older result shortened]"
+        _shrink(messages)
         messages.append({"role": "user",
                          "content": f"Result of {name}:\n{result[:result_chars]}\n\nNext step?"})
     return f"I stopped after {max_steps} steps. Done so far: {', '.join(ran)}."

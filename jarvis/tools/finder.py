@@ -521,6 +521,35 @@ def find(text: str, want_dir: bool | None = None, refresh: bool = True,
     return Result(q, None, [], near[:4])
 
 
+def find_all(text: str, limit: int = 8, want_dir: bool | None = False) -> list[Entry]:
+    """Every file whose name really matches, best first - for "open all my
+    signals and systems files", where find() picks one and hides the rest.
+
+    Same bar as find() for the one it would open: every spoken word found and
+    a good average score. The user's own folders are enough when they have
+    any; elsewhere on the drives the strict rule applies (see _pick).
+    """
+    q = parse(text)
+    if want_dir is not None and q.want_dir is None:
+        q.want_dir = want_dir
+    if not q.words:
+        return []
+    good = [m for m in _matches(q, _PERSONAL.get(fresh=_PERSONAL.built_at < time.time() - 5))
+            if m.full and m.coverage >= 0.7]
+    if not good and _WIDE.built_at:
+        good = [m for m in _matches(q, _WIDE.get())
+                if m.full and all(s == 1.0 for s in m.scores) and m.extra <= 3]
+    seen, out = set(), []
+    for m in good:                       # already sorted best first, newest first
+        key = m.entry.path.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(m.entry)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _closest(q: Query, matches: list[Match], n: int = 4) -> list[Match]:
     """The nearest misses, rarest words first.
 

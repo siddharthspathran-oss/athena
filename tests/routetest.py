@@ -120,6 +120,9 @@ ROUTES = {
     "find the lab manual on my pc": ("find_document", {"query": "lab manual"}),
     "look for my dsp notes in my files": ("find_document", {"query": "dsp notes"}),
     "search for flights to goa": None,
+    "open all my signals and systems files": ("find_document", {"query": "signals and systems", "open_all": True}),
+    "open all the dsp pdfs": ("find_document", {"query": "dsp pdf", "open_all": True}),
+    "open all apps": None,
     # files and folders
     "open downloads": ("open_folder", {"name": "downloads"}),
     "oopen downloads": ("open_folder", {"name": "downloads"}),
@@ -134,6 +137,14 @@ ROUTES = {
         ("book_reservation", {"place": "barbeque nation", "when": "tomorrow at 8", "people": 4}),
     # conversation
     "tell me a joke": None,
+}
+
+# split_simple(text, strict=True): the sentence did not look multi-step,
+# so every part must be a command of its own.
+STRICT_SPLITS = {
+    "what is my battery and list my reminders": [("battery", {}), ("list_reminders", {})],
+    "play simon and garfunkel": None,
+    "play tom and jerry": None,
 }
 
 SPLITS = {
@@ -161,6 +172,10 @@ def check_routes() -> list[str]:
         got = route(phrase)
         if got != want:
             bad.append(f"route({phrase!r}) = {got}, want {want}")
+    for phrase, want in STRICT_SPLITS.items():
+        got = split_simple(phrase, strict=True)
+        if got != want:
+            bad.append(f"split_simple({phrase!r}, strict) = {got}, want {want}")
     for phrase, want in SPLITS.items():
         got = split_simple(phrase)
         if got != want:
@@ -276,10 +291,112 @@ def check_tool_run() -> list[str]:
     return bad
 
 
+def check_offers() -> list[str]:
+    """Answers to "which one?" / "want me to open it?", and the guard that
+    stops Whisper's primer being taken for a command."""
+    from types import SimpleNamespace as NS
+
+    from jarvis import offer
+    from jarvis.ui import voice
+
+    bad = []
+    offer.set_choices([offer.Choice(n, "open_file", {"path": n})
+                       for n in ("SS Unit 1.pdf", "SS Unit 2 notes.pdf", "Signals lab manual.docx")])
+    want = {"yes": ["SS Unit 1.pdf"], "yeah open it": ["SS Unit 1.pdf"], "no thanks": "no",
+            "all of them": 3, "the others": 3, "two": ["SS Unit 2 notes.pdf"],
+            "open the third": ["Signals lab manual.docx"], "last": ["Signals lab manual.docx"],
+            "lab manual": ["Signals lab manual.docx"], "five": None, "open spotify": None}
+    for said, expect in want.items():
+        got = offer.resolve(said)
+        got = got if isinstance(got, (str, type(None))) else (
+            len(got) if isinstance(expect, int) else [c.label for c in got])
+        if got != expect:
+            bad.append(f"offer.resolve({said!r}) = {got}, want {expect}")
+    for said in ("yes", "two", "all", "no"):
+        if not offer.REPLY.match(said):
+            bad.append(f"the voice loop would drop the reply {said!r} as too short")
+    offer.clear()
+
+    seg = lambda nsp, lp: [NS(no_speech_prob=nsp, avg_logprob=lp)]  # noqa: E731
+    primer = voice._BASE_BIAS
+    for text, segs, secs, expect in (
+            ("Athena, open Spotify and play music.", seg(0.6, -0.3), 1.2, True),
+            ("Athena, open Spotify and play music.", seg(0.05, -0.2), 1.0, True),
+            ("Athena, open Spotify and play music.", seg(0.05, -0.2), 3.2, False),
+            ("Athena, open Chrome and search for goa", seg(0.6, -1.0), 1.0, False)):
+        if voice._echoes_prompt(text, segs, secs, primer) != expect:
+            bad.append(f"primer guard on {text!r} ({secs}s): want {expect}")
+    # The primer used while Athena talks must hold stop words only: a command
+    # in it comes back as a command on noise.
+    import re as _re
+    m = _re.search(r'_BARGE_PROMPT = "([^"]*)"', Path(voice.__file__).read_text(encoding="utf-8"))
+    if not m or _re.search(r"\b(?:open|play|close|call|send)\b", m.group(1), _re.I):
+        bad.append(f"the barge-in primer holds a command: {m.group(1) if m else 'not found'!r}")
+    return bad
+
+
+def check_planner() -> list[str]:
+    """Lookups the planner batches run side by side; saved facts reach it,
+    secrets do not; it is sent the relevant tools, not all of them."""
+    import json as _json
+
+    from jarvis import planner
+
+    bad = []
+    slow = ("_p_one", "_p_two", "_p_three")
+
+    def lookup(name):
+        def fn() -> str:
+            """Slow lookup."""
+            time.sleep(0.6)
+            return f"{name} ok"
+        fn.__name__ = name
+        return fn
+
+    for n in slow:
+        registry.tool(timeout=5)(lookup(n))
+    planner.PARALLEL_SAFE.update(slow)
+    seen = {}
+    script = [_json.dumps({"tools": [{"tool": n, "args": {}} for n in slow]}),
+              _json.dumps({"done": "All three."})]
+
+    def fake_chat(model, messages, **k):
+        seen.setdefault("system", messages[0]["content"])
+        return script.pop(0)
+
+    tmp = Path(tempfile.mkdtemp())
+    saved = planner.cloud.chat, memory.MEM_FILE
+    planner.cloud.chat, memory.MEM_FILE = fake_chat, tmp / "memory.json"
+    memory._facts_cache.update(mtime=None, data={})
+    try:
+        memory.save_facts({"roll number": "21BEC1023", "wifi password": "hunter22"})
+        t0 = time.time()
+        out = planner.run("check the first thing and then the second and the third")
+        took = time.time() - t0
+        if out != "All three." or took > 1.4:
+            bad.append(f"planner batch: {out!r} in {took:.1f}s (three 0.6s lookups, want them together)")
+        system = seen.get("system", "")
+        if "21BEC1023" not in system:
+            bad.append("the planner was not given the saved facts")
+        if "hunter22" in system:
+            bad.append("a saved password was sent to the hosted planner")
+        listed = system.split("Tools:")[1].count("\n- ") if "Tools:" in system else 0
+        if not 0 < listed < len(registry.REGISTRY):
+            bad.append(f"the planner was sent {listed} tools, want a narrowed list")
+    finally:
+        planner.cloud.chat, memory.MEM_FILE = saved
+        memory._facts_cache.update(mtime=None, data={})
+        for n in slow:
+            registry.REGISTRY.pop(n, None)
+            planner.PARALLEL_SAFE.discard(n)
+    return bad
+
+
 if __name__ == "__main__":
-    failures = check_routes() + check_selection() + check_memory() + check_tool_run()
+    failures = (check_routes() + check_selection() + check_memory() + check_tool_run()
+                + check_planner() + check_offers())
     for f in failures:
         print("FAIL", f)
-    total = len(ROUTES) + len(SPLITS) + len(SELECTION) + 3
+    total = len(ROUTES) + len(SPLITS) + len(STRICT_SPLITS) + len(SELECTION) + 5
     print(f"{total} groups of cases, {len(failures)} failure(s)")
     sys.exit(1 if failures else 0)

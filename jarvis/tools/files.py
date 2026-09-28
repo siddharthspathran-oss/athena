@@ -207,9 +207,10 @@ def _resolve(path: str, want_dir: bool | None = None) -> tuple[Path | None, str]
         return None, f"Found {best}, but I can't use it: {why}"
     note = ""
     if res.ties:
-        others = ", ".join(Path(m.entry.path).name for m in res.ties[:3])
-        note = (f"{len(res.ties) + 1} files match equally well; took the newest. "
-                f"Others: {others}.")
+        others = _offer_files([m.entry.path for m in res.ties[:5]])
+        note = (f"{len(res.ties) + 1} files match equally well; I opened the newest. "
+                f"Say 'all' or a number for the others: "
+                + "; ".join(f"{i}, {c.label}" for i, c in enumerate(others, 1)) + ".")
     return best, note
 
 
@@ -226,11 +227,16 @@ def _not_found(name: str, res) -> str:
     if res.near:
         seen, near = set(), []
         for m in res.near:
-            if m.entry.name not in seen:
+            if m.entry.name not in seen and not path_refusal(m.entry.path):
                 seen.add(m.entry.name)
-                near.append(m.entry.name)
-        return (f"I couldn't find a file called '{what}'. "
-                f"Closest names: {'; '.join(near[:3])}.")
+                near.append(m.entry.path)
+        if near:
+            # Asked as a question, and the answer is waiting in offer.py:
+            # "yes" opens the first, "the second one" the next.
+            choices = _offer_files(near[:3])
+            names = "; ".join(c.label for c in choices)
+            return (f"I couldn't find a file called {what}. Closest: {names}. "
+                    f"Want me to open {choices[0].label}?")
     return f"I couldn't find anything called '{what}' on this PC."
 
 
@@ -698,22 +704,59 @@ def open_file(path: str) -> str:
             f"I showed {p.name} in File Explorer instead ({where}).")
 
 
+def _spoken(name: str) -> str:
+    """A file name as it should be read out: no underscores, no extension
+    unless two names differ only by it."""
+    return re.sub(r"[_]+", " ", name).strip()
+
+
+def _offer_files(paths: list[str]) -> list:
+    from .. import offer
+
+    choices = [offer.Choice(_spoken(Path(p).name), "open_file", {"path": p}) for p in paths[:6]]
+    offer.set_choices(choices)
+    return choices
+
+
 @tool(tags=TAG, timeout=60)
-def find_document(query: str) -> str:
-    """Find a file or folder by what the user calls it and open it; if nothing
-    is named that, look inside the indexed documents for it. Use for "search
-    my documents for X", "find X on my PC", "look for my X notes".
+def find_document(query: str, open_all: bool = False) -> str:
+    """Find files or a folder by what the user calls them and open them; if
+    nothing is named that, look inside the indexed documents. Use for "search
+    my documents for X", "find X on my PC", "open all my X files".
 
     query: the file's name or subject, in the user's words
+    open_all: true to open every matching file (up to six), as in "open all my X files"
     """
     # "Athena, search my documents for signal and system" reached the model,
-    # which said it was opening the file and opened nothing (28 Sep 2026).
-    # A name is looked up in the file index first, as open_file does; only
-    # when no file is called that is it treated as a subject to search for.
+    # which said it was opening the file and opened nothing; then, with
+    # several Signals and Systems files, only ever the newest one opened and
+    # the rest could not be reached (28 Sep 2026). Several matches are now
+    # listed and asked about - the reply ("two", "all", "yes") is handled by
+    # jarvis/offer.py - or all opened when that was asked for.
     q = (query or "").strip().strip("\"'.")
     if not q:
         return "Search for what?"
-    p, note = _resolve(q, want_dir=None)
+    found = [e for e in finder.find_all(q, limit=8) if not path_refusal(e.path)]
+    if found:
+        if open_all:
+            from .. import offer
+
+            offer.clear()
+            opened, failed = [], []
+            for e in found[:6]:
+                r = open_file(e.path)
+                (failed if r.startswith("ERROR") else opened).append(_spoken(e.name))
+            more = f" There are {len(found) - 6} more; ask for them by name." if len(found) > 6 else ""
+            bad = f" Couldn't open: {', '.join(failed)}." if failed else ""
+            return f"Opened {len(opened)} file{'s' if len(opened) != 1 else ''}: {', '.join(opened)}.{bad}{more}"
+        if len(found) == 1:
+            return open_file(found[0].path)
+        choices = _offer_files([e.path for e in found])
+        listing = "; ".join(f"{i}, {c.label}" for i, c in enumerate(choices, 1))
+        return (f"I found {len(found)} files for {q}: {listing}. "
+                f"Which one? Say a number, or all.")
+
+    p, note = _resolve(q, want_dir=None)        # a folder, or a looser file match
     if p is not None:
         return open_file(str(p)) + (f" {note}" if note else "")
 
@@ -723,12 +766,13 @@ def find_document(query: str) -> str:
 
         if db.count("doc"):
             hits = db.search("doc", q, k=3, embed=_embed_query, min_score=0.5)
-            names = list(dict.fromkeys(h["title"] for h in hits))
-            if hits:
-                # "open it" (agent._direct_it) then opens the best one.
-                _remember(Path(hits[0]["source"]))
-                return (f"No file is called '{q}', but it comes up in "
-                        f"{', '.join(names)}. Say 'open it' to open {names[0]}.")
+            paths = list(dict.fromkeys(h["source"] for h in hits))
+            if paths:
+                _remember(Path(paths[0]))           # "open it" works too
+                choices = _offer_files(paths)
+                names = ", ".join(c.label for c in choices)
+                return (f"No file is called {q}, but it comes up in {names}. "
+                        f"Want me to open {choices[0].label}?")
     except Exception:
         pass
     return note

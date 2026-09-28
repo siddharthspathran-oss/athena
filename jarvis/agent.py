@@ -105,6 +105,13 @@ class Agent:
         # an interrupted answer kept talking and held up the next command 9 s).
         self.cancelled = False
 
+    @property
+    def expects_reply(self) -> bool:
+        """True when the last answer asked something - the voice loop then
+        listens for the reply without the wake word."""
+        from . import offer
+        return bool(offer.pending()) or self._last_answer.rstrip().endswith("?")
+
     def _needs_confirm(self, tool: registry.Tool) -> bool:
         if not tool.destructive:
             return False
@@ -136,10 +143,34 @@ class Agent:
 
     def ask(self, user_input: str) -> str:
         """Run one full request to completion. Returns the final text answer."""
-        from . import gaming
+        from . import gaming, offer
         gaming.set_on(False)     # you asked something: the model may load again
         self.spoken = ""
         self.cancelled = False
+
+        # An answer to what Athena just offered ("which one?", "want me to
+        # open it?"): "yes", "two", "all", "no". Checked before anything else,
+        # because every one of those is a fragment to the rest of this method.
+        picked = offer.resolve(user_input)
+        if picked is not None:
+            offer.clear()
+            self.memory.add("user", user_input)
+            if picked == "no":
+                answer = "Okay, I'll leave it."
+            else:
+                said = []
+                for c in picked:
+                    t = registry.get(c.tool)
+                    result = t.run(**c.args) if t else f"ERROR: no tool {c.tool}"
+                    self.on_step(Step(tool=c.tool, args=c.args, result=result))
+                    self.memory.add_raw({"role": "tool", "name": c.tool, "content": _truncate(result)})
+                    said.append(re.split(r"(?<=[.!?])\s", result.removeprefix("ERROR:").strip(), 1)[0])
+                answer = " ".join(said)[:400] if len(picked) == 1 else (
+                    f"Opened {len(picked)}: " + ", ".join(c.label for c in picked) + ".")
+            self._last_answer = answer
+            self.memory.add("assistant", answer)
+            return answer
+        offer.clear()              # anything else is a new request
         # Half-caught speech reaches here as a fragment. Answering it from the
         # previous topic looks like Athena ignoring you, so ask instead - and
         # do it without spending a model call.
@@ -175,7 +206,11 @@ class Agent:
             self._last_answer = answer
             return answer
 
-        if _is_vague(user_input):
+        # "yes" / "no" right after Athena asked something is an answer, not a
+        # fragment: the model has the question in front of it.
+        replying = (self._last_answer.rstrip().endswith("?")
+                    and bool(offer.YES.match(user_input) or offer.NO.match(user_input)))
+        if _is_vague(user_input) and not replying:
             answer = "Sorry, I didn't catch that. What would you like me to do?"
             self._last_answer = answer
             return answer
@@ -236,36 +271,41 @@ class Agent:
         # after two or three tool calls, so the planner takes these, one step
         # at a time on a bigger hosted model. If no hosted model answers, the
         # local loop below still gets its try.
-        simple = split_simple(user_input) if multi else None
+        # Two quick commands in one sentence need neither model. Tried for any
+        # sentence with a joiner, not only what is_multistep calls multi-step:
+        # "what's my battery and list my reminders" has one action verb by its
+        # count and went to the model (28 Sep 2026).
+        simple = split_simple(user_input, strict=not multi) if (multi or direct is None) else None
         if simple:
             said = []
-            prev = ""
-            for name, args in simple:
-                if prev == "open_app" and name in ("music", "play_song", "play_track", "play_my_taste"):
-                    time.sleep(3)      # a player that has just launched ignores the play key
-                prev = name
-                result = registry.get(name).run(**args)
+            if all(n in planner.PARALLEL_SAFE for n, _ in simple):
+                # Only lookups ("battery and my reminders"): all at once.
+                results = planner.run_parallel(simple)
+            else:
+                results, prev = [], ""
+                for name, args in simple:
+                    if prev == "open_app" and name in ("music", "play_song", "play_track", "play_my_taste"):
+                        time.sleep(3)      # a player that has just launched ignores the play key
+                    prev = name
+                    results.append(registry.get(name).run(**args))
+            for (name, args), result in zip(simple, results):
                 self.on_step(Step(tool=name, args=args, result=result))
                 self.memory.add_raw({"role": "tool", "name": name, "content": _truncate(result)})
-                first = re.split(r"(?<=[.!?])\s", result.removeprefix("ERROR:").strip(), 1)[0]
-                said.append(("Couldn't: " + first) if result.startswith("ERROR") else first)
-            answer = " ".join(said)[:300]
+                # An action is confirmed in its first sentence; a lookup's
+                # answer can need the second ("Battery 81%. Charging.").
+                keep = 2 if name in planner.PARALLEL_SAFE else 1
+                parts = re.split(r"(?<=[.!?])\s", result.removeprefix("ERROR:").strip(), keep)
+                first = " ".join(parts[:keep])
+                said.append(("Couldn't: " + parts[0]) if result.startswith("ERROR") else first)
+            answer = " ".join(said)[:400]
             self._last_answer = answer
             self.memory.add("assistant", answer)
             return answer
 
         if multi:
-            def step(name, args, result):
-                self.on_step(Step(tool=name, args=args, result=result))
-                self.memory.add_raw({"role": "tool", "name": name,
-                                     "content": _truncate(result)})
-            try:
-                answer = planner.run(user_input, on_step=step)
-            except planner.Stuck:
-                answer = None
+            self._acknowledge()
+            answer = self._plan(user_input)
             if answer is not None:
-                self._last_answer = answer
-                self.memory.add("assistant", answer)
                 return answer
 
         shown = registry.select(user_input)
@@ -349,9 +389,13 @@ class Agent:
                         })
                         continue
                     # Nudged once and still claiming. Never pass an unverified
-                    # claim on to the user - they will believe it.
-                    answer = ("I could not do that - no tool ran, so nothing happened. "
-                              "Try naming it directly, like 'open Outlook'.")
+                    # claim on to the user - they will believe it. The bigger
+                    # planner gets a go first.
+                    rescued = self._rescue(user_input, "claimed an action without a tool")
+                    if rescued is not None:
+                        return rescued
+                    answer = ("I couldn't do that - nothing ran. "
+                              "Try saying it more directly, like 'open Outlook'.")
 
                 self._last_answer = answer
 
@@ -388,6 +432,9 @@ class Agent:
                     # run twice - the model is told to answer; a third try
                     # ends the turn with the result it already has.
                     if done_calls[key].startswith("\x00"):
+                        rescued = self._rescue(user_input, "went round in circles")
+                        if rescued is not None:
+                            return rescued
                         answer = done_calls[key][1:][:600]
                         self._last_answer = answer
                         self.memory.add("assistant", answer)
@@ -408,9 +455,61 @@ class Agent:
                 self.on_step(Step(tool=name, args=args, result=result))
                 self.memory.add_raw({"role": "tool", "name": name, "content": result})
 
-        final = "I hit the step limit before finishing that. Try breaking it into smaller requests."
+        rescued = self._rescue(user_input, "ran out of steps")
+        if rescued is not None:
+            return rescued
+        final = "I couldn't finish that in one go. Try it in smaller pieces."
         self.memory.add("assistant", final)
         return final
+
+    # ---------- handing over to the planner ----------
+
+    def _acknowledge(self, line: str = "On it.") -> None:
+        """Say something before a task that takes a while. The planner can
+        take 10-20 seconds, and silence that long sounds like nothing heard.
+        Spoken, not added to self.spoken, so the real answer still follows."""
+        if self.speak is not None and not self.cancelled:
+            try:
+                self.speak(line)
+            except Exception:
+                pass
+
+    def _plan(self, request: str) -> str | None:
+        def step(name, args, result):
+            self.on_step(Step(tool=name, args=args, result=result))
+            self.memory.add_raw({"role": "tool", "name": name, "content": _truncate(result)})
+        try:
+            answer = planner.run(request, on_step=step)
+        except planner.Stuck:
+            return None
+        except Exception as e:
+            print(f"[planner failed: {e}]")
+            return None
+        self._last_answer = answer
+        self.memory.add("assistant", answer)
+        return answer
+
+    def _rescue(self, request: str, why: str) -> str | None:
+        """The local model got stuck; let the planner finish the job.
+
+        It is told what already ran, with the results, so nothing is done
+        twice - a message sent once must not be sent again.
+        """
+        if (self.cancelled or not cfg.get("planner.enabled", True)
+                or not cfg.get("planner.rescue", True)):
+            return None
+        msgs = self.memory.messages
+        start = max((i for i, m in enumerate(msgs)
+                     if m.get("role") == "user" and m.get("content") == request), default=len(msgs))
+        done = [f"- {m.get('name')}: {str(m.get('content'))[:300]}"
+                for m in msgs[start:] if m.get("role") == "tool"]
+        brief = request
+        if done:
+            brief += ("\n\nAlready done this turn (do NOT repeat these; use their results):\n"
+                      + "\n".join(done))
+        print(f"   [local model {why} - handing to the planner]")
+        self._acknowledge("One moment.")
+        return self._plan(brief)
 
     def chat_only(self, user_input: str):
         """Streaming plain chat with no tools - used for obvious conversation."""
@@ -1135,7 +1234,21 @@ _DOC_FIND = re.compile(
     r"(?:\s+please)?\W*$", re.I)
 
 
+# "open all my signals and systems files", "open all the DSP pdfs".
+_OPEN_ALL = re.compile(
+    r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|now|just)\W+)*(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:please\s+)?(?:open|show|pull\s+up)\s+(?:up\s+)?(?:all|every|each)\s+(?:of\s+)?(?:the\s+|my\s+)?"
+    r"(?P<q>.+?)\s*(?:files?|documents?|docs|pdfs?|notes|slides|ppts?|sheets?)\W*$", re.I)
+
+
 def _direct_find_document(text: str) -> tuple[str, dict] | None:
+    m = _OPEN_ALL.match(text.strip())
+    if m and m.group("q").strip():
+        q = m.group("q").strip()
+        kind = re.search(r"(pdfs?|docs?|documents?|notes|slides|ppts?|sheets?)\W*$", text.strip(), re.I)
+        if kind and kind.group(1).lower().startswith(("pdf", "slide", "ppt", "sheet")):
+            q += " " + kind.group(1).lower().rstrip("s")     # keep the type: "dsp pdf"
+        return "find_document", {"query": q, "open_all": True}
     m = _DOC_FIND.match(text.strip())
     if not m:
         return None
@@ -1303,7 +1416,7 @@ def _direct_basic(text: str) -> tuple[str, dict] | None:
     return None
 
 
-def split_simple(text: str) -> list[tuple[str, dict]] | None:
+def split_simple(text: str, strict: bool = False) -> list[tuple[str, dict]] | None:
     """"open spotify and play music" -> two quick tool calls, if EVERY part
     is something the quick handlers know. Otherwise None, and it is the
     planner's. Two plain actions do not need a hosted model, its rate
@@ -1311,6 +1424,10 @@ def split_simple(text: str) -> list[tuple[str, dict]] | None:
     parts = [p for p in re.split(r"\s*(?:,\s*(?:and\s+)?(?:then\s+)?|\band\s+then\b|\bthen\b|\band\b)\s*",
                                  text.strip(), flags=re.I) if p and p.strip()]
     if len(parts) < 2 or len(parts) > 4:
+        return None
+    # strict: the sentence was not obviously several requests, so each part
+    # must be a command of its own - "play simon and garfunkel" is one song.
+    if strict and any(len(p.split()) < 2 for p in parts):
         return None
     calls = []
     for p in parts:

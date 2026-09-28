@@ -268,6 +268,12 @@ In `config.yaml`:
   all 92 took. If the model says it can't do something, it is retried once
   with everything. A new tool not listed in any group is always shown.
 - **How much history it reads** — `llm.history_chars` (default 12000).
+- **Multi-step requests** — `planner.*`. Lookups that don't depend on each
+  other ("battery, weather and tomorrow's classes") run at the same time,
+  both in quick splits and in the planner. When the local model gets stuck
+  on an ordinary request, the planner finishes it (`planner.rescue`), told
+  what has already run. The planner sees your saved facts, except anything
+  that looks like a password or code.
 
 ## Honest limitations
 

@@ -105,6 +105,13 @@ class Agent:
         # an interrupted answer kept talking and held up the next command 9 s).
         self.cancelled = False
 
+    @property
+    def expects_reply(self) -> bool:
+        """True when the last answer asked something - the voice loop then
+        listens for the reply without the wake word."""
+        from . import offer
+        return bool(offer.pending()) or self._last_answer.rstrip().endswith("?")
+
     def _needs_confirm(self, tool: registry.Tool) -> bool:
         if not tool.destructive:
             return False
@@ -136,10 +143,34 @@ class Agent:
 
     def ask(self, user_input: str) -> str:
         """Run one full request to completion. Returns the final text answer."""
-        from . import gaming
+        from . import gaming, offer
         gaming.set_on(False)     # you asked something: the model may load again
         self.spoken = ""
         self.cancelled = False
+
+        # An answer to what Athena just offered ("which one?", "want me to
+        # open it?"): "yes", "two", "all", "no". Checked before anything else,
+        # because every one of those is a fragment to the rest of this method.
+        picked = offer.resolve(user_input)
+        if picked is not None:
+            offer.clear()
+            self.memory.add("user", user_input)
+            if picked == "no":
+                answer = "Okay, I'll leave it."
+            else:
+                said = []
+                for c in picked:
+                    t = registry.get(c.tool)
+                    result = t.run(**c.args) if t else f"ERROR: no tool {c.tool}"
+                    self.on_step(Step(tool=c.tool, args=c.args, result=result))
+                    self.memory.add_raw({"role": "tool", "name": c.tool, "content": _truncate(result)})
+                    said.append(re.split(r"(?<=[.!?])\s", result.removeprefix("ERROR:").strip(), 1)[0])
+                answer = " ".join(said)[:400] if len(picked) == 1 else (
+                    f"Opened {len(picked)}: " + ", ".join(c.label for c in picked) + ".")
+            self._last_answer = answer
+            self.memory.add("assistant", answer)
+            return answer
+        offer.clear()              # anything else is a new request
         # Half-caught speech reaches here as a fragment. Answering it from the
         # previous topic looks like Athena ignoring you, so ask instead - and
         # do it without spending a model call.
@@ -175,7 +206,11 @@ class Agent:
             self._last_answer = answer
             return answer
 
-        if _is_vague(user_input):
+        # "yes" / "no" right after Athena asked something is an answer, not a
+        # fragment: the model has the question in front of it.
+        replying = (self._last_answer.rstrip().endswith("?")
+                    and bool(offer.YES.match(user_input) or offer.NO.match(user_input)))
+        if _is_vague(user_input) and not replying:
             answer = "Sorry, I didn't catch that. What would you like me to do?"
             self._last_answer = answer
             return answer
@@ -1199,7 +1234,21 @@ _DOC_FIND = re.compile(
     r"(?:\s+please)?\W*$", re.I)
 
 
+# "open all my signals and systems files", "open all the DSP pdfs".
+_OPEN_ALL = re.compile(
+    r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|now|just)\W+)*(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:please\s+)?(?:open|show|pull\s+up)\s+(?:up\s+)?(?:all|every|each)\s+(?:of\s+)?(?:the\s+|my\s+)?"
+    r"(?P<q>.+?)\s*(?:files?|documents?|docs|pdfs?|notes|slides|ppts?|sheets?)\W*$", re.I)
+
+
 def _direct_find_document(text: str) -> tuple[str, dict] | None:
+    m = _OPEN_ALL.match(text.strip())
+    if m and m.group("q").strip():
+        q = m.group("q").strip()
+        kind = re.search(r"(pdfs?|docs?|documents?|notes|slides|ppts?|sheets?)\W*$", text.strip(), re.I)
+        if kind and kind.group(1).lower().startswith(("pdf", "slide", "ppt", "sheet")):
+            q += " " + kind.group(1).lower().rstrip("s")     # keep the type: "dsp pdf"
+        return "find_document", {"query": q, "open_all": True}
     m = _DOC_FIND.match(text.strip())
     if not m:
         return None

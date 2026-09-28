@@ -120,6 +120,9 @@ ROUTES = {
     "find the lab manual on my pc": ("find_document", {"query": "lab manual"}),
     "look for my dsp notes in my files": ("find_document", {"query": "dsp notes"}),
     "search for flights to goa": None,
+    "open all my signals and systems files": ("find_document", {"query": "signals and systems", "open_all": True}),
+    "open all the dsp pdfs": ("find_document", {"query": "dsp pdf", "open_all": True}),
+    "open all apps": None,
     # files and folders
     "open downloads": ("open_folder", {"name": "downloads"}),
     "oopen downloads": ("open_folder", {"name": "downloads"}),
@@ -288,6 +291,50 @@ def check_tool_run() -> list[str]:
     return bad
 
 
+def check_offers() -> list[str]:
+    """Answers to "which one?" / "want me to open it?", and the guard that
+    stops Whisper's primer being taken for a command."""
+    from types import SimpleNamespace as NS
+
+    from jarvis import offer
+    from jarvis.ui import voice
+
+    bad = []
+    offer.set_choices([offer.Choice(n, "open_file", {"path": n})
+                       for n in ("SS Unit 1.pdf", "SS Unit 2 notes.pdf", "Signals lab manual.docx")])
+    want = {"yes": ["SS Unit 1.pdf"], "yeah open it": ["SS Unit 1.pdf"], "no thanks": "no",
+            "all of them": 3, "the others": 3, "two": ["SS Unit 2 notes.pdf"],
+            "open the third": ["Signals lab manual.docx"], "last": ["Signals lab manual.docx"],
+            "lab manual": ["Signals lab manual.docx"], "five": None, "open spotify": None}
+    for said, expect in want.items():
+        got = offer.resolve(said)
+        got = got if isinstance(got, (str, type(None))) else (
+            len(got) if isinstance(expect, int) else [c.label for c in got])
+        if got != expect:
+            bad.append(f"offer.resolve({said!r}) = {got}, want {expect}")
+    for said in ("yes", "two", "all", "no"):
+        if not offer.REPLY.match(said):
+            bad.append(f"the voice loop would drop the reply {said!r} as too short")
+    offer.clear()
+
+    seg = lambda nsp, lp: [NS(no_speech_prob=nsp, avg_logprob=lp)]  # noqa: E731
+    primer = voice._BASE_BIAS
+    for text, segs, secs, expect in (
+            ("Athena, open Spotify and play music.", seg(0.6, -0.3), 1.2, True),
+            ("Athena, open Spotify and play music.", seg(0.05, -0.2), 1.0, True),
+            ("Athena, open Spotify and play music.", seg(0.05, -0.2), 3.2, False),
+            ("Athena, open Chrome and search for goa", seg(0.6, -1.0), 1.0, False)):
+        if voice._echoes_prompt(text, segs, secs, primer) != expect:
+            bad.append(f"primer guard on {text!r} ({secs}s): want {expect}")
+    # The primer used while Athena talks must hold stop words only: a command
+    # in it comes back as a command on noise.
+    import re as _re
+    m = _re.search(r'_BARGE_PROMPT = "([^"]*)"', Path(voice.__file__).read_text(encoding="utf-8"))
+    if not m or _re.search(r"\b(?:open|play|close|call|send)\b", m.group(1), _re.I):
+        bad.append(f"the barge-in primer holds a command: {m.group(1) if m else 'not found'!r}")
+    return bad
+
+
 def check_planner() -> list[str]:
     """Lookups the planner batches run side by side; saved facts reach it,
     secrets do not; it is sent the relevant tools, not all of them."""
@@ -347,9 +394,9 @@ def check_planner() -> list[str]:
 
 if __name__ == "__main__":
     failures = (check_routes() + check_selection() + check_memory() + check_tool_run()
-                + check_planner())
+                + check_planner() + check_offers())
     for f in failures:
         print("FAIL", f)
-    total = len(ROUTES) + len(SPLITS) + len(STRICT_SPLITS) + len(SELECTION) + 4
+    total = len(ROUTES) + len(SPLITS) + len(STRICT_SPLITS) + len(SELECTION) + 5
     print(f"{total} groups of cases, {len(failures)} failure(s)")
     sys.exit(1 if failures else 0)

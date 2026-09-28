@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import live
+from .. import live, offer
 from ..agent import Agent, Step
 from ..config import cfg
 from ..tools import scheduler
@@ -395,6 +395,33 @@ def _trusted_text(segments) -> str:
         else:
             break
     return "".join(w.word for r in runs for w in r).strip()
+
+
+def _echoes_prompt(text: str, segments, seconds: float, prompt: str) -> bool:
+    """True when a transcript is Whisper repeating its own primer.
+
+    The primer holds whole commands ("Athena, open Spotify and play music")
+    because that is what makes the small model hear the names - and fed a
+    cough, a fan or music, Whisper sometimes hands the primer back word for
+    word. Spotify then opened with nobody having asked (28 Sep 2026).
+
+    A real command can say the same words, so the words alone decide
+    nothing. It is believed unless the decoder itself doubted there was
+    speech, or the words came faster than anyone talks.
+    """
+    words = re.findall(r"[a-z0-9']+", (text or "").lower())
+    if len(words) < 2:
+        return False
+    primer = " ".join(re.findall(r"[a-z0-9']+", prompt.lower()))
+    if " ".join(words) not in primer:
+        return False
+    segs = list(segments or [])
+    no_speech = max((float(getattr(s, "no_speech_prob", 0) or 0) for s in segs), default=0.0)
+    logprob = min((float(getattr(s, "avg_logprob", 0) or 0) for s in segs), default=0.0)
+    rate = len(words) / max(seconds - float(cfg.get("voice.silence_timeout", 0.65)), 0.3)
+    return (no_speech > float(cfg.get("voice.primer_no_speech", 0.3))
+            or logprob < float(cfg.get("voice.primer_logprob", -0.7))
+            or rate > 4.5)
 
 
 def _from_last_name(text: str) -> str:
@@ -1216,7 +1243,10 @@ def _voice_loop() -> None:
     _STOP_TAIL = re.compile(
         r"\b(?:stop(?:\s+it|\s+talking)?|enough|shut\s+up|be\s+quiet|cancel(?:\s+that)?|"
         r"never\s*mind)\W*$", re.I)
-    _BARGE_PROMPT = "Athena, stop. Stop. Athena, cancel. Enough. Athena, open Spotify."
+    # Only stop words. It used to end "Athena, open Spotify." - and on noise
+    # Whisper repeats its primer, so a stray sound while Athena talked came
+    # back as a command to open Spotify (28 Sep 2026).
+    _BARGE_PROMPT = "Athena, stop. Stop. Athena, cancel. Enough."
 
     def _barge_in(said: str, done=lambda: False) -> str | None:
         """One short listen while Athena talks or thinks. None = nothing for
@@ -1241,6 +1271,7 @@ def _voice_loop() -> None:
                                  initial_prompt=_BARGE_PROMPT,
                                  condition_on_previous_text=False,
                                  without_timestamps=True)
+        segs = list(segs)                  # read twice: the text, then _echoes_prompt
         heard = fix_mishearings(" ".join(s.text for s in segs).strip())
         if cfg.get("voice.log_barge_in", False) or log_ignored:
             # What the mic made of itself-plus-you while Athena was busy, so a
@@ -1269,6 +1300,9 @@ def _voice_loop() -> None:
         else:
             rest = heard.strip(" .!?,")
         if rest and said and _echo(rest, said):
+            return None
+        if rest and _echoes_prompt(heard, segs, len(audio) / SAMPLE_RATE, _BARGE_PROMPT + " " + PROMPT_BIAS):
+            print(f"   [ignored while busy: {heard!r} - the speech primer, not you]")
             return None
         if not rest or _STOP.match(rest):
             return ""
@@ -1334,7 +1368,14 @@ def _voice_loop() -> None:
                 # up below, once the wake word has actually been found.
                 from ..agent import clean_speech
                 text = clean_speech(fix_mishearings(_from_last_name(_trusted_text(segments))))
-                if is_hallucination(text):
+                # "yes", "two", "all" are too short to count as commands - except
+                # as the answer to a question Athena just asked.
+                answering = invited and bool(offer.REPLY.match(text))
+                if is_hallucination(text) and not answering:
+                    _engage(False)
+                    continue
+                if _echoes_prompt(text, segments, len(audio) / SAMPLE_RATE, PROMPT_BIAS):
+                    print(f"   [ignored: {text!r} - Whisper repeating its primer, not you]")
                     _engage(False)
                     continue
 
@@ -1389,8 +1430,10 @@ def _voice_loop() -> None:
                 if still_awake and not heard_wake and not tapped and not invited \
                         and not _COMMANDISH.match(text):
                     still_awake = False
+                # Not for an answer: "all" is mostly Athena's own "...a number,
+                # or all." and would be thrown away as her echo.
                 if still_awake and not heard_wake and not tapped and last_said["a"] \
-                        and _echo(text, last_said["a"]):
+                        and not answering and _echo(text, last_said["a"]):
                     still_awake = False
                 addressed = (not wake) or heard_wake or still_awake
                 if addressed:
@@ -1513,6 +1556,13 @@ def _voice_loop() -> None:
             if via_wake and not last_said["a"].startswith("Playing"):
                 awake_until = time.time() + follow_up
                 followups = int(cfg.get("voice.follow_ups", 1))
+            # Athena asked something ("Which one? Say a number, or all.",
+            # "Want me to open it?"): listen for the answer without the wake
+            # word, and let a one-word reply through.
+            if cut is None and agent.expects_reply:
+                awake_until = time.time() + float(cfg.get("voice.reply_seconds", 10))
+                followups = max(followups, 1)
+                invited = True
 
             if cut is not None:
                 agent.cancelled = True        # the old turn stops generating and talking
@@ -1533,7 +1583,9 @@ def _voice_loop() -> None:
             # trigger itself.
             time.sleep(0.4)
             listener.drain()
-            _orb_state("idle")   # work done - off screen again
+            # Waiting on an answer: stay visibly listening. Otherwise work
+            # done - off screen again.
+            _orb_state("listening" if invited else "idle")
 
         except KeyboardInterrupt:
             print("\nStopped.")

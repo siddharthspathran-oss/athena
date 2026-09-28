@@ -175,6 +175,8 @@ def start(every_hours: float | None = None) -> None:
                 from . import gaming
                 if not gaming.on():      # the scan runs the chat model
                     scan()
+                    from .agent import warm
+                    warm(voice=True)     # its prompt replaced the command one in the cache
             except Exception as e:
                 print(f"[deadlines] {e}")
             time.sleep(hours * 3600)

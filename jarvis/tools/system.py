@@ -641,6 +641,120 @@ def system_info() -> str:
     return "\n".join(lines)
 
 
+@tool(tags=TAG + ["route_only"])
+def pc_status(what: str) -> str:
+    """One spoken line about the PC: disk, memory, cpu or uptime.
+
+    Asked "how much free space is on my C drive", the local model answered
+    "124.56 GB free" without calling anything - a made-up number, different
+    each time (28 Sep 2026). These are read straight from the system instead.
+    """
+    if what == "disk":
+        parts = []
+        for p in psutil.disk_partitions(all=False):
+            if "cdrom" in p.opts or not p.fstype:
+                continue
+            try:
+                du = psutil.disk_usage(p.mountpoint)
+            except OSError:
+                continue
+            parts.append(f"{p.mountpoint.rstrip(chr(92))} has {du.free / 1e9:.0f} GB free "
+                         f"of {du.total / 1e9:.0f}")
+        return ("; ".join(parts) + ".") if parts else system_info()
+    if what == "memory":
+        vm = psutil.virtual_memory()
+        return (f"{vm.used / 1e9:.1f} of {vm.total / 1e9:.0f} GB of RAM in use "
+                f"({vm.percent:.0f}%), {vm.available / 1e9:.1f} GB free.")
+    if what == "cpu":
+        return f"CPU at {psutil.cpu_percent(interval=0.4):.0f}% right now."
+    if what == "uptime":
+        up = time.time() - psutil.boot_time()
+        return f"On for {int(up // 3600)} hours {int((up % 3600) // 60)} minutes."
+    if what == "wifi":
+        # "which wifi am I connected to" went to get_weather.
+        r = subprocess.run(["netsh", "wlan", "show", "interfaces"], capture_output=True,
+                           text=True, timeout=8, check=False)
+        ssid = re.search(r"^\s*SSID\s*:\s*(.+)$", r.stdout or "", re.M)
+        state = re.search(r"^\s*State\s*:\s*(.+)$", r.stdout or "", re.M)
+        if ssid and state and "connected" == state.group(1).strip().lower():
+            sig = re.search(r"^\s*Signal\s*:\s*(\d+)%", r.stdout or "", re.M)
+            return f"Connected to {ssid.group(1).strip()}" + (f", signal {sig.group(1)}%." if sig else ".")
+        return "Not connected to any Wi-Fi network."
+    if what == "ip":
+        import socket
+        local = [a.address for name, addrs in psutil.net_if_addrs().items()
+                 if psutil.net_if_stats().get(name) and psutil.net_if_stats()[name].isup
+                 for a in addrs if a.family == socket.AF_INET
+                 and not a.address.startswith(("127.", "169.254."))]
+        out = f"Local IP {', '.join(local[:3])}." if local else "No local IP address."
+        try:
+            import urllib.request
+            with urllib.request.urlopen("https://api.ipify.org", timeout=3) as r:
+                out += f" Public IP {r.read().decode().strip()}."
+        except Exception:
+            pass
+        return out
+    return system_info()
+
+
+# Places people ask the time in, by how they say them. Anything else is
+# looked up among the IANA zone names ("what time is it in Lisbon").
+_ZONES = {
+    "london": "Europe/London", "uk": "Europe/London", "england": "Europe/London",
+    "new york": "America/New_York", "nyc": "America/New_York", "usa": "America/New_York",
+    "america": "America/New_York", "us": "America/New_York", "washington": "America/New_York",
+    "los angeles": "America/Los_Angeles", "la": "America/Los_Angeles", "california": "America/Los_Angeles",
+    "san francisco": "America/Los_Angeles", "seattle": "America/Los_Angeles", "chicago": "America/Chicago",
+    "texas": "America/Chicago", "toronto": "America/Toronto", "canada": "America/Toronto",
+    "vancouver": "America/Vancouver", "mexico": "America/Mexico_City", "brazil": "America/Sao_Paulo",
+    "paris": "Europe/Paris", "france": "Europe/Paris", "berlin": "Europe/Berlin", "germany": "Europe/Berlin",
+    "rome": "Europe/Rome", "italy": "Europe/Rome", "madrid": "Europe/Madrid", "spain": "Europe/Madrid",
+    "amsterdam": "Europe/Amsterdam", "moscow": "Europe/Moscow", "russia": "Europe/Moscow",
+    "istanbul": "Europe/Istanbul", "turkey": "Europe/Istanbul", "dubai": "Asia/Dubai", "uae": "Asia/Dubai",
+    "india": "Asia/Kolkata", "delhi": "Asia/Kolkata", "new delhi": "Asia/Kolkata", "mumbai": "Asia/Kolkata",
+    "bangalore": "Asia/Kolkata", "pakistan": "Asia/Karachi", "nepal": "Asia/Kathmandu",
+    "bangladesh": "Asia/Dhaka", "sri lanka": "Asia/Colombo", "bangkok": "Asia/Bangkok",
+    "thailand": "Asia/Bangkok", "singapore": "Asia/Singapore", "hong kong": "Asia/Hong_Kong",
+    "china": "Asia/Shanghai", "beijing": "Asia/Shanghai", "shanghai": "Asia/Shanghai",
+    "tokyo": "Asia/Tokyo", "japan": "Asia/Tokyo", "seoul": "Asia/Seoul", "korea": "Asia/Seoul",
+    "sydney": "Australia/Sydney", "australia": "Australia/Sydney", "melbourne": "Australia/Melbourne",
+    "new zealand": "Pacific/Auckland", "cairo": "Africa/Cairo", "egypt": "Africa/Cairo",
+    "nairobi": "Africa/Nairobi", "johannesburg": "Africa/Johannesburg", "south africa": "Africa/Johannesburg",
+}
+
+
+@tool(tags=TAG + ["route_only"])
+def world_time(place: str) -> str:
+    """The time somewhere else. Asked "what time is it in London", the model
+    read the local clock and said 10:19 PM for London (28 Sep 2026)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo, available_timezones
+    key = re.sub(r"[^a-z ]", "", place.lower()).strip()
+    zone = _ZONES.get(key)
+    if zone is None:
+        zone = next((z for z in sorted(available_timezones())
+                     if z.split("/")[-1].replace("_", " ").lower() == key), None)
+    if zone is None:
+        return f"I don't know the time zone for {place}."
+    there, here = datetime.now(ZoneInfo(zone)), datetime.now().astimezone()
+    diff = (there.utcoffset() - here.utcoffset()).total_seconds() / 3600
+    rel = ("the same as here" if diff == 0 else
+           f"{abs(diff):g} hours {'ahead of' if diff > 0 else 'behind'} you")
+    return f"It's {there.strftime('%I:%M %p').lstrip('0')} on {there.strftime('%A')} in {place.title()}, {rel}."
+
+
+@tool(tags=TAG + ["route_only"])
+def now_playing() -> str:
+    """What song is on. Asked "what song is playing", the model pressed Next
+    twice and skipped it (28 Sep 2026)."""
+    from ..ui.views import _media_session
+    m = _media_session()
+    if not m or not m.get("title"):
+        return "Nothing is playing right now."
+    who = f" by {m['artist']}" if m.get("artist") else ""
+    return f"{'Playing' if m.get('playing') else 'Paused on'} {m['title']}{who}."
+
+
 @tool(tags=TAG)
 def lock_screen() -> str:
     """Lock the Windows session."""
@@ -902,13 +1016,6 @@ def play_song(query: str) -> str:
     # a search as a URI, which lands on the same results page.
     import urllib.parse
 
-    try:
-        subprocess.Popen(["explorer.exe",
-                          "spotify:search:" + urllib.parse.quote(query.strip())],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception as e:
-        return f"ERROR: could not search Spotify: {e}"
-
     def results() -> list:
         """Play buttons in the results pane, top one first.
 
@@ -920,13 +1027,22 @@ def play_song(query: str) -> str:
                  if e.on_screen and e.name.startswith("Play ") and e.rect[0] > 400]
         return sorted(found, key=lambda e: e.rect[1])
 
+    # Asked for what is already on: searching again leaves the results page
+    # unchanged, and the wait below then fell back to whatever sat on top -
+    # once a podcast episode.
+    words = [w for w in re.findall(r"[a-z0-9']+", query.lower()) if w != "by"]
+    title_now = (winapi._title(hwnd) or "").lower()
+    if words and "spotify" not in title_now and all(w in title_now for w in words):
+        return f"Already playing {winapi._title(hwnd)}."
+
     if not winapi.focus_hwnd(hwnd):
         time.sleep(0.5)
         winapi.focus_hwnd(hwnd)
-    uia.wake(hwnd, settle=0.4)
+    uia.wake(hwnd, settle=0.2)
+    # What is on screen before the search, taken before it is sent. The search
+    # used to be sent twice - once before this snapshot - so the snapshot could
+    # already hold the new results and the wait below ran out its full time.
     stale = {e.name for e in results()}
-
-    import urllib.parse
 
     try:
         subprocess.Popen(["explorer.exe",
@@ -940,11 +1056,15 @@ def play_song(query: str) -> str:
     # You" for "shape of you" - the old results were still showing, and the
     # word "you" was enough. Spotify ranks its own results better than any
     # matching here, so wait for the page to change and take the top one.
+    # Checked every quarter second rather than slept through in 1.2 s steps;
+    # results that never change (the same search twice) are taken after 3 s.
     best = None
-    for _ in range(14):
-        time.sleep(0.8)
-        winapi.focus_hwnd(hwnd)
-        uia.wake(hwnd, settle=0.4)
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        time.sleep(0.15)
+        # Spotify only exposes a new page to automation after being asked
+        # for its tree again; without this the results never appear.
+        uia.wake(hwnd, settle=0.1)
         rows = results()
         if rows and {e.name for e in rows} != stale:
             best = rows[0]
@@ -954,7 +1074,9 @@ def play_song(query: str) -> str:
         rows = results()
         if not rows:
             return f"Spotify found nothing playable for '{query}'."
-        best = rows[0]
+        # The page never changed (the same search as before): the rows are
+        # right but not re-ranked, so take the one naming most of the words.
+        best = max(rows, key=lambda e: sum(w in e.name.lower() for w in words))
 
     before = winapi._title(hwnd)
     song = best.name[len("Play "):].strip()
@@ -966,19 +1088,29 @@ def play_song(query: str) -> str:
     # that opens has its own play button, and that one does start it. Only
     # press it if it still says Play: if the first click did begin playback,
     # this same control reads Pause and pressing it would stop the song.
-    time.sleep(2.5)
-    winapi.focus_hwnd(hwnd)
-    uia.wake(hwnd, settle=0.6)
-    page_play = next((e for e in uia.elements(hwnd, uia.BUTTON)
-                      if e.on_screen and e.name.strip() == "Play"
-                      and e.rect[0] > 400 and e.rect[1] < 500), None)
-    if page_play is not None:
-        page_play.press(hwnd)
-
-    for _ in range(8):
-        time.sleep(0.7)
+    # Polled instead of a flat 2.5 s wait: stop as soon as the song is
+    # playing (the title changes) or the page's Play button has appeared.
+    def playing() -> str | None:
         now = winapi._title(hwnd)
-        if now and "spotify" not in now.lower() and now != before:
+        return now if now and "spotify" not in now.lower() and now != before else None
+
+    pressed = False
+    deadline = time.time() + 4.0
+    while time.time() < deadline:
+        time.sleep(0.2)
+        if (now := playing()):
+            return f"Playing {now}."
+        page_play = next((e for e in uia.elements(hwnd, uia.BUTTON)
+                          if e.on_screen and e.name.strip() == "Play"
+                          and e.rect[0] > 400 and e.rect[1] < 500), None)
+        if page_play is not None:
+            page_play.press(hwnd)
+            pressed = True
+            break
+
+    for _ in range(25 if pressed else 10):
+        time.sleep(0.2)
+        if (now := playing()):
             return f"Playing {now}."
     return f"Opened {song} but could not confirm it started playing."
 

@@ -338,7 +338,10 @@ def _keep_warm() -> None:
     while True:
         try:
             if ticks == 0:                       # once, at start-up
-                warm.chat([{"role": "user", "content": "hi"}])
+                # Load the model with the voice command prompt, not a bare
+                # "hi": the prompt is then already cached for the first command.
+                from ..agent import warm as warm_prompt
+                warm_prompt(voice=True, load=True)
             # Every two minutes: is the model actually on the GPU? A server
             # started before the driver was ready stays on the CPU for good,
             # and the first sign of it used to be every reply being slow.
@@ -1408,6 +1411,7 @@ def _voice_loop() -> None:
     hint = f" Say '{wake}' first to address me." if wake else ""
     print(f"\nListening.{hint} Press Ctrl+C to stop.\n")
     speaker.say(cfg.get("assistant.greeting", "Ready."))
+
 
     # After the wake word, stay awake for a while so follow-up commands do not
     # each need "Athena" in front of them - saying it every sentence is both

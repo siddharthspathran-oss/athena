@@ -458,6 +458,14 @@ planner:
   # Tried in order if the one above is rate limited or down. If none
   # answers, the request falls back to the local model.
   fallback: ["gemini:gemini-3.5-flash", "groq:qwen/qwen3.8-27b"]
+  # When the local model gets stuck on an ordinary request - runs out of
+  # steps, repeats itself, or claims it did something without a tool - the
+  # planner finishes the job, told what already ran so nothing is repeated.
+  rescue: true
+  # Send the planner the tools the request points at (plus related ones)
+  # rather than all of them: fewer tokens per step, so each step is faster
+  # and the free tier lasts longer.
+  narrow_tools: true
   # A form or an app can take a dozen presses; 10 ran out mid-task.
   max_steps: 20
   max_tokens: 1500

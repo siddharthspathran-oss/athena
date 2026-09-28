@@ -136,6 +136,14 @@ ROUTES = {
     "tell me a joke": None,
 }
 
+# split_simple(text, strict=True): the sentence did not look multi-step,
+# so every part must be a command of its own.
+STRICT_SPLITS = {
+    "what is my battery and list my reminders": [("battery", {}), ("list_reminders", {})],
+    "play simon and garfunkel": None,
+    "play tom and jerry": None,
+}
+
 SPLITS = {
     "open downloads and play music": [("open_folder", {"name": "downloads"}), ("music", {"action": "play"})],
     "take a screenshot then lock my screen": [("take_screenshot", {}), ("lock_screen", {})],
@@ -161,6 +169,10 @@ def check_routes() -> list[str]:
         got = route(phrase)
         if got != want:
             bad.append(f"route({phrase!r}) = {got}, want {want}")
+    for phrase, want in STRICT_SPLITS.items():
+        got = split_simple(phrase, strict=True)
+        if got != want:
+            bad.append(f"split_simple({phrase!r}, strict) = {got}, want {want}")
     for phrase, want in SPLITS.items():
         got = split_simple(phrase)
         if got != want:
@@ -276,10 +288,68 @@ def check_tool_run() -> list[str]:
     return bad
 
 
+def check_planner() -> list[str]:
+    """Lookups the planner batches run side by side; saved facts reach it,
+    secrets do not; it is sent the relevant tools, not all of them."""
+    import json as _json
+
+    from jarvis import planner
+
+    bad = []
+    slow = ("_p_one", "_p_two", "_p_three")
+
+    def lookup(name):
+        def fn() -> str:
+            """Slow lookup."""
+            time.sleep(0.6)
+            return f"{name} ok"
+        fn.__name__ = name
+        return fn
+
+    for n in slow:
+        registry.tool(timeout=5)(lookup(n))
+    planner.PARALLEL_SAFE.update(slow)
+    seen = {}
+    script = [_json.dumps({"tools": [{"tool": n, "args": {}} for n in slow]}),
+              _json.dumps({"done": "All three."})]
+
+    def fake_chat(model, messages, **k):
+        seen.setdefault("system", messages[0]["content"])
+        return script.pop(0)
+
+    tmp = Path(tempfile.mkdtemp())
+    saved = planner.cloud.chat, memory.MEM_FILE
+    planner.cloud.chat, memory.MEM_FILE = fake_chat, tmp / "memory.json"
+    memory._facts_cache.update(mtime=None, data={})
+    try:
+        memory.save_facts({"roll number": "21BEC1023", "wifi password": "hunter22"})
+        t0 = time.time()
+        out = planner.run("check the first thing and then the second and the third")
+        took = time.time() - t0
+        if out != "All three." or took > 1.4:
+            bad.append(f"planner batch: {out!r} in {took:.1f}s (three 0.6s lookups, want them together)")
+        system = seen.get("system", "")
+        if "21BEC1023" not in system:
+            bad.append("the planner was not given the saved facts")
+        if "hunter22" in system:
+            bad.append("a saved password was sent to the hosted planner")
+        listed = system.split("Tools:")[1].count("\n- ") if "Tools:" in system else 0
+        if not 0 < listed < len(registry.REGISTRY):
+            bad.append(f"the planner was sent {listed} tools, want a narrowed list")
+    finally:
+        planner.cloud.chat, memory.MEM_FILE = saved
+        memory._facts_cache.update(mtime=None, data={})
+        for n in slow:
+            registry.REGISTRY.pop(n, None)
+            planner.PARALLEL_SAFE.discard(n)
+    return bad
+
+
 if __name__ == "__main__":
-    failures = check_routes() + check_selection() + check_memory() + check_tool_run()
+    failures = (check_routes() + check_selection() + check_memory() + check_tool_run()
+                + check_planner())
     for f in failures:
         print("FAIL", f)
-    total = len(ROUTES) + len(SPLITS) + len(SELECTION) + 3
+    total = len(ROUTES) + len(SPLITS) + len(STRICT_SPLITS) + len(SELECTION) + 4
     print(f"{total} groups of cases, {len(failures)} failure(s)")
     sys.exit(1 if failures else 0)

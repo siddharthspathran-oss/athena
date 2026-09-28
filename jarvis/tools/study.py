@@ -649,7 +649,7 @@ def answer_page(question: str, context: str = "", source: str = "") -> str:
     return f"{lead}\n\n{opened}" if lead else opened
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=0)
 def explain(question: str) -> str:
     """Answer a study question properly and open it as a formatted page.
 

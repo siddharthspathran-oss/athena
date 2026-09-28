@@ -93,7 +93,7 @@ def _credentials():
     return None
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=0)
 def connect_google() -> str:
     """Sign in to Google so Athena can read your calendar and mail.
 
@@ -196,7 +196,7 @@ def _unanswered_mail(limit: int = 5) -> list[str]:
 
 # ---------- icalendar feeds (a timetable that is not in Google) ----------
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=90)
 def add_calendar_feed(url: str, name: str = "") -> str:
     """Subscribe to a timetable published as an iCalendar (.ics) feed.
 
@@ -406,7 +406,7 @@ def _first_tomorrow() -> dict | None:
     return min(timed, key=lambda e: _local(e["start"])) if timed else None
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=90)
 def daily_brief(day: str = "today", full: bool = False) -> str:
     """Say what the day looks like: classes, meetings, clashes and unread mail.
 

@@ -207,6 +207,26 @@ The model can now call it.
 Mark anything risky with `@tool(destructive=True)` and it inherits the
 confirmation prompt.
 
+Other options: `timeout=` (seconds before Athena stops waiting on it; the
+default is `tools.timeout_seconds`, 0 = no limit), `brief=` (a short
+description for the model when the docstring is notes for you), and a
+`route_only` tag to keep it away from the model. Add its name to a group in
+`TOOL_GROUPS` (`jarvis/registry.py`) so it is only shown when relevant;
+unlisted tools are always shown. Then run `python tests/routetest.py`.
+
+## Memory
+
+The model has three memory tools:
+- `remember(what, label)` saves a labelled fact ("locker number: 42") to
+  `data/memory.json`, or a sentence about you, with no label, to
+  `data/profile.md`.
+- `recall(query)` searches both, loosely, so "bday" finds "birthday". It
+  falls back to past conversations.
+- `forget(what)` removes matching entries from both, and asks which one
+  when several match.
+
+Facts saved by one window reach the others without a restart.
+
 ## A note on `winapi.py`
 
 Window control, media keys, typing and screenshots go through direct Win32

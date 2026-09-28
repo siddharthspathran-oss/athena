@@ -5,8 +5,9 @@ Long-term:  data/memory.json - things you tell it to remember.
 """
 from __future__ import annotations
 
-import json
+import re
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Any
 
 from .config import DATA
@@ -15,12 +16,86 @@ from .store import StoreError, load_json, save_json
 MEM_FILE = DATA / "memory.json"
 
 
+# ---------------------------------------------------------------- saved facts
+# Labelled facts ("locker: 42"), shared by every Athena process through
+# data/memory.json. Each process used to read the file once, at start: a
+# fact saved by voice was missing from the prompt - and from the web and
+# hotkey windows - until each was restarted. Now it is re-read whenever the
+# file changes, which is rare enough that the prompt prefix Ollama caches
+# stays put between turns.
+_facts_cache: dict[str, Any] = {"mtime": None, "data": {}}
+
+
+def load_facts() -> dict[str, str]:
+    try:
+        mtime = MEM_FILE.stat().st_mtime
+    except OSError:
+        _facts_cache.update(mtime=None, data={})
+        return {}
+    if mtime != _facts_cache["mtime"]:
+        try:
+            data = load_json(MEM_FILE, {})
+        except StoreError as e:
+            # Keep what was loaded last rather than crash, and never save over
+            # the damaged file - it has been quarantined for recovery.
+            print(f"[memory: {e}]")
+            return dict(_facts_cache["data"])
+        _facts_cache.update(mtime=mtime, data=data if isinstance(data, dict) else {})
+    return dict(_facts_cache["data"])
+
+
+def save_facts(facts: dict[str, str]) -> None:
+    save_json(MEM_FILE, facts)          # atomic: a crash never leaves it half-written
+    _facts_cache.update(mtime=None)
+
+
+_FILLER_WORDS = {"my", "the", "a", "an", "of", "is", "are", "was", "what", "whats", "where",
+                 "when", "who", "me", "your", "our", "i", "do", "you", "know", "about",
+                 "remember", "did", "tell", "that", "it", "s", "please", "for", "to"}
+
+
+def _words(text: str) -> set[str]:
+    out = set()
+    for w in re.findall(r"[a-z0-9]+", text.lower().replace("'s", "").replace("’s", "")):
+        if w in _FILLER_WORDS:
+            continue
+        out.add(w[:-1] if len(w) > 3 and w.endswith("s") else w)
+    return out
+
+
+def _norm(text: str) -> str:
+    return " ".join(sorted(_words(text)))
+
+
+def fact_score(query: str, key: str, value: str = "") -> float:
+    """How well `query` names the fact saved under `key`, 0 to 1.
+
+    recall("my birthday") used to miss a fact saved as "birthday", and
+    "bday" or "birth date" never had a chance: only the exact label worked.
+    """
+    q, k = _norm(query), _norm(key)
+    if not q:
+        return 0.0
+    if q == k:
+        return 1.0
+    qw, kw, vw = _words(query), _words(key), _words(value)
+    seq = SequenceMatcher(None, q, k).ratio()
+    on_key = len(qw & kw) / len(qw)
+    on_any = len(qw & (kw | vw)) / len(qw)
+    return max(seq, on_key, 0.85 * on_any)
+
+
+def find_facts(query: str, threshold: float = 0.6) -> list[tuple[str, str, float]]:
+    """Saved facts matching `query`, best first, as (key, value, score)."""
+    hits = [(k, str(v), fact_score(query, k, str(v))) for k, v in load_facts().items()]
+    return sorted((h for h in hits if h[2] >= threshold), key=lambda h: -h[2])
+
+
 class Memory:
     def __init__(self, system_prompt: str, max_messages: int = 40):
         self.system_prompt = system_prompt
         self.max_messages = max_messages
         self.messages: list[dict[str, Any]] = []
-        self.facts: dict[str, str] = self._load()
         # The conversation this belongs to. None means nothing is written to
         # disk - which is what the voice and hotkey interfaces want, since a
         # spoken one-liner is not a conversation worth keeping.
@@ -37,26 +112,20 @@ class Memory:
 
     # ---------- long term ----------
 
-    def _load(self) -> dict[str, str]:
-        try:
-            return load_json(MEM_FILE, {})
-        except StoreError as e:
-            # Start the session empty rather than crash, but never save over
-            # the damaged file - it has been quarantined for recovery.
-            print(f"[memory: {e}]")
-            return {}
-
-    def _save(self) -> None:
-        save_json(MEM_FILE, self.facts)
+    @property
+    def facts(self) -> dict[str, str]:
+        return load_facts()
 
     def remember(self, key: str, value: str) -> None:
-        self.facts[key] = value
-        self._save()
+        facts = load_facts()
+        facts[key] = value
+        save_facts(facts)
 
     def forget(self, key: str) -> bool:
-        if key in self.facts:
-            del self.facts[key]
-            self._save()
+        facts = load_facts()
+        if key in facts:
+            del facts[key]
+            save_facts(facts)
             return True
         return False
 
@@ -161,9 +230,8 @@ class Memory:
         because Ollama reuses its KV cache only for a byte-identical prefix,
         and qwen2.5's template renders the system message and then ~4k tokens
         of tool definitions ahead of everything else. So the system message
-        holds nothing that changes between turns: the facts are read once per
-        process (the remember tool writes the file, not self.facts), so they
-        are fixed for its life. The clock is the volatile part. It goes on
+        holds nothing that changes between turns: saved facts and the profile
+        are re-read only when their files change, which is rare. The clock is the volatile part. It goes on
         each user message as that message is sent and never changes after, so
         earlier turns are not re-read either. A separate system message near
         the end would not have worked: Ollama merges every system message
@@ -175,8 +243,9 @@ class Memory:
         ~50 new tokens are read; a warm repeat is 0.35 s / 0.03 s).
         """
         sys = self.system_prompt
-        if self.facts:
-            lines = "\n".join(f"- {k}: {v}" for k, v in self.facts.items())
+        facts = load_facts()
+        if facts:
+            lines = "\n".join(f"- {k}: {v}" for k, v in facts.items())
             sys += f"\n\nThings the user has asked you to remember:\n{lines}"
         # What has been learned across earlier chats. Re-read only when the
         # file changes (a few times a day at most), so the prefix stays put.

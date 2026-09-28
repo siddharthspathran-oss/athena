@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import threading
 import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable, get_args, get_origin, get_type_hints
@@ -40,6 +41,9 @@ class Tool:
     # Destructive tools get a confirmation prompt when safety.confirm_destructive is on
     destructive: bool = False
     tags: list[str] = field(default_factory=list)
+    # Seconds before the caller stops waiting (tools.timeout_seconds when
+    # None). 0 means no limit, for work that is long by nature.
+    timeout: float | None = None
 
     def _coerce(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """Force arguments to the types the schema declares.
@@ -70,21 +74,66 @@ class Tool:
                 out[key] = val
         return out
 
-    def run(self, **kwargs: Any) -> str:
+    def _check_args(self, kwargs: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        """Fit the model's arguments to the function before it runs.
+
+        Any TypeError used to be reported as "wrong arguments" - including
+        one raised by a bug deep inside the tool, so the model rewrote a
+        call that was never the problem. Checking the arguments first keeps
+        the two apart. Arguments the function does not take are dropped
+        rather than refused: a small model adding "reason" to a call should
+        not cost a round trip.
+        """
+        sig = inspect.signature(self.fn)
+        params = sig.parameters
+        if not any(p.kind is p.VAR_KEYWORD for p in params.values()):
+            kwargs = {k: v for k, v in kwargs.items() if k in params}
         try:
-            kwargs = self._coerce(kwargs)
+            sig.bind(**kwargs)
+        except TypeError as e:
+            want = ", ".join(n + ("" if p.default is inspect.Parameter.empty else "?")
+                             for n, p in params.items())
+            return kwargs, f"ERROR: wrong arguments for {self.name}({want}): {e}"
+        return kwargs, None
+
+    def _call(self, kwargs: dict[str, Any]) -> str:
+        try:
             result = self.fn(**kwargs)
             if result is None:
                 return "Done."
             return str(result)
-        except TypeError as e:
-            return f"ERROR: wrong arguments for {self.name}: {e}"
         except Exception as e:
             # The traceback is for whoever reads the console. Handed to the
             # model it is a few hundred tokens of file paths it cannot act on,
             # and it sometimes read them out.
             traceback.print_exc(limit=3)
             return f"ERROR in {self.name}: {type(e).__name__}: {e}"
+
+    def run(self, **kwargs: Any) -> str:
+        kwargs, bad = self._check_args(self._coerce(kwargs))
+        if bad:
+            return bad
+        limit = self.timeout
+        if limit is None:
+            from .config import cfg
+            limit = float(cfg.get("tools.timeout_seconds", 45) or 0)
+        if not limit:
+            return self._call(kwargs)
+        # A tool that hangs - a window that never appears, a site that never
+        # answers - used to hold the whole request, and every command behind
+        # it, with nothing said. It runs on its own thread so the caller can
+        # stop waiting. A thread cannot be killed, so it may still finish:
+        # the model is told so, and must not simply try again.
+        box: dict[str, str] = {}
+        worker = threading.Thread(target=lambda: box.update(r=self._call(kwargs)),
+                                  daemon=True, name=f"tool-{self.name}")
+        worker.start()
+        worker.join(limit)
+        if worker.is_alive():
+            print(f"[tool {self.name} still running after {limit:g}s - no longer waiting]")
+            return (f"ERROR: {self.name} did not finish within {limit:g} seconds. It may "
+                    f"still complete in the background - tell the user, and do not call it again.")
+        return box.get("r", "Done.")
 
 
 REGISTRY: dict[str, Tool] = {}
@@ -138,11 +187,12 @@ def _parse_doc(doc: str) -> tuple[str, dict[str, str]]:
 
 
 def tool(_fn: Callable | None = None, *, destructive: bool = False, tags: list[str] | None = None,
-         brief: str | None = None):
+         brief: str | None = None, timeout: float | None = None):
     """Register a function as a model-callable tool.
 
     brief replaces the docstring's summary in what the model is shown, for
     tools whose docstring is mostly notes for whoever maintains the code.
+    timeout overrides tools.timeout_seconds for this tool; 0 = no limit.
     """
 
     def wrap(fn: Callable) -> Callable:
@@ -191,6 +241,7 @@ def tool(_fn: Callable | None = None, *, destructive: bool = False, tags: list[s
             fn=fn,
             destructive=destructive,
             tags=tags or [],
+            timeout=timeout,
         )
         return fn
 
@@ -268,8 +319,9 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
     ("memory", re.compile(
         r"\b(?:remember|forget|forgot|know\s+about\s+me|recall|conversation|talk|discuss|"
         r"decid|said|style|writing|profile|learn)" + _W, re.I),
-     ["forget", "what_you_remember", "remember_about_me", "forget_about",
-      "search_past_conversations", "learn_my_writing_style"]),
+     ["forget", "search_past_conversations", "learn_my_writing_style",
+      # route_only: reached from their phrases, never shown to the model
+      "what_you_remember", "remember_about_me", "forget_about"]),
     ("knowledge", re.compile(
         r"\b(?:index|documents?|my\s+notes|knowledge|according|lease|contract|"
         r"search\s+my|in\s+my\s+(?:files|docs|documents|notes))" + _W, re.I),

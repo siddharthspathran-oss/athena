@@ -154,7 +154,7 @@ def scan() -> list[str]:
     return added
 
 
-@tool(tags=["schedule"])
+@tool(tags=["schedule"], timeout=180)
 def check_deadlines() -> str:
     """Look through recent email and the calendar for assignment, quiz and exam
     deadlines and add any new ones to the task list. Use for "check my

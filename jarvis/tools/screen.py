@@ -114,7 +114,7 @@ _SYSTEM = ("You are Athena, looking at the user's own computer screen because th
            "asked for detail. If something on screen is an error, say what it means and how to fix it.")
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=120)
 def look_at_screen(question: str = "What am I looking at?", whole_screen: bool = False) -> str:
     """Look at the user's screen and answer about it: what is on it, read or
     summarise it, explain an error, help with what they are doing.

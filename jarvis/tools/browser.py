@@ -290,7 +290,7 @@ def _err(e: Exception) -> str:
 
 # ---------------------------------------------------------------- tools
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=90)
 def browser_open(url: str) -> str:
     """Open a website in Athena's own browser window, to read it or fill in a form.
 
@@ -316,7 +316,7 @@ def browser_open(url: str) -> str:
         return _err(e)
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=90)
 def browser_read() -> str:
     """Read the page open in Athena's browser: its text and every field and button, numbered.
 
@@ -328,7 +328,7 @@ def browser_read() -> str:
         return _err(e)
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=90)
 def browser_fill(field: str, value: str) -> str:
     """Type into a text box, pick a dropdown option, or tick a checkbox/radio on the page.
 
@@ -377,7 +377,7 @@ def browser_fill(field: str, value: str) -> str:
         return _err(e)
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=90)
 def browser_click(target: str) -> str:
     """Click a button or link on the page in Athena's browser.
 

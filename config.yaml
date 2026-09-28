@@ -29,6 +29,14 @@ llm:
   # Ceiling on one spoken reply. Voice answers are a dozen words.
   voice_max_tokens: 300
 
+tools:
+  # How long a request waits on one tool before moving on. A window that
+  # never appears or a site that never answers used to hold everything
+  # behind it. The tool may still finish afterwards; Athena says so. Slow
+  # tools (class work, indexing, the browser, the brief) have their own
+  # limits in code (@tool(timeout=...)). 0 = wait forever.
+  timeout_seconds: 45
+
 assistant:
   name: "Athena"
   # Shown in the top-right corner of the HUD.

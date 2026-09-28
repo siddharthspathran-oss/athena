@@ -260,7 +260,7 @@ def end_call() -> str:
     return "I don't see a call going on in Phone Link."
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=120)
 def book_reservation(place: str, when: str, people: int = 2, notes: str = "") -> str:
     """Book a table or an appointment online: finds the place's booking page,
     fills in the details, and stops at the final Book/Confirm button for the

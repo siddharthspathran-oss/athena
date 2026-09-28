@@ -19,7 +19,7 @@ def _is_blocked(command: str) -> str | None:
     return None
 
 
-@tool(tags=TAG, destructive=True)
+@tool(tags=TAG, destructive=True, timeout=0)
 def run_powershell(command: str, timeout_seconds: int = 60) -> str:
     """Run a PowerShell command on this PC and return its output.
 
@@ -78,113 +78,192 @@ def _contact_name_from_key(key: str) -> str:
     return k or "me"
 
 
+# ---------------------------------------------------------------- memory
+# One remember, one recall, one forget for the model. There used to be six
+# memory tools over three stores - labelled facts (data/memory.json), the
+# learned profile (data/profile.md) and past conversations - and the local
+# model regularly saved with one and looked in another. These three decide
+# the store themselves and search all of them. The profile-only tools below
+# are still there for the routers ("remember that I ...", "forget X").
+
+def _save_fact(key: str, value: str) -> str:
+    from ..memory import MEM_FILE, load_facts, save_facts
+    from ..store import StoreError, load_json
+
+    try:
+        load_json(MEM_FILE, {})         # refuses, rather than overwrite, a damaged file
+    except StoreError as e:
+        return f"ERROR: could not save - {e}"
+    facts = load_facts()
+    old = facts.get(key)
+    facts[key] = value
+    save_facts(facts)
+    return f"Noted: {key} = {value}" + (f" (was {old})" if old and old != value else "")
+
+
 @tool(tags=["memory"])
-def remember(key: str, value: str) -> str:
-    """Save a general fact to disk so it survives restarts.
+def remember(what: str, label: str = "") -> str:
+    """Save something so it survives restarts. Use for anything the user asks
+    you to remember, save or note, and for lasting facts they state about
+    themselves. For a person's phone number or email use add_contact instead.
 
-    For a person's email address or phone number use add_contact instead -
-    that is the only store the messaging tools read. Anything saved here is a
-    note, not a contact.
-
-    key: a short label, for example 'name' or 'birthday' or 'work folder'
-    value: the thing to remember
+    what: the thing to remember - a value like "42", or a sentence like "I prefer short answers"
+    label: a short name to look it up by later, like "locker number" or "wifi name"; empty for a fact about the user
     """
     import re
 
+    val = (what or "").strip()
+    key = (label or "").strip()
+    if not val:
+        return "ERROR: nothing to remember."
     # Routing this by wording alone proved unreliable, so catch it by value:
     # a contact detail filed as a note is invisible to the messaging tools.
-    val = value.strip()
     is_email = bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", val))
     is_phone = bool(re.fullmatch(r"\+?\d[\d\s\-()]{9,}", val))
-    if is_email or is_phone:
+    if (is_email or is_phone) and key:
         who = _contact_name_from_key(key)
         from .messaging import add_contact as _add_contact
 
         field = {"email": val} if is_email else {"phone": val}
-        result = _add_contact.__wrapped__(who, **field) if hasattr(_add_contact, "__wrapped__") \
-            else _add_contact(who, **field)
+        result = _add_contact(who, **field)
         return f"{result} (saved as a contact, not a note, so messaging can find it)"
-    from ..memory import MEM_FILE
-    import json
 
-    facts = {}
-    if MEM_FILE.exists():
-        try:
-            facts = json.loads(MEM_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            facts = {}
-    facts[key] = value
-    MEM_FILE.write_text(json.dumps(facts, indent=2), encoding="utf-8")
-    return f"Noted: {key} = {value}"
+    if key:
+        # A label the user already has, said slightly differently, updates
+        # that fact instead of starting a second one next to it.
+        from ..memory import find_facts
+        same = find_facts(key, threshold=0.9)
+        return _save_fact(same[0][0] if same else key, val)
+
+    from .. import profile
+    why = profile.add(val, _profile_section(val), 14 if _profile_section(val) == "context" else None)
+    if why is None:
+        return "Got it, I'll remember that."
+    if why == "already known":
+        return "I already knew that."
+    if why.startswith("too short") and len(val) < 60:
+        return ("ERROR: that needs a label to be found again - call remember with "
+                "what and a short label, like label='locker number'.")
+    return f"I didn't save that - {why}."
+
+
+def _profile_section(note: str) -> str:
+    import re
+
+    low = note.lower()
+    if re.search(r"\b(prefer|like|love|hate|don'?t like|always|never|want|rather|"
+                 r"favourite|favorite)\b", low):
+        return "prefs"
+    if re.search(r"\b(due|exam|deadline|this week|next week|tomorrow|working on|"
+                 r"project|assignment)\b", low):
+        return "context"
+    return "about"
 
 
 @tool(tags=["memory"])
-def recall(key: str = "") -> str:
-    """Look up something previously remembered, or list everything remembered.
+def recall(query: str = "") -> str:
+    """Look up something remembered earlier: saved facts, what you know about
+    the user, and past conversations. Empty query lists everything saved.
 
-    key: the label to look up, or empty to list all stored facts
+    query: what to look for, in the user's words, e.g. "locker number" or "my exam"
     """
-    from ..memory import MEM_FILE
-    import json
+    from .. import profile
+    from ..memory import find_facts, load_facts
 
-    if not MEM_FILE.exists():
-        return "Nothing stored yet."
+    q = (query or "").strip()
+    if not q:
+        facts = load_facts()
+        out = [f"{k}: {v}" for k, v in facts.items()]
+        learned = profile.prompt_text()
+        if learned:
+            out.append(learned)
+        return "\n".join(out) if out else "Nothing stored yet."
+
+    lines = [f"{k}: {v}" for k, v, _ in find_facts(q)[:5]]
+    lines += [f"- {t}" for t in _profile_matches(q)[:5]]
+    if lines:
+        return "\n".join(lines)
+    # Not saved anywhere on purpose - perhaps it was only said in passing.
     try:
-        facts = json.loads(MEM_FILE.read_text(encoding="utf-8"))
+        from .. import recall as past
+        found = past.search(q, k=2)
+        if not found.startswith("I couldn't") and not found.startswith("I don't"):
+            return found
     except Exception:
-        return "Nothing stored yet."
-    if not facts:
-        return "Nothing stored yet."
-    if key:
-        return facts.get(key, f"Nothing stored under {key}.")
-    return "\n".join(f"{k}: {v}" for k, v in facts.items())
+        pass
+    return f"Nothing saved about '{q}'."
+
+
+def _profile_matches(query: str) -> list[str]:
+    from .. import profile
+    from ..memory import fact_score
+
+    scored = [(fact_score(query, i.text), i.text) for i in profile.load() if i.live()]
+    return [t for s, t in sorted(scored, reverse=True) if s >= 0.6]
+
+
+def forget_everywhere(what: str) -> str:
+    """Remove a saved fact and matching profile lines. Shared by forget and
+    the "forget X" router, so either clears both stores."""
+    from .. import profile
+    from ..memory import find_facts, load_facts, save_facts, _norm
+
+    removed: list[str] = []
+    facts = load_facts()
+    hits = find_facts(what, threshold=0.75)
+    exact = [h for h in hits if _norm(h[0]) == _norm(what)]
+    if exact:
+        hits = exact[:1]
+    elif len(hits) > 1:
+        return ("Which one? " + "; ".join(f"{k}: {v}" for k, v, _ in hits[:5])
+                + ". Say the label exactly.")
+    for k, v, _ in hits:
+        facts.pop(k, None)
+        removed.append(f"{k}: {v}")
+    if hits:
+        save_facts(facts)
+    removed += profile.forget(what)
+    if not removed:
+        return f"I don't have anything saved about '{what}'."
+    return "Forgotten: " + "; ".join(removed)
 
 
 @tool(tags=["memory"], destructive=True)
-def forget(key: str) -> str:
-    """Delete a previously remembered fact.
+def forget(what: str) -> str:
+    """Delete something remembered earlier, from saved facts and from what
+    you know about the user.
 
-    key: the label to remove
+    what: what to forget, in the user's words, e.g. "locker number"
     """
-    from ..memory import MEM_FILE
-    import json
-
-    if not MEM_FILE.exists():
-        return "Nothing stored yet."
-    facts = json.loads(MEM_FILE.read_text(encoding="utf-8"))
-    if key not in facts:
-        return f"Nothing stored under {key}."
-    del facts[key]
-    MEM_FILE.write_text(json.dumps(facts, indent=2), encoding="utf-8")
-    return f"Forgot {key}."
+    return forget_everywhere(what)
 
 
 # ---------------------------------------------------------------- learned profile
 
-@tool(tags=TAG)
+@tool(tags=TAG + ["route_only"])
 def what_you_remember() -> str:
     """Show everything Athena has learned about the user across conversations:
     preferences, ongoing work, people, corrections. Use for "what do you know about me"."""
     from .. import profile
-    return profile.show()
+    from ..memory import load_facts
+
+    shown = profile.show()
+    facts = load_facts()
+    if facts:
+        shown = "Saved facts:\n" + "\n".join(f"  - {k}: {v}" for k, v in facts.items()) + "\n" + shown
+    return shown
 
 
-@tool(tags=TAG)
+@tool(tags=TAG + ["route_only"])
 def remember_about_me(note: str) -> str:
     """Add something lasting about the user to their profile - a preference,
     who someone is, what they are working on. Not for passwords or codes.
 
     note: one sentence, e.g. "I prefer answers with every step shown"
     """
-    import re as _re
     from .. import profile
 
-    low = note.lower()
-    section = ("prefs" if _re.search(r"\b(prefer|like|love|hate|don'?t like|always|never|want|"
-                                      r"rather|favourite|favorite)\b", low)
-               else "context" if _re.search(r"\b(due|exam|deadline|this week|next week|tomorrow|"
-                                            r"working on|project|assignment)\b", low)
-               else "about")
+    section = _profile_section(note)
     days = 14 if section == "context" else None
     why = profile.add(note, section, days)
     if why == "already known":
@@ -194,20 +273,16 @@ def remember_about_me(note: str) -> str:
     return "Got it, I'll remember that."
 
 
-@tool(tags=TAG)
+@tool(tags=TAG + ["route_only"])
 def forget_about(thing: str) -> str:
     """Remove things from what Athena has learned about the user.
 
     thing: what to forget, in the user's words, e.g. "my exam date"
     """
-    from .. import profile
-    gone = profile.forget(thing)
-    if not gone:
-        return f"I don't have anything about '{thing}' in what I remember."
-    return "Forgotten: " + "; ".join(gone)
+    return forget_everywhere(thing)
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=90)
 def search_past_conversations(query: str) -> str:
     """Search earlier conversations with the user - typed chats and spoken
     ones - by meaning. Use for "what did we decide about X", "when did I ask
@@ -219,7 +294,7 @@ def search_past_conversations(query: str) -> str:
     return recall.search(query)
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=0)
 def learn_my_writing_style() -> str:
     """Study how the user writes (their typed messages, and the WhatsApp and
     email texts sent for them) and update the writing style Athena drafts in."""

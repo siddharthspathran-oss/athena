@@ -1,0 +1,259 @@
+"""Checks the command routers, which tools the model is shown, the memory
+tools and how a tool call is run.
+
+The routers in agent.py answer the common commands without the model, and
+each fix to one of them can quietly break another. This table is the
+guard: every phrase here must keep routing exactly as written.
+
+    python tests/routetest.py
+"""
+import ctypes
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+if not hasattr(ctypes, "WinDLL"):
+    # Not Windows: stand in for the Win32 modules so the routers, which do
+    # not need them for these phrases, can still be checked.
+    from unittest import mock
+
+    ctypes.WinDLL = lambda *a, **k: mock.MagicMock()
+    ctypes.windll = mock.MagicMock()
+    ctypes.WINFUNCTYPE = ctypes.CFUNCTYPE
+    for name in ("win32gui", "win32con", "win32api", "win32process", "win32clipboard",
+                 "pycaw", "pycaw.pycaw", "comtypes", "comtypes.client", "winsound",
+                 "keyboard", "send2trash", "playwright", "playwright.sync_api", "ddgs",
+                 "pythoncom", "winreg", "msvcrt"):
+        try:
+            __import__(name)
+        except Exception:
+            sys.modules[name] = mock.MagicMock()
+
+import jarvis.tools  # noqa: E402,F401  (registers every tool)
+from jarvis import memory, profile, registry  # noqa: E402
+from jarvis.agent import route, split_simple  # noqa: E402
+
+# phrase -> (tool, args), or None when it must be left to the model.
+# Only phrases whose routing does not depend on this PC's apps, files or
+# contacts, so the table holds on any machine.
+ROUTES = {
+    # power
+    "shut down the pc": ("power_action", {"action": "shutdown"}),
+    "cancel shutdown": ("power_action", {"action": "cancel"}),
+    "put the laptop to sleep": ("power_action", {"action": "sleep"}),
+    "turn off the lights": None,
+    # media
+    "play music": ("music", {"action": "play"}),
+    "pause the music": ("music", {"action": "pause"}),
+    "next song": ("music", {"action": "next"}),
+    "skip": ("music", {"action": "next"}),
+    "previous track": ("music", {"action": "previous"}),
+    "play music. Thank you.": ("music", {"action": "play"}),
+    "play the first song": ("play_track", {"position": 1}),
+    "play track 3": ("play_track", {"position": 3}),
+    "play a seven song": ("play_track", {"position": 7}),
+    "play believer by imagine dragons": ("play_song", {"query": "believer by imagine dragons"}),
+    "play something": ("play_my_taste", {}),
+    "surprise me": ("play_my_taste", {}),
+    "play my playlist": ("play_my_playlist", {}),
+    "set volume to 40": ("set_volume", {"level": 40}),
+    "volume 120": ("set_volume", {"level": 100}),
+    # quick system answers
+    "take a screenshot": ("take_screenshot", {}),
+    "lock my screen": ("lock_screen", {}),
+    "what is my battery": ("battery", {}),
+    "how much battery do i have left": ("battery", {}),
+    "am i charging": ("battery", {}),
+    "battery saver on": None,
+    "what time is it": ("get_datetime", {"what": "time"}),
+    "whats the time": ("get_datetime", {"what": "time"}),
+    "what day is it today": ("get_datetime", {"what": "date"}),
+    "what is my pc doing": ("system_report", {}),
+    "what can you do": ("list_skills", {}),
+    "what's on my screen": ("look_at_screen", {"question": "what's on my screen", "whole_screen": False}),
+    "gaming mode": ("free_gpu", {}),
+    "turn off gaming mode": ("load_gpu", {}),
+    "hang up": ("end_call", {}),
+    # schedule
+    "what's my day": ("daily_brief", {"day": "today", "full": False}),
+    "brief me": ("daily_brief", {"day": "today", "full": False}),
+    "what's on tomorrow": ("daily_brief", {"day": "tomorrow", "full": False}),
+    "what's my full schedule today": ("daily_brief", {"day": "today", "full": True}),
+    "remind me to call mom at 5": ("add_reminder", {"text": "call mom", "when": "at 5"}),
+    "remind me in 10 minutes to stand up": ("add_reminder", {"text": "stand up", "when": "in 10 minutes"}),
+    "add task finish the lab report by friday": ("add_task", {"text": "finish the lab report", "due": "friday"}),
+    "list my reminders": ("list_reminders", {}),
+    "my tasks": ("list_tasks", {}),
+    "list my routines": ("list_routines", {}),
+    "study mode": ("run_routine", {"name": "study mode"}),
+    # class work vs quick facts
+    "explain the difference between bjt and mosfet":
+        ("explain", {"question": "explain the difference between bjt and mosfet"}),
+    "what is the poisson process": ("explain", {"question": "what is the poisson process"}),
+    "what is the capital of france": None,
+    "what is the population of india": None,
+    "what is 2 plus 2": None,
+    # memory
+    "what do you remember about me": ("what_you_remember", {}),
+    "remember that Rahul is my classmate": ("remember_about_me", {"note": "Rahul is my classmate"}),
+    "forget that I like lofi": ("forget_about", {"thing": "I like lofi"}),
+    "what did we decide about the butterworth filter":
+        ("search_past_conversations", {"query": "the butterworth filter"}),
+    "learn my writing style": ("learn_my_writing_style", {}),
+    # files and folders
+    "open downloads": ("open_folder", {"name": "downloads"}),
+    "oopen downloads": ("open_folder", {"name": "downloads"}),
+    "open my documents folder": ("open_folder", {"name": "documents"}),
+    "open file explorer": ("open_folder", {"name": "explorer"}),
+    "where is my resume.pdf": ("reveal_path", {"path": "resume.pdf"}),
+    "open the scheduler pdf": ("open_file", {"path": "the scheduler pdf"}),
+    # places and calls
+    "call me": ("call_me", {"message": "Athena here. This is a test call. Alerts are working."}),
+    "is dominos open now": ("place_info", {"place": "dominos", "question": "is dominos open now"}),
+    "book a table at barbeque nation for 4 tomorrow at 8":
+        ("book_reservation", {"place": "barbeque nation", "when": "tomorrow at 8", "people": 4}),
+    # conversation
+    "tell me a joke": None,
+}
+
+SPLITS = {
+    "open downloads and play music": [("open_folder", {"name": "downloads"}), ("music", {"action": "play"})],
+    "take a screenshot then lock my screen": [("take_screenshot", {}), ("lock_screen", {})],
+    "open downloads and tell me a joke": None,
+}
+
+# request -> tools that must be shown to the model / must not be.
+SELECTION = [
+    ("what is the capital of france", ["web_search", "open_app", "remember", "recall"], ["whatsapp_message", "run_powershell"]),
+    ("send papa a whatsapp saying running late", ["whatsapp_message", "list_contacts"], ["run_powershell"]),
+    ("turn on bluetooth", ["bluetooth"], ["whatsapp_call"]),
+    ("delete the old pdf in downloads", ["delete_file", "find_files"], []),
+    ("play something by arijit", ["music"], ["play_song", "play_track", "play_my_taste"]),
+    ("what do you know about me, forget it", ["recall", "forget"], ["remember_about_me", "forget_about", "what_you_remember"]),
+    ("show my store orders", ["store_orders"], []),
+    ("what can you do", [], ["store_orders", "free_gpu"]),
+]
+
+
+def check_routes() -> list[str]:
+    bad = []
+    for phrase, want in ROUTES.items():
+        got = route(phrase)
+        if got != want:
+            bad.append(f"route({phrase!r}) = {got}, want {want}")
+    for phrase, want in SPLITS.items():
+        got = split_simple(phrase)
+        if got != want:
+            bad.append(f"split_simple({phrase!r}) = {got}, want {want}")
+    return bad
+
+
+def check_selection() -> list[str]:
+    bad = []
+    everything = registry.select("", everything=True)
+    core = registry.select("")
+    if len(core) >= len(everything):
+        bad.append("the core tool set is no smaller than the full list")
+    for request, shown, hidden in SELECTION:
+        names = registry.select(request)
+        if names[:len(core)] != core:
+            bad.append(f"{request!r}: the core is not the fixed prefix (breaks Ollama's cache)")
+        bad += [f"{request!r}: {n} not shown" for n in shown if n not in names]
+        bad += [f"{request!r}: {n} shown" for n in hidden if n in names]
+    for name in registry.CORE_TOOLS + sorted(registry._grouped()):
+        if name not in registry.REGISTRY:
+            bad.append(f"TOOL_GROUPS names {name}, which is not a registered tool")
+    return bad
+
+
+def check_memory() -> list[str]:
+    from jarvis.tools import shell
+
+    bad = []
+    tmp = Path(tempfile.mkdtemp())
+    saved = memory.MEM_FILE, profile.PROFILE
+    memory.MEM_FILE, profile.PROFILE = tmp / "memory.json", tmp / "profile.md"
+    memory._facts_cache.update(mtime=None, data={})
+    try:
+        shell.remember("42", "locker number")
+        shell.remember("14 March", "birthday")
+        shell.remember("15 March", "my birthday")
+        if memory.load_facts() != {"locker number": "42", "birthday": "15 March"}:
+            bad.append(f"relabelled fact not updated in place: {memory.load_facts()}")
+        shell.remember("I prefer answers with every step shown")
+        for q, want in (("locker", "42"), ("bday", "15 March"), ("my birthday", "15 March"),
+                        ("every step", "every step shown")):
+            if want not in shell.recall(q):
+                bad.append(f"recall({q!r}) missed {want!r}: {shell.recall(q)!r}")
+        if not shell.remember("42").startswith("ERROR"):
+            bad.append("a bare value with no label was accepted and can never be found")
+        # Saved by another process: the prompt must see it without a restart.
+        m = memory.Memory("system")
+        time.sleep(0.05)
+        memory.save_json(memory.MEM_FILE, {**memory.load_facts(), "wifi name": "Home5G"})
+        memory._facts_cache["mtime"] = None
+        if "Home5G" not in m.build()[0]["content"]:
+            bad.append("a fact saved elsewhere did not reach the prompt")
+        shell.remember("B-12", "mom locker number")
+        if not shell.forget("locker").startswith("Which one?"):
+            bad.append("an ambiguous forget deleted something instead of asking")
+        shell.forget("locker number")
+        if "locker number" in memory.load_facts() or "mom locker number" not in memory.load_facts():
+            bad.append(f"forget removed the wrong fact: {memory.load_facts()}")
+        shell.forget("every step shown")
+        if profile.load():
+            bad.append("forget did not clear the matching profile line")
+    finally:
+        memory.MEM_FILE, profile.PROFILE = saved
+        memory._facts_cache.update(mtime=None, data={})
+    return bad
+
+
+def check_tool_run() -> list[str]:
+    bad = []
+
+    @registry.tool(timeout=0.3)
+    def _t_slow() -> str:
+        """Sleeps past its limit."""
+        time.sleep(1.5)
+        return "late"
+
+    @registry.tool
+    def _t_bug(x: str) -> str:
+        """Raises a TypeError from inside."""
+        return len(x, 3)
+
+    @registry.tool
+    def _t_ok(x: str, flag: bool = False) -> str:
+        """Echoes."""
+        return f"{x}-{flag}"
+
+    try:
+        t0 = time.time()
+        r = registry.REGISTRY["_t_slow"].run()
+        if not r.startswith("ERROR") or time.time() - t0 > 1.0:
+            bad.append(f"a hung tool was waited on: {r!r}")
+        r = registry.REGISTRY["_t_bug"].run(x="a")
+        if "wrong arguments" in r:
+            bad.append("a bug inside a tool was reported as wrong arguments")
+        r = registry.REGISTRY["_t_ok"].run(x="a", flag="true", reason="extra")
+        if r != "a-True":
+            bad.append(f"an extra argument was not dropped: {r!r}")
+        if "wrong arguments" not in registry.REGISTRY["_t_ok"].run(flag=True):
+            bad.append("a missing argument was not reported")
+    finally:
+        for n in ("_t_slow", "_t_bug", "_t_ok"):
+            registry.REGISTRY.pop(n, None)
+    return bad
+
+
+if __name__ == "__main__":
+    failures = check_routes() + check_selection() + check_memory() + check_tool_run()
+    for f in failures:
+        print("FAIL", f)
+    total = len(ROUTES) + len(SPLITS) + len(SELECTION) + 3
+    print(f"{total} groups of cases, {len(failures)} failure(s)")
+    sys.exit(1 if failures else 0)

@@ -137,7 +137,7 @@ def _load_index() -> tuple[np.ndarray | None, list[dict]]:
     return vecs, meta
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=0)
 def index_documents(folder: str = "", rebuild: bool = False) -> str:
     """Scan a folder and index its documents so you can ask questions about them.
 

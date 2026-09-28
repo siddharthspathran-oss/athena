@@ -85,7 +85,7 @@ def read_webpage(url: str, max_chars: int = 4000) -> str:
     return body
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=0)
 def download_file(url: str, save_to: str = "~/Downloads") -> str:
     """Download a file from a URL into a folder.
 

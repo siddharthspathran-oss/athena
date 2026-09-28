@@ -466,7 +466,7 @@ def delete_file(path: str) -> str:
         return f"Sent {p.name} to the Recycle Bin."
 
 
-@tool(tags=TAG, destructive=True)
+@tool(tags=TAG, destructive=True, timeout=0)
 def organize_folder(folder: str, dry_run: bool = True) -> str:
     """Sort a messy folder into Images, Documents, Video, Audio and other subfolders.
 
@@ -511,7 +511,7 @@ def organize_folder(folder: str, dry_run: bool = True) -> str:
     return f"Organised {moved} file(s) in {root}:\n{summary}"
 
 
-@tool(tags=TAG)
+@tool(tags=TAG, timeout=120)
 def folder_size(folder: str) -> str:
     """Report the total size of a folder and its largest items.
 

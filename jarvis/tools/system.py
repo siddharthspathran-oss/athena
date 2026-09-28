@@ -489,18 +489,32 @@ def get_volume() -> str:
 
 
 @tool(tags=TAG)
-def music(action: str) -> str:
-    """Play, pause, or change the song. This is the music player control.
+def music(action: str, song: str = "", position: int = 0) -> str:
+    """Every music request: play, pause, skip, go back, play a named song,
+    play the Nth song in Spotify's list, play something the user likes, or
+    play their saved playlist. Works with Spotify, YouTube and any player,
+    even in the background. "skip" and "next" move FORWARD.
 
-    Use it for every music request: "play music", "pause", "next song",
-    "next track", "skip this", "previous song", "go back a song". It drives
-    Spotify, YouTube and any other player, even when that app is not in front.
-
-    There is no other music tool - do not say you cannot change the song.
-    "skip" and "next" both move FORWARD; only use previous to go back.
-
-    action: play, pause, next, previous, or mute
+    action: play, pause, next, previous, mute, song (play a named song), track (play song number `position` in the list), surprise (pick something the user likes) or playlist (their saved playlist)
+    song: the song to play, optionally "by" the artist - for action song, or a title for action track
+    position: which song in Spotify's list, counting from 1 - for action track
     """
+    # One tool instead of five (music, play_song, play_track, play_my_taste,
+    # play_my_playlist): the model kept picking the media key for a named
+    # song and the song search for "next". The five still exist for the
+    # routers; the model sees only this one.
+    act = (action or "").strip().lower()
+    if act in ("song", "search") or (act in ("play", "") and song.strip() and not position):
+        return play_song(song)
+    if act in ("track", "number") or position:
+        return play_track(position=int(position or 0), name=song)
+    if act in ("surprise", "choice", "random", "taste", "something"):
+        from .taste import play_my_taste
+        return play_my_taste()
+    if act in ("playlist", "my playlist"):
+        from .taste import play_my_playlist
+        return play_my_playlist()
+    action = act
     mapping = {
         "play": "playpause", "pause": "playpause", "playpause": "playpause",
         "resume": "playpause", "play music": "playpause", "music": "playpause",
@@ -725,7 +739,7 @@ def _visible_tracks(hwnd: int) -> dict[int, tuple[str, tuple[int, int, int, int]
     return found
 
 
-@tool(tags=TAG)
+@tool(tags=TAG + ["route_only"])
 def play_track(position: int = 0, name: str = "") -> str:
     """Play a particular song from the list showing in Spotify.
 
@@ -852,7 +866,7 @@ def play_track(position: int = 0, name: str = "") -> str:
     return f"Pressed play on track {number}: {desc}."
 
 
-@tool(tags=TAG)
+@tool(tags=TAG + ["route_only"])
 def play_song(query: str) -> str:
     """Search Spotify for a song and play it.
 
@@ -989,7 +1003,7 @@ def system_report() -> str:
     return "\n".join(lines)
 
 
-@tool(tags=TAG + ["route_only"])
+@tool(tags=TAG + ["route_only"], timeout=120)
 def free_gpu() -> str:
     """Gaming mode: take every AI model off the graphics card to free VRAM.
 
@@ -1038,7 +1052,7 @@ def free_gpu() -> str:
             "Say 'gaming mode off' to load me back, or just ask me something.")
 
 
-@tool(tags=TAG + ["route_only"])
+@tool(tags=TAG + ["route_only"], timeout=120)
 def load_gpu() -> str:
     """Gaming mode off: load the chat model back onto the GPU so replies are quick again."""
     from .. import gaming

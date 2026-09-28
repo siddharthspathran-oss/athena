@@ -982,9 +982,20 @@ def _direct_explain(text: str) -> tuple[str, dict] | None:
         return "explain", {"question": q}
 
     m = _STUDY_WHAT.match(q)
-    if m and len(m.group("topic").split()) >= 2:
+    if m and len(m.group("topic").split()) >= 2 and not _QUICK_FACT.match(m.group("topic")):
         return "explain", {"question": q}
     return None
+
+
+# "what is the capital of france" is a one-line fact, not class work: the
+# explainer sent it to study.model and opened a formatted page to say Paris.
+_QUICK_FACT = re.compile(
+    r"^(?:the\s+)?(?:capital|population|currency|president|prime\s+minister|ceo|founder|owner|"
+    r"height|age|distance|price|cost|score|weather|full\s+form|spelling|synonym|"
+    r"opposite|plural|birthday|address|phone\s+number|name|national\s+\w+|"
+    r"official\s+language)\b", re.I)
+# Not "time", "speed", "area" or "length": "the time constant of an RC
+# circuit" and "the area of a circle" are class questions.
 
 
 # Whisper's stock endings, added to speech that never said them: "call maa
@@ -1158,6 +1169,24 @@ _SCREEN = re.compile(
     r"is\s+there\s+(?:an?\s+)?(?:error|problem|mistake)\s+on\s+(?:my|the)\s+screen"
     r")\b.*$", re.I)
 _WHOLE = re.compile(r"\b(?:whole|entire|full|all)\s+(?:screen|screens|desktop|monitors?)\b", re.I)
+# Battery, time and date: a tool answers each instantly; the model took
+# seconds to decide to call it.
+_BASIC += [
+    (re.compile(_BASIC_LEAD + r"(?:(?:what(?:'?s|\s+is)|how(?:'?s|\s+is)|check)\s+(?:my\s+|the\s+)?)?"
+                r"(?:battery|charge)(?:\s+(?:level|status|percentage|percent|life|left|at|now))*\W*$|"
+                + _BASIC_LEAD + r"how\s+much\s+(?:battery|charge)(?:\s+(?:do\s+i\s+have|is\s+left|left|"
+                r"have\s+i\s+got))?(?:\s+left)?\W*$|"
+                + _BASIC_LEAD + r"(?:am\s+i|is\s+(?:my|the)\s+(?:laptop|pc|computer)|are\s+we)\s+"
+                r"(?:charging|plugged\s+in|on\s+battery)\W*$", re.I),
+     "battery", {}),
+    (re.compile(_BASIC_LEAD + r"(?:what(?:'?s|\s+is)\s+the\s+time(?:\s+now)?|what\s+time\s+is\s+it(?:\s+now)?|"
+                r"(?:tell\s+me\s+)?the\s+time(?:\s+please)?|time\s+(?:now|please)|"
+                r"what'?s\s+the\s+time\s+right\s+now)\W*$", re.I),
+     "get_datetime", {"what": "time"}),
+    (re.compile(_BASIC_LEAD + r"(?:what(?:'?s|\s+is)\s+(?:the\s+date|today'?s\s+date)(?:\s+today)?|"
+                r"what\s+(?:day|date)\s+is\s+it(?:\s+today)?|what\s+is\s+today|which\s+day\s+is\s+(?:it|today))\W*$", re.I),
+     "get_datetime", {"what": "date"}),
+]
 _BASIC.append((re.compile(_BASIC_LEAD + r"(?:hang\s+up|end\s+(?:the\s+)?call|cut\s+(?:the\s+)?call|disconnect(?:\s+the\s+call)?)"
                           r"(?:\s+now)?\W*$", re.I), "end_call", {}))
 _VOLUME = re.compile(_BASIC_LEAD + r"(?:set\s+(?:the\s+)?)?volume\s+(?:to\s+)?(\d{1,3})(?:\s*%|\s+percent)?\W*$", re.I)

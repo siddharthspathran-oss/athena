@@ -183,7 +183,7 @@ def pick() -> dict | None:
     return shown[k]
 
 
-@tool(tags=TAG)
+@tool(tags=TAG + ["route_only"])
 def play_my_taste() -> str:
     """Play a song Athena picks herself, from what the user listens to. Use for
     "play a music of your choice", "play something", "surprise me",
@@ -196,7 +196,7 @@ def play_my_taste() -> str:
     return play_song(f"{choice['title']} {choice['artist']}".strip())
 
 
-@tool(tags=TAG)
+@tool(tags=TAG + ["route_only"])
 def play_my_playlist() -> str:
     """Play the user's own Spotify playlist, the one saved in memory. Use for
     "play my playlist", "put on my playlist"."""

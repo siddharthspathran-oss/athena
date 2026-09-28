@@ -1,0 +1,12 @@
+# Personal data, keys, tokens, chats, profile, browser profiles - never commit
+data/
+.env
+*.env
+
+# Generated / local
+__pycache__/
+*.pyc
+graphify-out/
+.venv/
+venv/
+*.log

@@ -1,0 +1,35 @@
+# Athena routines - say the name ("study mode", "run study mode", "start
+# study mode") and every step runs in order, no model involved.
+#
+# A step is one of:
+#   - tool: value              the value goes to the tool's first parameter
+#   - tool: {param: value}     for tools that need more than one
+#   - do: "open downloads"     anything Athena handles directly when you say it
+#   - wait: 2                  seconds
+#   - say: "text"              added to what Athena replies
+# `python run.py tools` lists every tool name. Edits take effect at once.
+
+study mode:
+  say: "Study mode on - music low, break reminder in 50 minutes."
+  steps:
+    - set_volume: 25
+    - play_song: "lofi study beats"
+    - add_reminder: {text: "Take a 10 minute break", when: "in 50 minutes"}
+
+study off:
+  say: "Study mode off."
+  steps:
+    - music: pause
+    - set_volume: 50
+
+morning:
+  steps:
+    - daily_brief: today
+    - get_weather: "Dehradun"
+
+good night:
+  say: "Good night. Music off and volume down. Here's tomorrow:"
+  steps:
+    - music: pause
+    - set_volume: 15
+    - daily_brief: tomorrow

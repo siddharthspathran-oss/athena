@@ -1,0 +1,39 @@
+# --- core ---
+ollama>=0.4.0
+pyyaml>=6.0
+rich>=13.7.0
+psutil>=5.9.0
+numpy>=1.26.0
+
+# --- pc control ---
+pillow>=10.0.0
+pycaw>=20240210
+comtypes>=1.4.0
+send2trash>=1.8.0
+
+# --- web ---
+httpx>=0.27.0
+beautifulsoup4>=4.12.0
+ddgs>=9.0.0
+
+# --- documents ---
+pypdf>=5.0.0
+python-docx>=1.1.0
+
+# --- scheduler + hotkey ---
+keyboard>=0.13.5
+
+# --- voice ---
+faster-whisper>=1.0.3
+sounddevice>=0.4.6
+# GPU speech-to-text. Ollama ships cuBLAS but not cuDNN, and faster-whisper
+# needs both - without them it falls back to the CPU and every spoken command
+# pays about a second before Jarvis has even read it. Measured on this
+# machine: 1.05s on the CPU against 0.105s on the GPU.
+nvidia-cublas-cu12; platform_system == "Windows"
+nvidia-cudnn-cu12; platform_system == "Windows"
+pyttsx3>=2.90
+playwright>=1.44        # browser control (uses the installed Chrome)
+winrt-Windows.Media.Control; sys_platform == 'win32'        # now-playing for the Workflows page
+winrt-Windows.Foundation.Collections; sys_platform == 'win32'
+winrt-Windows.Storage.Streams; sys_platform == 'win32'

@@ -1,0 +1,459 @@
+# ============================================
+#  ATHENA - local AI assistant configuration
+# ============================================
+
+llm:
+  # Ollama model. qwen2.5:7b is the best tool-caller that fits 8GB VRAM.
+  # This one answers everything spoken or typed; class work goes to
+  # study.model instead, so a slow careful model there costs nothing here.
+  model: "qwen2.5:7b"
+  host: "http://127.0.0.1:11434"
+  temperature: 0.3
+  # Max agent steps before giving up on a single request
+  max_steps: 8
+  context_window: 8192
+  # How long Ollama keeps the model in VRAM after a request. The default of
+  # 5 minutes means the first command after a pause pays a reload plus a
+  # re-read of every tool definition - several seconds of dead time.
+  keep_alive: "10m"   # idle this long -> the model leaves the GPU (27 Sep 2026: was 30m)
+
+assistant:
+  name: "Athena"
+  # Shown in the top-right corner of the HUD.
+  user_name: "Operator"
+  # Spoken/printed greeting
+  greeting: "Ready."
+
+safety:
+  # Shell commands matching these patterns are ALWAYS refused.
+  blocked_patterns:
+    - 'format '
+    - 'del /f /s /q c:'
+    - 'rmdir /s /q c:'
+    - 'Remove-Item -Recurse -Force C:'
+    - "diskpart"
+    - "bcdedit"
+    - "vssadmin delete"
+    - "cipher /w"
+  # If true, tools marked destructive ask before running - closing an app,
+  # placing a call, cancelling a reminder, deleting a file, running a shell
+  # command, shutting down. Turned off by request: the spoken confirmation
+  # was costing a round trip on every command, and misheard answers were
+  # cancelling actions that had been asked for clearly.
+  #
+  # With this off, nothing asks. blocked_patterns above, and allowed_roots
+  # and protected_paths below, are the only limits left on what a spoken
+  # command can reach.
+  confirm_destructive: false
+  # Tools with these tags ask first even though confirm_destructive is off.
+  # "store" = changes to the RAGAZZA website (stock, prices, orders).
+  always_confirm_tags:
+    - store
+  # Where the file tools may open, read, search and show things in Explorer.
+  # "*" = every local drive (fixed and removable), found at run time, so a
+  # new USB stick or a D: drive works without editing this. "~" = your user
+  # folder, if you ever want to narrow it back down.
+  allowed_roots:
+    - "*"
+  # Readable, but never changed: no write, move, rename or delete in here
+  # (drive roots themselves are always refused too). This matters because
+  # confirm_destructive is off - a misheard "delete windows" must not be able
+  # to send C:\Windows to the Recycle Bin. %VARS% and ~ are expanded.
+  protected_paths:
+    - '%SystemRoot%'
+    - '%ProgramFiles%'
+    - '%ProgramFiles(x86)%'
+    - '%ProgramData%'
+    - '~\AppData'
+
+knowledge:
+  # Folders indexed for "ask my documents" (RAG). Add your own.
+  sources:
+    - "~/Documents"
+  # File types to index
+  extensions: [".txt", ".md", ".pdf", ".docx"]
+  chunk_size: 1000
+  chunk_overlap: 150
+  top_k: 5
+
+voice:
+  # small.en: measured 26 Sep 2026 on this GPU at ~320 ms a command with word
+  # timings on, against ~1.9 s for base.en (base.en kept inventing words after
+  # you stopped, and every invented word costs decode time). More accurate too.
+  whisper_model: "small.en"
+  # int8_float16 = int8 weights on the GPU: about half float16's VRAM, same
+  # speed and practically the same accuracy. "float16" to go back.
+  whisper_compute: "int8_float16"
+  # auto = try the GPU, fall back to CPU if CUDA libraries are missing.
+  # GPU Whisper additionally needs cuDNN, which Ollama does not bundle.
+  device: "auto"
+  wake_word: "athena"
+  # After it answers, keep listening this long so a follow-up command does not
+  # need the wake word again ("now close Spotify").
+  # Anything you say in this window is treated as a command, so keep it short -
+  # a long window means it answers ordinary conversation.
+  # Set to 0 to require "Athena" every single time.
+  # Require the wake word to open the sentence. Accepting it anywhere meant
+  # conversation that merely mentioned Athena was taken as a command.
+  # "Hey Athena" and a few other fillers are still allowed in front.
+  wake_at_start: true
+  # Which SAPI voice to speak with, matched loosely against the installed
+  # voices. "zira" is the female US English one Windows ships; "david" is the
+  # male default. Run `jarvis doctor` to list what is installed.
+  tts_voice: "zira"
+  # SAPI speaking rate, -10 to 10. Speaking is pure waiting, so a little
+  # faster than default pays off on every command.
+  # Was 2; slowed to 0 on request (25 Sep 2026) - easier to follow.
+  tts_rate: 0
+  # "clone" speaks in the voice from data/voice_ref.wav (Coqui XTTS-v2, local);
+  # "sapi" is the Windows voice above. clone falls back to sapi on any failure.
+  engine: "sapi"
+  # 1.0 = the sample's own pace. 0.9 is a little slower, as asked.
+  clone_speed: 0.9
+  # auto = GPU when ~2.6 GB of VRAM is free, else CPU (slower, but it never
+  # pushes the everyday model off the card).
+  clone_device: "auto"
+  follow_up_seconds: 7
+  # Write everything it transcribes to data/voice.log, including speech
+  # that was not addressed to Athena. Off by default: anything said near
+  # this machine should not land in a file. Turn on only to debug.
+  log_ignored: false
+  # Seconds of silence that ends a recording. This is pure dead time on
+  # every command, so keep it just long enough to cover a natural pause.
+  silence_timeout: 0.65
+
+overlay:
+  # The glowing orb. Hidden until you speak, then it appears to show it is
+  # listening, thinking or replying, and disappears when the job is done.
+  # Click-through, so it never blocks what is underneath.
+  enabled: true
+  size: 260
+  # center, top-left, top-right, bottom, bottom-left or bottom-right.
+  # An unknown value falls back to centre, which is why "top-left" sat in
+  # the middle until the placement below learned the name.
+  position: "top-left"
+  hide_when_idle: true
+
+study:
+  # Which model answers class questions and attached worksheets.
+  #
+  # Empty means llm.model (qwen2.5:7b), which is 4.7GB and sits entirely on
+  # the GPU - fast, and wrong about half the time on a maths worksheet.
+  #
+  # A hosted model instead, when waiting is the problem. A worksheet that
+  # takes the better part of an hour locally comes back in under a minute,
+  # because an 8GB card is the bottleneck and nothing local will fix that.
+  #
+  #     python run.py key                 # what is on offer
+  #     python run.py key gemini          # free, no card; pastes without echo
+  #
+  # Model names go stale fast. gemini-2.5-flash is already refused for new
+  # keys, and the newest ones are the most likely to answer 503 on a free
+  # tier - measured on 17*23: 3.5-flash 1.5s, 3.5-flash-lite 20.7s,
+  # 3.6-flash 119s, 3.7-flash and 3.1-flash-lite both overloaded. Ask the
+  # API what it will actually serve rather than trusting a list:
+  #     curl -H "x-goog-api-key: $KEY"   #          https://generativelanguage.googleapis.com/v1beta/models
+  #
+  # Others, same two steps (all verified against this code):
+  #     model: "openrouter:deepseek/deepseek-r1:free"   # 200/day, 35+ models
+  #     model: "groq:llama-3.3-70b-versatile"           # fastest free tier
+  #     model: "cerebras:llama-3.3-70b"
+  #
+  # This is the one place anything leaves the machine, and only class work
+  # goes: the question and any attached document are sent to that provider.
+  # Voice, apps, messages, files and reminders stay on llm.model, here.
+  #
+  # Compare candidates before switching, rather than guessing:
+  #     python tests/studybench.py qwen2.5:7b qwen3:8b
+  # It marks each one against a worksheet whose answers were worked out
+  # independently, and prints score, time, and how many steps did not add up.
+  #
+  # Measured on the MATH2065 worksheet, 10 marks:
+  #
+  #   qwen3:8b       10/10   ~30 min   reasons before answering
+  #   qwen2.5:7b      4/10     7 min   \
+  #   qwen2.5:7b      5/10     5 min    > same model, three runs
+  #   qwen2.5:7b      7/10    17 min   /
+  #   deepseek-r1:8b     -         -   abandoned: 10+ min on one question
+  #
+  # The everyday model is not merely weaker here, it is unrepeatable: three
+  # runs of the same questions scored 4, 5 and 7. qwen3:8b answered every
+  # part correctly, including P(X>3|X>0) - a mistake every other model made
+  # every time, with arithmetic so tidy that verify.py had nothing to flag.
+  #
+  # The cost is real: about half an hour for a worksheet against five
+  # minutes. Set this back to "" if you would rather have it quickly and
+  # check the algebra yourself.
+  model: "gemini:gemini-3.5-flash"
+
+  # Tried in order when the one above fails - a free tier that has run out
+  # for the day, a 503, no network. The list ends with a local model on
+  # purpose: it has no quota and cannot be rate limited, so there is always
+  # something that answers, even if it takes half an hour.
+  #
+  # The Chinese open-weight models are the sensible middle rung. You do not
+  # need an account with each: OpenRouter serves DeepSeek, Kimi and Qwen on
+  # one free key (200 requests/day), and Groq serves DeepSeek R1 distills
+  # faster than anyone. Add a key with `python run.py key openrouter`.
+  #
+  # Worth knowing before you pick: those providers host in China and their
+  # terms on training with your data differ from Google's. For a probability
+  # worksheet that is a small thing, but it is yours to decide.
+  # Checked against OpenRouter's live list, not from memory: of 21 free
+  # models today, DeepSeek and Kimi are NOT among them. Kimi exists there
+  # (kimi-k2, k2-thinking, k3) but every one of them is paid. The free
+  # Chinese models are Qwen and GLM:
+  #
+  #     qwen/qwen3.8-27b:free    262k context, the better of the two
+  #     z-ai/glm-5.2:free         32k context
+  #
+  # That list moves. Check before trusting it:
+  #     curl -s https://openrouter.ai/api/v1/models | findstr ":free"
+  # Groq first: measured at 0.14-0.6s against Gemini's 1.5s, and Gemini's
+  # free tier returns 503 often enough to matter. Local last, because it
+  # cannot be rate limited.
+  # Not repeating the primary here: a duplicate just retries the model that
+  # answered 429 a moment ago. Groq's free tier counts per minute and a
+  # worksheet fires eight questions in a row, so the second rung is a
+  # *different* Groq model, then a different provider entirely.
+  #
+  # Not groq:qwen/qwen3.8-27b, which used to be the first rung: Groq's free
+  # tier allows it 1,000 output tokens a minute, and a worked answer needs
+  # several thousand, so it refused most questions outright ("Request too
+  # large ... reduce max_tokens") and the worksheet fell to qwen2.5:7b. On
+  # 24 Sep, with Gemini answering 503, that sent questions 3, 5 and 6 to the
+  # local model. gpt-oss-120b answered the same request.
+  fallback:
+    - "groq:openai/gpt-oss-120b"
+    - "gemini:gemini-3.5-flash"
+    - "openrouter:qwen/qwen3.8-27b:free"
+    # The local rung is the everyday model, NOT qwen3:8b. qwen3 needs 7.8GB
+    # of an 8GB card and answers a worksheet question in ten minutes, so
+    # while it runs nothing else can load - a fallback meant to keep class
+    # work going instead made the whole assistant stop answering "hi".
+    # qwen2.5:7b is already resident, so falling back costs nothing else.
+    - "qwen2.5:7b"
+
+  # Whether the model reasons at length before answering, when it can.
+  #   auto  - only for questions with numbers or a "solve/derive/prove" in
+  #           them. That deliberation is what earned qwen3:8b 10/10 on the
+  #           worksheet; on "explain Kirchhoff's law" it once wrote 9,000
+  #           tokens of it and had not started the answer seventeen minutes in.
+  #   true  - always. Slow, and occasionally very slow.
+  #   false - never. Fast, and noticeably worse at maths.
+  think: auto
+  # Hard ceiling on one reply, thinking included. Reached, the answer is cut
+  # short - which is visible and fixable, unlike a question that never
+  # returns at all.
+  max_tokens: 6000
+
+  # Maths wants a near-deterministic model. The everyday 0.3 is a sensible
+  # amount of variety in a spoken reply and pure downside here - it is part of
+  # why two attempts at the same question produced two *different* wrong
+  # answers rather than the same right one.
+  temperature: 0.1
+  # Room to work in. A model that reasons at length before answering needs
+  # more than the 8k a spoken command needs, and runs out mid-derivation.
+  #
+  # On an 8GB card this deliberately buys context at the cost of VRAM.
+  # Measured with qwen3:8b: 8k fits entirely on the GPU (6.2GB) but question 7
+  # of the probability worksheet ran 18 minutes without finishing, the model
+  # filling the window with its own reasoning. At 16k it spills to 80% GPU and
+  # answers the same question correctly in 413s. Running out of room costs far
+  # more than the offload does.
+  #   8k  -> 6.2GB, 100% GPU     12k -> 7.2GB, 87% GPU
+  #   10k -> 6.9GB,  92% GPU     16k -> 7.8GB, 80% GPU
+  context_window: 16384
+
+  # Check the arithmetic before showing the answer, and hand the model back
+  # any step that does not add up so it can redo that question. Every wrong
+  # answer on the first probability worksheet was arithmetic, not method:
+  # (4/5)^9 written as 0.214748, a twelve-term sum totalling 22806 instead of
+  # 25145, 10.5/3.08 called 3.57.
+  verify: true
+  # How many times a question may be sent back. Only questions that actually
+  # fail are re-asked, so on a clean worksheet this costs nothing; the answer
+  # kept is whichever attempt had the fewest faults left, so a retry can
+  # never make it worse. Anything still wrong after this is marked on the
+  # page rather than hidden.
+  recheck_attempts: 1
+
+vision:
+  # Looking at photos and attached images. The everyday model is text-only,
+  # so this needs one that reports "vision" in `ollama show`.
+  #
+  # qwen3-vl:8b-instruct handles every image question. Measured on a webcam
+  # frame with a face in it: moondream (1.7GB) captioned it "urn of water on
+  # a table" and returned an empty string for "is anyone there?";
+  # gemma4:26b (18GB) answered but ran 91% on the CPU, 2-3 minutes each.
+  # qwen3-vl answers both correctly in 1.6-1.8s warm, 100% on the GPU.
+  # "instruct" has no thinking mode, so it cannot think itself into an
+  # empty reply.
+  model: "qwen3-vl:8b-instruct"
+  # Tried only if the model above returns nothing. Left empty: qwen3-vl
+  # answers questions, and the old fallback (gemma4:26b) was the slow path.
+  fallback_model: ""
+  # 2048, not 4096: at 4096 the model is 6.2GB and ran 11%/89% CPU/GPU next
+  # to Whisper and the desktop; at 2048 it is 5.5GB and 100% GPU. A webcam
+  # frame is 1091 prompt tokens, so 2048 still leaves room for the answer.
+  num_ctx: 2048
+  # Bigger images are scaled down to this many pixels first (1280x720). A
+  # 4000x3000 phone photo was 4031 tokens and Ollama refused it at 2048.
+  max_pixels: 921600
+  # qwen2.5:7b (5.1GB) and this (5.5GB) do not fit in 8GB together, so
+  # asking about a picture evicts the everyday model. Measured: first image
+  # question 11.4s (evict qwen + load this), follow-ups 1.1-1.3s, and the
+  # next text question pays 6.8s for qwen to reload. So this many seconds
+  # after the last picture question, vision.py unloads this model and warms
+  # the everyday one in the background; another picture question before then
+  # cancels it, keeping follow-ups fast. 0 turns the swap off.
+  reload_after: 45
+  # Longer than reload_after on purpose: the timer does the unloading, and
+  # this is only the backstop if the process that asked exits first (its
+  # timer thread dies with it). Shorter would let Ollama drop the model
+  # before the timer and leave the card empty instead of reloading qwen.
+  keep_alive: "2m"
+  # Webcam as ffmpeg sees it; `python run.py cameras` lists what is available.
+  camera: "Integrated Camera"
+  capture_size: "1280x720"
+  max_tokens: 300
+
+hotkey:
+  # Global shortcut that opens the quick-command popup
+  combo: "ctrl+alt+space"
+
+autostart:
+  # Which interfaces launch when Windows logs in.
+  # Manage with: python run.py autostart on | off | status
+  # "gui" is the HUD window, so turning the laptop on opens Athena on screen
+  # rather than only in the background.
+  modes: ["hotkey", "voice", "web", "gui"]
+  # Wait this long after login before starting, so Windows settles first.
+  delay_seconds: 20
+  # Opening the lid after sleep brings the HUD back too (restored if it was
+  # minimised, reopened if it was closed). Sleep freezes every process
+  # rather than restarting it, so autostart alone never sees it.
+  open_hud_on_wake: true
+
+alerts:
+  # Athena rings your phone (a Telegram call through the free CallMeBot bot)
+  # and sends an ntfy push when something important happens. Set up with
+  # `python run.py alerts setup`, check with `python run.py call-test`.
+  # Who to reach lives in data/phone.json, never here. Runs inside the voice
+  # process, so it needs `voice` running (autostart does that).
+  #
+  # Master switch. false = nothing rings, nothing is pushed.
+  enabled: true
+  # Nothing rings between these times, except the kinds listed in `urgent`.
+  # Skipped alerts are logged on the HUD, not saved for the morning.
+  quiet_hours: ["23:00", "07:00"]
+  # A reminder you set yourself is allowed through at night - "wake me at
+  # 6:30" is inside quiet hours and is the whole point.
+  urgent: ["reminders"]
+  # Calls cost the user's attention. Cap them, and leave a gap: anything that
+  # arrives inside the gap waits and is read out in the same next call.
+  daily_cap: 10
+  min_gap_minutes: 3
+
+  telegram:
+    # Off since 24 Sep 2026: authorisation passed, but Telegram refused the
+    # call because CallMeBot's calling account (@CallMeBot_API16) was flagged
+    # as spam, and messaging it to lift that costs Stars. ntfy alone rings.
+    enabled: false
+    # Times the message is read on the call.
+    repeat: 2
+    # Also send the text as a Telegram message: "yes", "no", or "missed"
+    # (only when the call is not answered).
+    text_copy: "missed"
+    # A Google TTS voice name, e.g. "en-IN-Standard-A". Empty = the bot's
+    # default English voice.
+    voice: ""
+  ntfy:
+    # Goes out on every alert: quicker and more dependable than the shared
+    # call bot, so if the call fails the push has still arrived.
+    enabled: true
+    server: "https://ntfy.sh"
+
+  # --- what counts as important ---
+  classes:
+    # A call this many minutes before each class in the weekly timetable.
+    enabled: true
+    minutes_before: 10
+  reminders:
+    # Reminders you set also ring the phone when they fire.
+    enabled: true
+  email:
+    # New unread mail from these senders (a whole domain, or one address).
+    # The call says who it is from, never the subject.
+    enabled: true
+    poll_minutes: 5
+    senders: ["upes.ac.in"]
+  battery:
+    # Below this and not charging.
+    enabled: true
+    below_percent: 15
+  gpu:
+    # Ollama fell to the CPU and did not come back after a restart.
+    enabled: true
+  study:
+    # A study answer finished that took at least this long.
+    enabled: true
+    min_minutes: 2
+
+web:
+  # Phone interface: python run.py web
+  # Every request needs the token in data/web_token.txt, and anything
+  # destructive asks on the phone before it runs.
+  port: 8420
+
+apps:
+  # Spoken name -> real app name, for words speech keeps getting wrong.
+  # Add your own here; no code change needed.
+  aliases:
+    comment: Comet
+    vomit: Comet
+    comic: Comet
+    komet: Comet
+    commit: Comet
+    calm it: Comet
+    come it: Comet
+    homage: Comet
+    karmet: Comet
+    kermit: Comet
+    autify: Spotify
+    spotty: Spotify
+
+planner:
+  # Requests with several actions ("find X, rename it and send it to Rahul",
+  # "open the form and fill in my name, then take a screenshot") go here
+  # instead of the everyday model, which loses the thread after two or three
+  # tool calls. The hosted model decides one step at a time and sees every
+  # result, so a later step can use a real file name an earlier one found.
+  #
+  # What leaves the machine: the request, the tool list, and each tool's
+  # result (file names, page text, the brief). false = keep it all local;
+  # multi-step requests then go to llm.model as before.
+  enabled: true
+  model: "groq:openai/gpt-oss-120b"
+  # Tried in order if the one above is rate limited or down. If none
+  # answers, the request falls back to the local model.
+  fallback: ["gemini:gemini-3.5-flash", "groq:qwen/qwen3.8-27b"]
+  # A form or an app can take a dozen presses; 10 ran out mid-task.
+  max_steps: 20
+  max_tokens: 1500
+
+phone_notify:
+  # Read out phone messages that reach the PC through Phone Link / WhatsApp.
+  # "all" = every personal message; "contacts" = only saved contacts and
+  # urgent ones. Codes, companies and group chats are never read either way.
+  enabled: true
+  who: "all"
+  speak: true
+  important: []        # extra names that always count as contacts
+  quiet_start: "01:00"  # not read aloud between these (still shown in the HUD)
+  quiet_end: "07:00"
+
+# RAGAZZA website (jarvis/tools/ragazza.py). The key is in data/api_keys.json,
+# saved with `python run.py store-key`. Change the url once the site is live.
+store:
+  url: "http://localhost:3000"

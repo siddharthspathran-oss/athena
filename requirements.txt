@@ -33,6 +33,14 @@ sounddevice>=0.4.6
 nvidia-cublas-cu12; platform_system == "Windows"
 nvidia-cudnn-cu12; platform_system == "Windows"
 pyttsx3>=2.90
+# Natural voices (jarvis/tts.py). Models: python run.py voice-setup
+kokoro-onnx>=0.4        # Kokoro: the most natural; fast on the GPU
+piper-tts>=1.3          # Piper: natural enough, fast on the CPU
+# For Kokoro on the GPU, swap the CPU onnxruntime for the GPU build (same
+# module, still runs on the CPU too):
+#   pip uninstall -y onnxruntime && pip install onnxruntime-gpu
+# Optional dedicated wake word (voice.wake_model / data/athena.onnx):
+#   pip install openwakeword
 playwright>=1.44        # browser control (uses the installed Chrome)
 winrt-Windows.Media.Control; sys_platform == 'win32'        # now-playing for the Workflows page
 winrt-Windows.Foundation.Collections; sys_platform == 'win32'

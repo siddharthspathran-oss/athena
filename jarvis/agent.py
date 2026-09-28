@@ -74,11 +74,15 @@ class Step:
 
 
 VOICE_STYLE = """
-Your reply will be read aloud, so length costs the user real seconds of waiting.
-Answer in as few words as possible - usually under twelve. State the result and
-stop. No pleasantries, no restating the question, no offering further help.
-Good: "43 percent, on battery." Bad: "Your battery is currently at 43 percent
-and you are running on battery power. Let me know if you need anything else."
+Your reply is spoken aloud in a natural human voice, so talk like a capable,
+friendly person rather than a machine: contractions, everyday words, no lists,
+headings, markdown, emoji or symbols. Length costs the user real seconds of
+waiting: usually one short sentence, under fifteen words. State the result and
+stop - no restating the question, no offering further help. A little warmth
+is good when it costs nothing: "Done - it's open." "Sure, playing it now."
+Good: "You're on 43 percent, running on battery." Bad: "Your battery is
+currently at 43 percent and you are running on battery power. Let me know if
+you need anything else."
 """
 
 
@@ -142,7 +146,51 @@ class Agent:
     # genuine fragments, so the heuristic cost more than it earned.
 
     def ask(self, user_input: str) -> str:
-        """Run one full request to completion. Returns the final text answer."""
+        """Run one full request to completion. Returns the final text answer.
+
+        Anything that went wrong on the way is written to data/failures.jsonl
+        (jarvis/failures.py), so the fixes that matter can be found from
+        what actually happened rather than guessed.
+        """
+        self._trouble: list[str] = []
+        started = time.time()
+        answer = self._ask(user_input)
+        try:
+            self._log_trouble(user_input, answer, time.time() - started)
+        except Exception:
+            pass
+        return answer
+
+    _FAIL_ANSWERS = (
+        ("I couldn't do that - nothing ran", "claimed an action without a tool"),
+        ("I couldn't finish that in one go", "ran out of steps"),
+        ("I could not do that", "tool failed"),
+        ("(no response)", "empty answer"),
+        ("going round in circles", "planner looped"),
+        ("I stopped after", "planner ran out of steps"),
+        ("the online planner is busy", "planner unavailable"),
+    )
+
+    def _log_trouble(self, said: str, answer: str, took: float) -> None:
+        from . import failures
+
+        kinds = list(self._trouble)
+        kinds += [k for text, k in self._FAIL_ANSWERS if text in (answer or "")]
+        msgs = self.memory.messages
+        start = max((i for i, m in enumerate(msgs)
+                     if m.get("role") == "user" and m.get("content") == said), default=len(msgs))
+        for m in msgs[start:]:
+            body = str(m.get("content") or "")
+            if m.get("role") == "tool" and body.startswith("ERROR"):
+                kinds.append(("tool timeout: " if "did not finish within" in body else "tool error: ")
+                             + str(m.get("name")))
+        slow = float(cfg.get("failures.slow_seconds", 20))
+        if took > slow and not any(n in str(msgs[start:]) for n in ("explain", "index_documents")):
+            kinds.append(f"slow ({took:.0f}s)")
+        if kinds and answer != "(interrupted)":
+            failures.log(", ".join(dict.fromkeys(kinds)), said, answer)
+
+    def _ask(self, user_input: str) -> str:
         from . import gaming, offer
         gaming.set_on(False)     # you asked something: the model may load again
         self.spoken = ""
@@ -177,8 +225,7 @@ class Agent:
         if _is_greeting(user_input):
             # Answered here rather than by the model: it is instant, and it
             # does not drag the last topic into a fresh hello.
-            name = cfg.get("assistant.name", "Athena")
-            answer = f"Hello. {name} here - what can I do?"
+            answer = _pick_line("hello")
             self.memory.add("user", user_input)
             self.memory.add("assistant", answer)
             self._last_answer = answer
@@ -211,7 +258,8 @@ class Agent:
         replying = (self._last_answer.rstrip().endswith("?")
                     and bool(offer.YES.match(user_input) or offer.NO.match(user_input)))
         if _is_vague(user_input) and not replying:
-            answer = "Sorry, I didn't catch that. What would you like me to do?"
+            self._trouble.append("not understood")
+            answer = _pick_line("missed")
             self._last_answer = answer
             return answer
 
@@ -366,6 +414,7 @@ class Agent:
                     continue
 
                 if not used_tools and not widened and not self.spoken and _CANT.search(answer):
+                    self._trouble.append("model said it can't - retried with more tools")
                     widened = True
                     extra = registry.related(user_input, shown)
                     if extra:
@@ -508,6 +557,7 @@ class Agent:
             brief += ("\n\nAlready done this turn (do NOT repeat these; use their results):\n"
                       + "\n".join(done))
         print(f"   [local model {why} - handing to the planner]")
+        self._trouble.append(f"rescued by the planner: local model {why}")
         self._acknowledge("One moment.")
         return self._plan(brief)
 
@@ -519,6 +569,29 @@ class Agent:
             parts.append(piece)
             yield piece
         self.memory.add("assistant", "".join(parts))
+
+
+# A person does not greet you with the same sentence every time. A few
+# ways of saying the fixed lines, picked at random but never the same one
+# twice in a row.
+_LINES = {
+    "hello": ["Hey{you}. What can I do?", "Hi{you} - what do you need?",
+              "Hey{you}, I'm here. What's up?", "Hello{you}. What can I do for you?"],
+    "missed": ["Sorry, I didn't catch that.", "Say that again?",
+               "I missed that - what was it?", "Sorry, could you repeat that?"],
+}
+_last_line: dict[str, str] = {}
+
+
+def _pick_line(kind: str) -> str:
+    import random
+
+    who = str(cfg.get("assistant.user_name", "") or "").strip()
+    you = "" if not who or who.lower() in ("operator", "user") else f" {who}"
+    options = [o for o in _LINES[kind] if o != _last_line.get(kind)] or _LINES[kind]
+    line = random.choice(options)
+    _last_line[kind] = line
+    return line.format(you=you)
 
 
 # Past-tense claims that something was carried out. Checked only when the turn

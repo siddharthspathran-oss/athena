@@ -36,9 +36,11 @@ KOKORO_FILES = {"gpu": "kokoro-v1.0.onnx", "cpu": "kokoro-v1.0.int8.onnx", "voic
 PIPER_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
 PIPER_DEFAULT = "en_US-hfc_female-medium"
 
-# Above this many seconds of work per second of speech the first word comes
-# too late to feel instant; a slower engine than that is passed over in auto.
-MAX_REALTIME_FACTOR = 0.5
+# Seconds of work per second of speech above which an engine is passed over
+# in auto. The first word waits for the whole first sentence to be made, so
+# this is the delay per second of that sentence: at 0.2 a two-second sentence
+# starts 0.4 s after it is ready, near the Windows voice's own start-up.
+MAX_REALTIME_FACTOR = 0.2
 
 
 class Engine:
@@ -70,6 +72,32 @@ def _free_vram_gb() -> float:
         return float(out.splitlines()[0]) / 1024
     except Exception:
         return 0.0
+
+
+def _gpu_has_room(log=print) -> bool:
+    """Room for Kokoro on the card without squeezing the chat model.
+
+    Decided only once the chat model is on the GPU. Voice starts at login
+    alongside the model's warm-up; had Kokoro taken its VRAM first, Ollama
+    would have fitted the model around it - part on the CPU, every reply
+    many times slower, the failure the README warns about. The margin
+    (voice.kokoro_min_free_gb) also covers the vision model, which is 0.4 GB
+    bigger than the chat model it swaps in for.
+    """
+    try:
+        from .llm import LLM
+
+        llm, deadline = LLM(), time.time() + 90
+        where = llm.processor()
+        while where in ("not loaded", "unknown") and time.time() < deadline:
+            time.sleep(2)
+            where = llm.processor()
+        if where != "GPU":
+            log(f"[voice: chat model is {where} - leaving the GPU to it]")
+            return False
+    except Exception:
+        return False
+    return _free_vram_gb() >= float(cfg.get("voice.kokoro_min_free_gb", 1.6))
 
 
 class Kokoro(Engine):
@@ -160,9 +188,10 @@ def load(log=print) -> Engine | None:
                 if not kokoro_installed():
                     tried.append("kokoro: not downloaded (python run.py voice-setup)")
                     continue
-                gpu = _cuda_ready() and (want == "kokoro" or _free_vram_gb() >= 1.2)
+                gpu = _cuda_ready() and (want == "kokoro" or _gpu_has_room(log))
                 if want == "auto" and not gpu:
-                    tried.append("kokoro: no GPU room (needs onnxruntime-gpu and ~1 GB free)")
+                    tried.append("kokoro: no GPU room next to the chat model (needs onnxruntime-gpu "
+                                 "and voice.kokoro_min_free_gb free)")
                     continue
                 engine: Engine = Kokoro("cuda" if gpu else "cpu")
             else:

@@ -146,6 +146,9 @@ voice:
   # --- natural voice (jarvis/tts.py); which one speaks is `engine` below ---
   tts_speed: 1.05
   kokoro_voice: "af_heart"      # af_bella, af_nicole, bf_emma, am_adam ...
+  # Kokoro takes the GPU only once the chat model is fully on it and this
+  # much VRAM is still free - never at the chat model's expense.
+  kokoro_min_free_gb: 1.6
   piper_voice: "en_US-hfc_female-medium"
 
   # --- hearing ---

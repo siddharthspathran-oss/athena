@@ -100,6 +100,13 @@ ROUTES = {
     "what do you remember about me": ("what_you_remember", {}),
     "remember that Rahul is my classmate": ("remember_about_me", {"note": "Rahul is my classmate"}),
     "forget that I like lofi": ("forget_about", {"thing": "I like lofi"}),
+    "remember my locker number 42": ("remember", {"what": "42", "label": "locker number"}),
+    "Athena, remember my locker number is 42": ("remember", {"what": "42", "label": "locker number"}),
+    "remember that my locker number is 42": ("remember", {"what": "42", "label": "locker number"}),
+    "my locker number is 42, remember that": ("remember", {"what": "42", "label": "locker number"}),
+    "save my wifi name as Home5G": ("remember", {"what": "Home5G", "label": "wifi name"}),
+    "note down my roll number 21BEC1023": ("remember", {"what": "21BEC1023", "label": "roll number"}),
+    "remember that I like lofi": ("remember_about_me", {"note": "I like lofi"}),
     "what did we decide about the butterworth filter":
         ("search_past_conversations", {"query": "the butterworth filter"}),
     "learn my writing style": ("learn_my_writing_style", {}),
@@ -197,7 +204,16 @@ def check_memory() -> list[str]:
         memory._facts_cache["mtime"] = None
         if "Home5G" not in m.build()[0]["content"]:
             bad.append("a fact saved elsewhere did not reach the prompt")
+        # Asked back from a saved fact without the model; a question about
+        # something never saved is left alone.
+        if route("what is my locker number") != ("recall", {"query": "locker number"}):
+            bad.append(f"'what is my locker number' not answered from memory: "
+                       f"{route('what is my locker number')}")
+        if route("what is my name") == ("recall", {"query": "name"}):
+            bad.append("'what is my name' answered with the wifi name")
         shell.remember("B-12", "mom locker number")
+        if not shell.forget("name").startswith(("Which one?", "I don't")):
+            bad.append("forget('name') deleted a fact it only loosely matched")
         if not shell.forget("locker").startswith("Which one?"):
             bad.append("an ambiguous forget deleted something instead of asking")
         shell.forget("locker number")

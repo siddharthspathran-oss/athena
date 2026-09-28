@@ -374,6 +374,38 @@ def select(request: str = "", everything: bool = False) -> list[str]:
     return [n for n in names if _visible(REGISTRY[n], shop)]
 
 
+_STOP = {"the", "and", "for", "with", "that", "this", "what", "can", "you", "please", "my",
+         "your", "from", "into", "about", "have", "does", "will", "would", "could", "use",
+         "user", "users", "tool", "when", "not", "any", "all", "are", "was", "its", "it's"}
+
+
+def _terms(text: str) -> set[str]:
+    return {w[:6] for w in re.findall(r"[a-z]{3,}", (text or "").lower()) if w not in _STOP}
+
+
+def related(request: str, have: list[str], k: int = 8) -> list[str]:
+    """Up to k more tools whose name or description shares words with the
+    request, for the retry after "I can't".
+
+    That retry used to send every tool - 85 of them, ~32k characters - which
+    overflowed the context window exactly as before, and the second answer
+    came back as muddled as the first (28 Sep 2026, "remember my locker
+    number 42"). A few likely extras fit.
+    """
+    words = _terms(request)
+    if not words:
+        return []
+    shop = bool(_SHOP_WORDS.search(request or ""))
+    scored = []
+    for n, t in REGISTRY.items():
+        if n in have or not _visible(t, shop):
+            continue
+        hit = len(words & _terms(n.replace("_", " ") + " " + t.description))
+        if hit:
+            scored.append((-hit, n))
+    return [n for _, n in sorted(scored)[:k]]
+
+
 def schemas(request: str = "", everything: bool = False) -> list[dict[str, Any]]:
     """Tool schemas for this request, in the shape Ollama's `tools=` expects.
 

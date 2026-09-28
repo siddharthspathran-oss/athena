@@ -98,7 +98,9 @@ def _save_fact(key: str, value: str) -> str:
     old = facts.get(key)
     facts[key] = value
     save_facts(facts)
-    return f"Noted: {key} = {value}" + (f" (was {old})" if old and old != value else "")
+    if old and old != value:
+        return f"Updated - your {key} is now {value} (it was {old})."
+    return f"Got it - your {key} is {value}."
 
 
 @tool(tags=["memory"])
@@ -126,6 +128,8 @@ def remember(what: str, label: str = "") -> str:
 
         field = {"email": val} if is_email else {"phone": val}
         result = _add_contact(who, **field)
+        if result.startswith("ERROR"):
+            return result
         return f"{result} (saved as a contact, not a note, so messaging can find it)"
 
     if key:
@@ -179,8 +183,11 @@ def recall(query: str = "") -> str:
             out.append(learned)
         return "\n".join(out) if out else "Nothing stored yet."
 
-    lines = [f"{k}: {v}" for k, v, _ in find_facts(q)[:5]]
-    lines += [f"- {t}" for t in _profile_matches(q)[:5]]
+    facts = find_facts(q)[:5]
+    learned = _profile_matches(q)[:5]
+    if len(facts) == 1 and not learned:
+        return f"Your {facts[0][0]} is {facts[0][1]}."      # read aloud as a sentence
+    lines = [f"{k}: {v}" for k, v, _ in facts] + [f"- {t}" for t in learned]
     if lines:
         return "\n".join(lines)
     # Not saved anywhere on purpose - perhaps it was only said in passing.
@@ -196,9 +203,9 @@ def recall(query: str = "") -> str:
 
 def _profile_matches(query: str) -> list[str]:
     from .. import profile
-    from ..memory import fact_score
+    from ..memory import covers
 
-    scored = [(fact_score(query, i.text), i.text) for i in profile.load() if i.live()]
+    scored = [(covers(query, i.text), i.text) for i in profile.load() if i.live()]
     return [t for s, t in sorted(scored, reverse=True) if s >= 0.6]
 
 
@@ -210,13 +217,19 @@ def forget_everywhere(what: str) -> str:
 
     removed: list[str] = []
     facts = load_facts()
-    hits = find_facts(what, threshold=0.75)
-    exact = [h for h in hits if _norm(h[0]) == _norm(what)]
+    near = find_facts(what, threshold=0.6)
+    exact = [h for h in near if _norm(h[0]) == _norm(what)]
     if exact:
         hits = exact[:1]
-    elif len(hits) > 1:
-        return ("Which one? " + "; ".join(f"{k}: {v}" for k, v, _ in hits[:5])
+    elif len(near) == 1 and near[0][2] >= 0.75:
+        hits = near
+    elif near:
+        # Deleting is not undoable: a loose or shared match is asked about,
+        # never guessed ("forget my name" must not take "wifi name" with it).
+        return ("Which one? " + "; ".join(f"{k}: {v}" for k, v, _ in near[:5])
                 + ". Say the label exactly.")
+    else:
+        hits = []
     for k, v, _ in hits:
         facts.pop(k, None)
         removed.append(f"{k}: {v}")

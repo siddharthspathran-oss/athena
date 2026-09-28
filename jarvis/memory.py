@@ -80,9 +80,20 @@ def fact_score(query: str, key: str, value: str = "") -> float:
         return 1.0
     qw, kw, vw = _words(query), _words(key), _words(value)
     seq = SequenceMatcher(None, q, k).ratio()
-    on_key = len(qw & kw) / len(qw)
-    on_any = len(qw & (kw | vw)) / len(qw)
-    return max(seq, on_key, 0.85 * on_any)
+    # Shared words over the longer of the two, so "name" is only half of
+    # "wifi name": asked "what is my name", it must not answer the wifi.
+    on_key = len(qw & kw) / max(len(qw), len(kw) or 1)
+    on_value = len(qw & vw) / len(qw)            # "which one is Home5G"
+    return max(seq, on_key, 0.85 * on_value)
+
+
+def covers(query: str, text: str) -> float:
+    """Share of the query's words found in a longer text (profile lines)."""
+    qw = _words(query)
+    if not qw:
+        return 0.0
+    return max(len(qw & _words(text)) / len(qw),
+               SequenceMatcher(None, _norm(query), _norm(text)).ratio())
 
 
 def find_facts(query: str, threshold: float = 0.6) -> list[tuple[str, str, float]]:

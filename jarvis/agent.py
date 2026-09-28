@@ -268,12 +268,13 @@ class Agent:
                 self.memory.add("assistant", answer)
                 return answer
 
-        tools = registry.schemas(user_input)
+        shown = registry.select(user_input)
+        tools = [registry.get(n).schema for n in shown]
         # The model is shown only the tools this request seems to need
-        # (registry.select). If that guess was wrong it says so - "I can't",
-        # or claims an action it had no tool for - and gets one more try
-        # with every tool, rather than a wrong answer.
-        widened = len(tools) >= len(registry.schemas(user_input, everything=True))
+        # (registry.select). If that guess was wrong it says "I can't", and
+        # gets one more try with the tools that look related to what was
+        # asked - not all of them, which would overflow the context again.
+        widened = False
         max_steps = int(cfg.get("llm.max_steps", 8))
         used_tools = False
         nudged = False
@@ -326,8 +327,11 @@ class Agent:
 
                 if not used_tools and not widened and not self.spoken and _CANT.search(answer):
                     widened = True
-                    tools = registry.schemas(user_input, everything=True)
-                    continue
+                    extra = registry.related(user_input, shown)
+                    if extra:
+                        shown = shown + extra
+                        tools = [registry.get(n).schema for n in shown]
+                        continue
 
                 # A small model will happily reply "Screen locked." without
                 # having locked anything. Wording in the system prompt does not
@@ -335,9 +339,6 @@ class Agent:
                 if not used_tools and _claims_action(answer):
                     if not nudged:
                         nudged = True
-                        if not widened:     # maybe the tool it needed was not shown
-                            widened = True
-                            tools = registry.schemas(user_input, everything=True)
                         self.memory.add_raw({
                             "role": "user",
                             "content": (
@@ -1074,8 +1075,55 @@ _STYLE_CMD = re.compile(
     r"|^\W*(?:(?:athena|jarvis)\W+)?how\s+do\s+i\s+write\W*$", re.I)
 
 
+# "remember my locker number 42", "save my wifi name as Home5G", "remember
+# that my locker number is 42", "my locker number is 42, remember that".
+# Sent to the model, qwen answered "Noted, locker number 42" without calling
+# anything, twice, and the user got "no tool ran" (28 Sep 2026). A labelled
+# fact is regular enough to parse here and save outright.
+_MEM_VERB = (r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please)\W+)*(?:(?:can|could|would)\s+you\s+)?"
+             r"(?:please\s+)?(?:remember|save|note(?:\s+down)?|store|keep\s+in\s+mind|write\s+down)"
+             r"\s+(?:that\s+)?")
+_LABEL = r"(?P<label>[a-z][\w'-]*(?:\s+[\w'-]+){0,5}?)"
+_MEM_FACT_IS = re.compile(
+    _MEM_VERB + r"(?:my|our|the)\s+" + _LABEL + r"\s*(?:\s(?:is|are|was|=|as)\s+|[:=]\s*)"
+    r"(?P<value>\S.{0,150}?)\W*$", re.I)
+# No "is": the value is whatever ends the sentence and has a digit in it -
+# "locker number 42", "wifi name Home5G", "roll number 21BEC1023".
+_MEM_FACT_BARE = re.compile(
+    _MEM_VERB + r"(?:my|our|the)?\s*" + _LABEL
+    + r"\s+(?P<value>[^\s]*\d[^\s]*(?:\s+[^\s]*\d[^\s]*)*)\W*$", re.I)
+_MEM_FACT_AFTER = re.compile(
+    r"^\W*(?:(?:athena|jarvis|hey|ok|okay)\W+)*(?:my|our)\s+" + _LABEL
+    + r"\s+(?:is|are)\s+(?P<value>\S.{0,150}?)[\s,.;-]+(?:(?:please|so|and)\s+)?"
+      r"(?:remember|save|note|store)(?:\s+(?:that|it|this))?\W*$", re.I)
+
+# "what is my locker number", "what's my wifi name", "do you remember my
+# roll number" - answered from saved facts. Only when one is actually saved
+# under that name: otherwise "what is my X" stays with the other routers.
+_MEM_ASK = re.compile(
+    r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please)\W+)*(?:"
+    r"what(?:'?s|\s+is|\s+was|\s+are)|tell\s+me|do\s+you\s+(?:remember|know)|"
+    r"remind\s+me(?:\s+of|\s+what)?|recall)\s+(?:my|our|the)\s+(?P<q>.{2,60}?)"
+    r"(?:\s+(?:is|again|please))*\W*$", re.I)
+
+
 def _direct_memory(text: str) -> tuple[str, dict] | None:
     t = text.strip()
+    for pattern in (_MEM_FACT_AFTER, _MEM_FACT_IS, _MEM_FACT_BARE):
+        m = pattern.match(t)
+        if m:
+            label = re.sub(r"\s+", " ", m.group("label")).strip(" ,.")
+            value = m.group("value").strip(" ,.")
+            if label and value:
+                return "remember", {"what": value, "label": label}
+    m = _MEM_ASK.match(t)
+    if m:
+        try:
+            from .memory import find_facts
+            if find_facts(m.group("q"), threshold=0.65):
+                return "recall", {"query": m.group("q").strip(" ?.")}
+        except Exception:
+            pass
     if _MEM_SHOW.match(t):
         return "what_you_remember", {}
     m = _MEM_SEARCH.match(t)

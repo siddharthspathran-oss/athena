@@ -105,7 +105,25 @@ def _prepare(con: sqlite3.Connection) -> None:
         # A Python built without FTS5: search falls back to LIKE.
         _ready["fts"] = False
     con.commit()
-    _migrate(con)
+    # Voice, the HUD and the popup start together, and each would run the
+    # one-time import: three processes found the index empty at once and
+    # imported every conversation three times. BEGIN IMMEDIATE takes the
+    # write lock first, so one imports and the others wait, then find it done.
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        imported = _migrate(con)
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    # Renamed only once the rows are safely in; a file that cannot be renamed
+    # (still open elsewhere) is imported no second time - the checks above see
+    # the rows already there.
+    for p in imported:
+        try:
+            p.rename(p.with_name(p.name + ".migrated"))
+        except OSError:
+            pass
 
 
 @contextmanager
@@ -153,17 +171,29 @@ def add_chunks(kind: str, rows: list[dict], vecs: np.ndarray | None,
     per-source progress that says how far they reach - in one transaction,
     so the two can never disagree."""
     with connect() as con:
+        todo = list(enumerate(rows))
+        if progress is not None:
+            # Incremental indexing runs in voice, the HUD and the popup, each
+            # with its own in-process lock only. Two of them could read the
+            # same progress, embed the same turns and both store them (83
+            # duplicate chunks in a test). Take the write lock, then skip
+            # what another process stored meanwhile.
+            con.execute("BEGIN IMMEDIATE")
+            have = {(s, p) for s, p in con.execute(
+                "SELECT source, pos FROM chunks WHERE kind=?", (kind,))}
+            todo = [(i, r) for i, r in todo
+                    if (str(r.get("source", "")), int(r.get("pos", 0))) not in have]
         con.executemany(
             "INSERT INTO chunks(kind, source, title, pos, at, text, vec) VALUES (?,?,?,?,?,?,?)",
             [(kind, str(r.get("source", "")), str(r.get("title", "")), int(r.get("pos", 0)),
               float(r.get("at", 0)), str(r["text"]),
               _blob(vecs[i]) if vecs is not None else None)
-             for i, r in enumerate(rows)])
+             for i, r in todo])
         for source, done in (progress or {}).items():
             con.execute("INSERT INTO progress(kind, source, done) VALUES (?,?,?) "
-                        "ON CONFLICT(kind, source) DO UPDATE SET done=excluded.done",
+                        "ON CONFLICT(kind, source) DO UPDATE SET done=MAX(done, excluded.done)",
                         (kind, source, int(done)))
-    return len(rows)
+    return len(todo)
 
 
 def progress(kind: str) -> dict[str, int]:
@@ -347,7 +377,7 @@ def last_time(table: str) -> float | None:
 
 # ---------------------------------------------------------------- migration
 
-def _migrate(con: sqlite3.Connection) -> None:
+def _migrate(con: sqlite3.Connection) -> list[Path]:
     """Bring the old files in, once. Each is renamed *.migrated afterwards,
     kept rather than deleted; a file that cannot be read is left alone."""
     data = DB_FILE.parent
@@ -356,12 +386,10 @@ def _migrate(con: sqlite3.Connection) -> None:
         # Imported already (a rename that failed last time): just rename now.
         return con.execute("SELECT COUNT(*) FROM chunks WHERE kind=?", (kind,)).fetchone()[0] == 0
 
+    imported: list[Path] = []
+
     def done(*paths: Path) -> None:
-        for p in paths:
-            try:
-                p.rename(p.with_name(p.name + ".migrated"))
-            except OSError:
-                pass
+        imported.extend(paths)
 
     # Documents: index.npz + index_meta.json
     npz, meta_f = data / "index.npz", data / "index_meta.json"
@@ -408,12 +436,12 @@ def _migrate(con: sqlite3.Connection) -> None:
                     continue
                 if r.get("role") in ("user", "assistant") and r.get("content"):
                     rows_in.append((float(r.get("t", 0)), r["role"], str(r["content"])[:1500]))
-            con.executemany(f"INSERT INTO {table}(t, role, content) VALUES (?,?,?)", rows_in)
-            con.commit()
+            if con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0:
+                con.executemany(f"INSERT INTO {table}(t, role, content) VALUES (?,?,?)", rows_in)
             done(f)
         except Exception as e:
             print(f"[db: could not import {name} ({e}) - left as it was]")
-    con.commit()
+    return imported
 
 
 def _insert_old(con: sqlite3.Connection, kind: str, rows_in: list[dict], vecs) -> None:
@@ -421,4 +449,3 @@ def _insert_old(con: sqlite3.Connection, kind: str, rows_in: list[dict], vecs) -
         "INSERT INTO chunks(kind, source, title, pos, at, text, vec) VALUES (?,?,?,?,?,?,?)",
         [(kind, str(r["source"]), str(r["title"]), int(r["pos"]), float(r["at"]), str(r["text"]),
           _blob(vecs[i])) for i, r in enumerate(rows_in)])
-    con.commit()

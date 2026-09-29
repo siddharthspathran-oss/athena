@@ -60,6 +60,7 @@ python run.py gui       # desktop window
 python run.py hotkey    # background, Ctrl+Alt+Space popup anywhere
 python run.py voice     # talk to it
 python run.py tools     # list everything it can do
+python run.py portal-capture   # watch a web portal (UPES) while you use it; writes portal_capture.txt, logins removed
 ```
 
 ## Sounding human and answering fast

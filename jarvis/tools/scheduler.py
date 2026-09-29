@@ -135,10 +135,18 @@ def _absolute(s: str, now: datetime) -> datetime | None:
     if "tomorrow" in s:
         day_offset = 1
         s = s.replace("tomorrow", " ")
-    if "tonight" in s or "this evening" in s:
-        s = s.replace("tonight", " ").replace("this evening", " ")
-        if "pm" not in s and "am" not in s:
-            s += " pm"
+    if "tonight" in s:
+        s = s.replace("tonight", " night ")
+    # "at 5 in the evening" became 5 AM: the part of the day was dropped
+    # (28 Sep 2026). It decides am/pm, and with no clock it sets one.
+    part = re.search(r"\b(?:in\s+the\s+|this\s+|at\s+|early\s+|late\s+)?(morning|afternoon|evening|night)\b", s)
+    if part:
+        pod = part.group(1)
+        s = s[:part.start()] + " " + s[part.end():]
+        if not re.search(r"\d", s):
+            s += {"morning": " 9 am", "afternoon": " 3 pm", "evening": " 6 pm", "night": " 9 pm"}[pod]
+        elif not re.search(r"\b(?:am|pm)\b", s):
+            s += " am" if pod == "morning" else " pm"
     s = re.sub(r"^(at|on|by)\s+", "", s.strip()).strip()
     s = re.sub(r"\s+", " ", s)
 
@@ -222,11 +230,14 @@ _LOOSE_CLOCK = re.compile(
 # "remind me to call papa at 9pm" -> "call papa"
 _TASK = re.compile(
     r"\bto\s+(.+?)(?=\s+(?:at|in|on|by|after|around|about|within|"
-    r"tomorrow|tonight|this evening)\b|[.!?]*\s*$)",
+    r"tomorrow|tonight|this\s+(?:morning|afternoon|evening))\b|[.!?]*\s*$)",
     re.I,
 )
 
-_DAY_WORD = re.compile(r"\b(tomorrow|tonight|this evening)\b", re.I)
+_DAY_WORD = re.compile(r"\b(tomorrow(?:\s+(?:morning|afternoon|evening|night))?|tonight|"
+                       r"this\s+(?:morning|afternoon|evening))\b", re.I)
+# "at 5 in the evening": the part of the day after the clock decides am/pm.
+_PART_AFTER = re.compile(r"^\s*(in\s+the\s+(?:morning|afternoon|evening|night)|at\s+night)\b", re.I)
 
 
 def parse_request(utterance: str) -> tuple[str, str] | None:
@@ -249,9 +260,13 @@ def parse_request(utterance: str) -> tuple[str, str] | None:
         when = "in " + m.group(1)
     else:
         m = _CLOCK_PHRASE.search(rest) or _LOOSE_CLOCK.search(rest)
-        if not m:
+        if m:
+            after = _PART_AFTER.match(rest[m.end():])
+            when = prefix + "at " + m.group(1) + ((" " + after.group(1)) if after else "")
+        elif day and re.search(r"morning|afternoon|evening|night", day.group(1), re.I):
+            when = day.group(1)          # "remind me tomorrow morning to ..."
+        else:
             return None
-        when = prefix + "at " + m.group(1)
 
     if _parse_when(when) is None:
         return None
@@ -306,19 +321,32 @@ def list_reminders() -> str:
 
 @tool(tags=TAG, destructive=True)
 def cancel_reminder(reminder_id: str) -> str:
-    """Cancel a reminder by its id, or pass 'all' to clear every reminder.
+    """Cancel a reminder by its id or by what it says, or pass 'all' to clear
+    every reminder.
 
-    reminder_id: the 8-character id from list_reminders, or 'all'
+    reminder_id: the 8-character id from list_reminders, words from the reminder ("the dentist one"), or 'all'
     """
     jobs = _load()
-    if reminder_id.strip().lower() == "all":
+    key = reminder_id.strip()
+    if key.lower() == "all":
         _save([])
         return f"Cancelled all {len(jobs)} reminder(s)."
-    remaining = [j for j in jobs if j["id"] != reminder_id]
-    if len(remaining) == len(jobs):
-        return f"No reminder with id {reminder_id}."
-    _save(remaining)
-    return f"Cancelled reminder {reminder_id}."
+    hit = [j for j in jobs if j["id"] == key]
+    if not hit:
+        # The model passes the reminder's words at least as often as its id:
+        # "cancel the test athena reminder" came as "test athena", got "No
+        # reminder with id", and was reported as cancelled (28 Sep 2026).
+        words = [w for w in re.findall(r"[a-z0-9]+", key.lower())
+                 if w not in ("the", "a", "my", "reminder", "reminders", "one", "for", "to", "about")]
+        if words:
+            hit = [j for j in jobs if all(w in str(j.get("text", "")).lower() for w in words)]
+    if not hit:
+        return f"NOT CANCELLED: no reminder matches '{key}'. Nothing was changed."
+    if len(hit) > 1:
+        return ("NOT CANCELLED: several reminders match - which one? "
+                + "; ".join(f"{j['id']} {j.get('text', '')}" for j in hit))
+    _save([j for j in jobs if j["id"] != hit[0]["id"]])
+    return f"Cancelled the reminder: {hit[0].get('text', hit[0]['id'])}."
 
 
 # ---------- background runner ----------

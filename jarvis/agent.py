@@ -86,6 +86,38 @@ you need anything else."
 """
 
 
+def warm(voice: bool = True, load: bool = False) -> None:
+    """Put the command prompt back in Ollama's cache before anyone asks.
+
+    Ollama keeps one prompt prefix cached. The learner, the deadline scan and
+    the typed chat (a different system prompt from voice) each replace it,
+    and the next spoken command then re-reads ~9k tokens of instructions and
+    tool definitions: 6-10 s instead of under one (28 Sep 2026). This reads
+    them now, in the background, for one token of output.
+
+    Only while the model is already on the GPU: warming must never be what
+    keeps it loaded when keep_alive or gaming mode wants the VRAM back.
+    load=True is the start-up call, which loads the model on purpose.
+    """
+    try:
+        from . import gaming
+        if gaming.on() and not load:
+            return      # Ollama still lists a model it just freed; warming would reload it mid-game
+        llm = LLM()
+        loaded = [m.model for m in llm.client.ps().models]
+        if not load and not any(m.split(":")[0] == str(llm.model).split(":")[0]
+                                and m.endswith(str(llm.model).split(":")[-1]) for m in loaded):
+            return
+        prompt = SYSTEM_PROMPT.format(name=cfg.get("assistant.name", "Athena"))
+        if voice:
+            prompt += VOICE_STYLE
+        system = Memory(prompt).build()[0]
+        llm.chat([system, {"role": "user", "content": "hi"}],
+                 tools=registry.schemas(""), max_tokens=1)
+    except Exception as e:                      # warming is a nicety, never an error
+        print(f"[warm: {e}]")
+
+
 class Agent:
     def __init__(self, on_step: Callable[[Step], None] | None = None,
                  confirm: Callable[[str, dict], bool] | None = None,
@@ -446,10 +478,22 @@ class Agent:
                     answer = ("I couldn't do that - nothing ran. "
                               "Try saying it more directly, like 'open Outlook'.")
 
+                # Nothing at all - typically after being told to call the tool
+                # it skipped. "(no response)" left the user with silence;
+                # the planner gets a go, and failing that she says so.
+                if not answer:
+                    if not used_tools:
+                        rescued = self._rescue(user_input, "empty answer")
+                        if rescued is not None:
+                            return rescued
+                        answer = "I couldn't work that one out. Could you ask it another way?"
+                    else:
+                        answer = "Done."
+
                 self._last_answer = answer
 
                 self.memory.add("assistant", answer)
-                return answer or "(no response)"
+                return answer
 
             used_tools = True
 
@@ -1014,6 +1058,7 @@ _SONG_GENERIC = {
     "music", "song", "songs", "some music", "something", "anything",
     "next", "previous", "last", "spotify", "playlist", "my playlist",
     "a song", "some songs", "it", "that", "this", "one", "more",
+    "this song", "that song", "the song", "it again", "this one",
 }
 
 _SONG_CMD = re.compile(
@@ -1035,8 +1080,14 @@ def _direct_song(text: str) -> tuple[str, dict] | None:
     query = re.sub(r"\s+", " ", m.group("q")).strip()
     trimmed = re.sub(r"^(?:the|a|an)\s+", "", query, flags=re.I)
     trimmed = re.sub(r"\s+(?:on|in)\s+spotify$", "", trimmed, flags=re.I).strip()
+    # "something by arijit singh" searched Spotify for the word "something".
+    trimmed = re.sub(r"^(?:something|anything|songs?|music|some\s+(?:songs?|music)|a\s+song)\s+"
+                     r"(?:by|from|of)\s+", "", trimmed, flags=re.I).strip()
 
     low = trimmed.lower()
+    # "songs that I like" is a request for her pick, not a title.
+    if re.match(r"^(?:songs?|music|tracks?)\s+(?:that\s+)?i\s+(?:like|love|listen\s+to)\b", low):
+        return "play_my_taste", {}
     if not low or low in _SONG_GENERIC:
         return None
     if re.match(r"^(?:next|previous|last|some|any|more)\b", low):
@@ -1097,6 +1148,39 @@ _ARITHMETIC = re.compile(
     r"percent|into|and|point)\b)+", re.I)
 
 
+# Things the model got wrong by answering from nothing or reaching for the
+# wrong tool (28 Sep 2026): the time abroad, the song playing, the Wi-Fi
+# network and the IP address.
+_INFO_LEAD = r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please)\W+)*(?:(?:can|could)\s+you\s+)?(?:(?:tell|show)\s+me\s+)?"
+_TIME_IN = re.compile(
+    _INFO_LEAD + r"(?:what(?:'?s|\s+is)\s+the\s+time|what\s+time\s+is\s+it|(?:the\s+)?(?:current\s+|local\s+)?time)"
+    r"\s+(?:right\s+now\s+|now\s+)?in\s+(?P<place>[a-z][a-z .'-]{1,30}?)(?:\s+(?:right\s+)?now)?\W*$", re.I)
+_NOW_PLAYING = re.compile(
+    _INFO_LEAD + r"(?:what(?:'?s|\s+is)\s+(?:this|the|that)\s+song(?:\s+(?:called|playing|name))?|"
+    r"what\s+song\s+is\s+(?:this|playing|on|that)(?:\s+(?:right\s+)?now)?|what(?:'?s|\s+is)\s+playing(?:\s+(?:right\s+)?now)?|"
+    r"which\s+song\s+is\s+(?:this|playing|on)|what\s+am\s+i\s+listening\s+to|name\s+(?:of\s+)?(?:this|the)\s+song|"
+    r"who\s+(?:sings|sang|is\s+singing)\s+(?:this|this\s+song|the\s+song))\W*$", re.I)
+_WIFI_NAME = re.compile(
+    _INFO_LEAD + r"(?:(?:which|what)\s+(?:wi-?fi|network|wifi\s+network)\s+(?:am\s+i|are\s+we|is\s+(?:this|the)\s+(?:pc|laptop))\s+(?:connected|on)(?:\s+to)?|"
+    r"what(?:'?s|\s+is)\s+(?:my|the)\s+(?:wi-?fi|network)(?:\s+name)?|am\s+i\s+connected\s+to\s+(?:the\s+)?(?:wi-?fi|internet))\W*$", re.I)
+_IP = re.compile(
+    _INFO_LEAD + r"(?:what(?:'?s|\s+is)\s+)?(?:my|the|this\s+(?:pc'?s|laptop'?s))\s+(?:(?:public|local|private)\s+)?ip(?:\s+address)?\W*$", re.I)
+
+
+def _direct_info(text: str) -> tuple[str, dict] | None:
+    t = text.strip()
+    m = _TIME_IN.match(t)
+    if m and not re.fullmatch(r"(?:the\s+)?(?:morning|evening|afternoon|night|here|india\s+time)", m.group("place"), re.I):
+        return "world_time", {"place": m.group("place").strip()}
+    if _NOW_PLAYING.match(t):
+        return "now_playing", {}
+    if _WIFI_NAME.match(t):
+        return "pc_status", {"what": "wifi"}
+    if _IP.match(t):
+        return "pc_status", {"what": "ip"}
+    return None
+
+
 _BRIEF = re.compile(
     r"^\W*(?:(?:athena|jarvis)\W+)?(?:please\s+|can you\s+)*"
     # "what's" arrives as "whats" as often as not - Whisper drops the
@@ -1105,6 +1189,10 @@ _BRIEF = re.compile(
     r"(?:what'?s?(?:\s+is|\s+does)?\s+(?:my|the)\s+(?:(?:full|whole|entire|complete|remaining|rest\s+of\s+(?:my|the))\s+)?(?:day|schedule|calendar|"
     r"timetable|agenda|plan)\b)"
     r"|(?:what'?s?(?:\s+is)?\s+(?:on|up|happening)\s+(?:today|tomorrow)\b)"
+    # "what's on my calendar today" checked the date and said "no events".
+    r"|(?:what'?s?(?:\s+is)?\s+(?:on|in)\s+(?:my|the)\s+(?:calendar|schedule|agenda|timetable)\b)"
+    r"|(?:(?:check|show|open|read)\s+(?:me\s+)?(?:my|the)\s+(?:calendar|schedule|agenda)\b)"
+    r"|(?:do\s+i\s+have\s+(?:any(?:thing)?\s+)?(?:classes|lectures|meetings|events|plans)\b)"
     r"|(?:what\s+(?:have i|do i have)\s+(?:on|got)\b)"
     r"|(?:(?:brief|breathe|breef|brieve)\s+me\b)|(?:my\s+brief\b)|(?:daily\s+brief\b)"
     r"|(?:what\s+(?:classes|lectures|meetings)\s+(?:do i have|are)\b)"
@@ -1205,7 +1293,7 @@ def route(text: str) -> tuple[str, dict] | None:
     "open downloads" exactly as you would.
     """
     said = _fix_verb(clean_speech(text))
-    return (_direct_power(said) or _direct_basic(said) or _direct_memory(said)
+    return (_direct_power(said) or _direct_basic(said) or _direct_info(said) or _direct_memory(said)
             or _direct_phone_files(said) or _direct_find_document(said)
             or _direct_store(said)
             or _direct_routine(said) or _direct_it(said)
@@ -1432,12 +1520,13 @@ _BASIC = [
                 r"(?:play\s+(?:me\s+)?)?(?:(?:a|some|any)\s+)?(?:music|songs?|tracks?|something|anything)?\s*"
                 r"(?:of|from|by|at)?\s*your\s+(?:own\s+)?(?:choice|pick|liking|wish)"
                 r"|play\s+(?:me\s+)?(?:something|anything|a\s+song|some(?:thing)?\s+(?:music|songs?)|a\s+track)\s+"
-                r"(?:(?:that\s+)?i\s+(?:like|love|listen\s+to|would\s+like)|for\s+me|you\s+(?:like|think\s+i'?d\s+like|choose)|good|nice|random)"
-                r"|play\s+(?:me\s+)?(?:something|anything|a\s+(?:random\s+)?(?:song|track)|random\s+(?:music|songs?))"
+                r"(?:(?:that\s+)?i\s+(?:like|love|listen\s+to|would\s+like)|for\s+me|(?:that\s+)?you\s+(?:like|love|prefer|think\s+i'?d\s+like|choose)|good|nice|random)"
+                r"|play\s+(?:me\s+)?(?:something|anything|a\s+(?:random\s+)?(?:song|track)|any\s+(?:song|track|music)|random\s+(?:music|songs?))"
+                r"|play\s+(?:me\s+)?(?:my\s+)?(?:kind|type|style)\s+of\s+(?:music|songs?)|play\s+(?:me\s+)?my\s+(?:vibe|taste|style)"
                 r"|surprise\s+me(?:\s+with\s+(?:a\s+song|(?:some\s+)?music))?"
                 r"|(?:choose|pick)\s+(?:a\s+|some\s+)?(?:song|music|track)(?:\s+for\s+me)?"
                 r")\W*$", re.I), "play_my_taste", {}),
-    (re.compile(_BASIC_LEAD + r"(?:play|resume|start)\s+(?:some\s+|the\s+|my\s+)?(?:music|songs?|playback)"
+    (re.compile(_BASIC_LEAD + r"(?:play|resume|start|put\s+on)\s+(?:some\s+|the\s+|my\s+)?(?:music|songs?|playback)"
                 r"(?:\s+on\s+spotify)?\W*$", re.I), "music", {"action": "play"}),
     (re.compile(_BASIC_LEAD + r"(?:pause|stop)\s+(?:the\s+)?(?:music|song|playback|spotify)\W*$|"
                 + _BASIC_LEAD + r"pause\W*$", re.I), "music", {"action": "pause"}),
@@ -1455,14 +1544,16 @@ _BASIC = [
 # the model and took seconds; from a menu click that reads as broken.
 _BASIC += [
     # Gaming mode off: load the model back. Checked before "on" below.
-    (re.compile(_BASIC_LEAD + r"(?:(?:turn|switch|shut)\s+off|stop|exit|end|disable|leave|quit|cancel)\s+(?:the\s+)?gaming\s+mode\W*$|"
-                + _BASIC_LEAD + r"gaming\s+mode\s+(?:off|over|done|finished)\W*$|"
+    (re.compile(_BASIC_LEAD + r"(?:(?:turn|switch|shut)\s+off|stop|exit|end|disable|leave|quit|cancel)\s+(?:the\s+)?gam(?:e|er|ing)\s+mode\W*$|"
+                + _BASIC_LEAD + r"gam(?:e|er|ing)\s+mode\s+(?:off|over|done|finished)\W*$|"
+                + _BASIC_LEAD + r"(?:i'?m\s+)?done\s+(?:gaming|playing)\W*$|"
                 + _BASIC_LEAD + r"(?:back\s+to\s+|switch\s+to\s+)?normal\s+mode\W*$|"
                 + _BASIC_LEAD + r"(?:re)?load\s+(?:the\s+|your\s+)?(?:ai\s+)?models?(?:\s+back)?\W*$", re.I),
      "load_gpu", {}),
     # Frees the GPU for a game or an editor. Routed, so it works even when the
     # model itself is the thing filling the VRAM.
-    (re.compile(_BASIC_LEAD + r"(?:(?:turn\s+on|start|enable|switch\s+to|go\s+(?:in)?to|enter)\s+)?gaming\s+mode(?:\s+on)?\W*$|"
+    (re.compile(_BASIC_LEAD + r"(?:(?:turn\s+on|start|enable|switch\s+to|go\s+(?:in)?to|enter)\s+)?gam(?:e|er|ing)\s+mode(?:\s+on)?\W*$|"
+                + _BASIC_LEAD + r"(?:i'?m\s+(?:going\s+to\s+|gonna\s+)?(?:start\s+)?(?:gaming|playing\s+(?:a\s+)?games?)|time\s+to\s+game)(?:\s+now)?\W*$|"
                 + _BASIC_LEAD + r"(?:free|clear|release|empty)\s+(?:up\s+)?(?:the\s+|my\s+|some\s+)?(?:gpu|vram|graphics\s+(?:card|memory)|video\s+memory)\W*$|"
                 + _BASIC_LEAD + r"unload\s+(?:the\s+|all\s+(?:the\s+)?|your\s+)?(?:ai\s+)?models?\W*$", re.I),
      "free_gpu", {}),
@@ -1509,6 +1600,28 @@ _BASIC += [
     (re.compile(_BASIC_LEAD + r"(?:what(?:'?s|\s+is)\s+(?:the\s+date|today'?s\s+date)(?:\s+today)?|"
                 r"what\s+(?:day|date)\s+is\s+it(?:\s+today)?|what\s+is\s+today|which\s+day\s+is\s+(?:it|today))\W*$", re.I),
      "get_datetime", {"what": "date"}),
+]
+# Disk, RAM, CPU and uptime: read from the system. Left to the model, "how
+# much free space is on my C drive" came back as an invented figure.
+_ASK = r"(?:(?:how\s+much|what(?:'?s|\s+is)(?:\s+(?:the|my))?|check(?:\s+(?:my|the))?|show(?:\s+me)?(?:\s+(?:my|the))?|tell\s+me(?:\s+(?:my|the))?)\s+)?"
+_ON_PC = r"(?:\s+(?:on|in|of)\s+(?:my\s+|the\s+|this\s+)?(?:[a-z]\s*(?::|\s+drive)|laptop|pc|computer|disk|drive|system|ssd))?"
+_BASIC += [
+    (re.compile(_BASIC_LEAD + _ASK + r"(?:free\s+|available\s+|remaining\s+)?(?:disk\s+|storage\s+|drive\s+|hard\s+drive\s+)?"
+                r"(?:space|storage)(?:\s+(?:is|do\s+i\s+have|have\s+i\s+got))?(?:\s+(?:left|free|available|remaining))?"
+                + _ON_PC + r"(?:\s+(?:left|free|available|remaining))?\W*$|"
+                + _BASIC_LEAD + r"(?:is\s+(?:my\s+)?(?:disk|drive|storage|[a-z]\s+drive)\s+(?:full|almost\s+full))\W*$", re.I),
+     "pc_status", {"what": "disk"}),
+    (re.compile(_BASIC_LEAD + _ASK + r"(?:ram|memory\s+usage|ram\s+usage|(?:ram|memory)\s+(?:is\s+)?(?:used|in\s+use|free|left|available))"
+                + _ON_PC + r"(?:\s+(?:am\s+i\s+using|is\s+(?:used|free|left)|left|free|used))?\W*$|"
+                + _BASIC_LEAD + r"how\s+much\s+(?:ram|memory)\s+(?:am\s+i\s+using|is\s+(?:being\s+)?used|is\s+(?:free|left)|do\s+i\s+have(?:\s+(?:left|free))?|left|free)"
+                + _ON_PC + r"\W*$", re.I),
+     "pc_status", {"what": "memory"}),
+    (re.compile(_BASIC_LEAD + _ASK + r"(?:cpu|processor)\s*(?:usage|use|load|at)?" + _ON_PC + r"\W*$|"
+                + _BASIC_LEAD + r"how\s+busy\s+is\s+(?:my\s+|the\s+)?(?:cpu|processor)\W*$", re.I),
+     "pc_status", {"what": "cpu"}),
+    (re.compile(_BASIC_LEAD + r"(?:(?:what(?:'?s|\s+is)\s+(?:my\s+|the\s+)?)?uptime|how\s+long\s+(?:has|have)\s+(?:my\s+|the\s+|this\s+)?"
+                r"(?:pc|laptop|computer|system|i)\s+been\s+(?:on|running|up))\W*$", re.I),
+     "pc_status", {"what": "uptime"}),
 ]
 _BASIC.append((re.compile(_BASIC_LEAD + r"(?:hang\s+up|end\s+(?:the\s+)?call|cut\s+(?:the\s+)?call|disconnect(?:\s+the\s+call)?)"
                           r"(?:\s+now)?\W*$", re.I), "end_call", {}))

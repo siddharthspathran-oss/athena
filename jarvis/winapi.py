@@ -146,8 +146,12 @@ def focus_hwnd(hwnd: int) -> bool:
         # received input. A background service has had none, which is why
         # this worked from a terminal and failed from the voice process -
         # so give it one, then ask again.
-        user32.keybd_event(0x12, 0, 0, 0)          # ALT down
-        user32.keybd_event(0x12, 0, KEYEVENTF_KEYUP, 0)
+        # F24, not Alt: any key press lifts the lock, but a lone Alt opens
+        # the app menu in Spotify and every Electron/Chromium app - and with
+        # Spotify's menu open, its search results vanish from automation, so
+        # play_song found nothing (28 Sep 2026). No keyboard has F24.
+        user32.keybd_event(0x87, 0, 0, 0)          # F24 down
+        user32.keybd_event(0x87, 0, KEYEVENTF_KEYUP, 0)
         time_module.sleep(0.05)
         user32.SetForegroundWindow(hwnd)
 

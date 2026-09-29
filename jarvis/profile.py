@@ -326,7 +326,11 @@ def _apply(plan: dict, items: list[Item], said: str = "") -> list[str]:
     return notes
 
 
+_used_model = [False]    # set when the chat model ran here, so the prompt cache can be restored
+
+
 def _learn_from(convo: str) -> list[str]:
+    _used_model[0] = True
     from .llm import LLM
     from .planner import _parse
 
@@ -418,9 +422,16 @@ def start_learner(is_idle=lambda: True, log=lambda s: None) -> None:
                     if n:
                         log(f"memory indexed {n} new conversation snippet(s)")
                 if is_idle() and _style_due():
+                    _used_model[0] = True
                     notes = recall.learn_style()
                     if notes:
                         log(f"memory updated your writing style ({len(notes)} notes)")
+                # The learner's prompt replaced the command prompt in Ollama's
+                # cache; put it back so the next command is not the slow one.
+                if _used_model[0]:
+                    _used_model[0] = False
+                    from .agent import warm
+                    warm(voice=True)
             except Exception as e:
                 log(f"memory learner error: {str(e)[:80]}")
             time.sleep(300)

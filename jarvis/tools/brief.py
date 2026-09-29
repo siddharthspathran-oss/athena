@@ -178,13 +178,28 @@ def _unanswered_mail(limit: int = 5) -> list[str]:
     except Exception:
         return []
 
+    # One batched request for every message's headers, instead of one round
+    # trip each - five unread mails were ~2.5 s of the brief (28 Sep 2026).
+    got: dict[str, dict] = {}
+
+    def keep(request_id, response, exception):
+        if exception is None:
+            got[request_id] = response
+
+    batch = service.new_batch_http_request(callback=keep)
+    for m in ids:
+        batch.add(service.users().messages().get(
+            userId="me", id=m["id"], format="metadata",
+            metadataHeaders=["Subject", "From"]), request_id=m["id"])
+    try:
+        batch.execute()
+    except Exception:
+        return []
+
     out = []
     for m in ids:
-        try:
-            msg = service.users().messages().get(
-                userId="me", id=m["id"], format="metadata",
-                metadataHeaders=["Subject", "From"]).execute()
-        except Exception:
+        msg = got.get(m["id"])
+        if not msg:
             continue
         headers = {h["name"]: h["value"]
                    for h in msg.get("payload", {}).get("headers", [])}
@@ -380,8 +395,7 @@ def _clock(when: dt.datetime | None) -> str:
     return when.strftime("%H:%M")
 
 
-def collect(day: dt.date) -> tuple[list[dict], list[str]]:
-    """Everything on for a day, and what is waiting for a reply."""
+def _events(day: dt.date) -> list[dict]:
     events = _google_events(day) + _timetable_events(day)
     for feed in load_json(FEEDS_FILE, []):
         try:
@@ -389,7 +403,16 @@ def collect(day: dt.date) -> tuple[list[dict], list[str]]:
         except Exception:
             continue                          # one dead feed is not the brief
     events.sort(key=lambda e: (e["all_day"] is False, e["start"] or dt.datetime.max))
-    return events, _unanswered_mail()
+    return events
+
+
+def collect(day: dt.date) -> tuple[list[dict], list[str]]:
+    """Everything on for a day, and what is waiting for a reply - the calendar
+    and the inbox read side by side rather than one after the other."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(2) as pool:
+        mail = pool.submit(_unanswered_mail)
+        return _events(day), mail.result()
 
 
 def _local(t: dt.datetime) -> dt.datetime:
@@ -398,8 +421,9 @@ def _local(t: dt.datetime) -> dt.datetime:
 
 
 def _first_tomorrow() -> dict | None:
+    # Events only: this used to read the whole inbox a second time.
     try:
-        events, _ = collect(dt.date.today() + dt.timedelta(days=1))
+        events = _events(dt.date.today() + dt.timedelta(days=1))
     except Exception:
         return None
     timed = [e for e in events if not e["all_day"]]

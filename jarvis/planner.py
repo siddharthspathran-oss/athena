@@ -87,6 +87,10 @@ app_read. Press several controls in a row with ONE app_click, comma-separated \
 only when you need to see what changed.
 - Never type passwords, PINs, OTPs or card details; tell the user to type them.
 - Lookups that do not depend on each other can be asked for together, and run at the same time: {{"tools": [{{"tool": "battery", "args": {{}}}}, {{"tool": "get_weather", "args": {{"city": "Delhi"}}}}]}}. Only for finding things out - an action (open, send, click, type, delete) always goes alone.
+- If ONE call finishes the request and its result says what happened ("Opened Spotify.", \
+"Volume set to 40."), add "final": true to it - the result is then read to the user as your \
+reply, with no further step: {{"tool": "open_app", "args": {{"name": "spotify"}}, "final": true}}. \
+Never for a lookup whose result you still need to put into words.
 - Do only what was asked. Keep the final reply to one or two plain sentences.
 
 Tools:
@@ -132,13 +136,17 @@ def _parse(text: str) -> dict | None:
     return None
 
 
-def _chat(messages: list[dict], models: list[str] | None = None) -> tuple[str, str]:
+def _chat(messages: list[dict], models: list[str] | None = None,
+          patient: bool = True) -> tuple[str, str]:
     """(reply, model that answered), trying the chain in order.
 
     A free tier answering 429 is waited out a few times before moving on:
     Groq's ~8,000 tokens a minute gives a browser task one step every 10-20
     seconds, and giving up at the second refusal stopped a Zomato booking
     with the date and guests already chosen (25 Sep 2026).
+
+    patient=False never waits: an everyday request someone is standing
+    there for moves straight to the next model, and then to the local one.
     """
     chain = [str(m) for m in (models or [cfg.get("planner.model", "groq:openai/gpt-oss-120b"),
                                         *(cfg.get("planner.fallback") or [])]) if m]
@@ -148,13 +156,13 @@ def _chat(messages: list[dict], models: list[str] | None = None) -> tuple[str, s
             try:
                 return cloud.chat(model, messages, temperature=0.0,
                                   max_tokens=int(cfg.get("planner.max_tokens", 1500)),
-                                  timeout=60), model
+                                  timeout=60 if patient else int(cfg.get("llm.hosted_timeout", 15))), model
             except RuntimeError as e:
                 msg = str(e)
                 # Gemini says "quota" for its per-minute limit too; only a
                 # per-DAY limit is worth abandoning the model for.
                 daily = re.search(r"per\s*day|PerDay|daily", msg, re.I)
-                if "429" in msg and not daily and attempt < 3:
+                if patient and "429" in msg and not daily and attempt < 3:
                     time.sleep(8 + 6 * attempt)   # per-minute limit: wait for it to refill
                     continue
                 trouble.append(f"{model}: {msg[:80]}")
@@ -226,11 +234,46 @@ def _shrink(messages: list[dict]) -> None:
             m["content"] = m["content"][:350] + "\n[...older result shortened]"
 
 
+# Results that are data for the model, never a sentence to read out as the
+# answer - "final" is ignored on these.
+_RAW_RESULTS = {"web_search", "read_webpage", "read_file", "search_documents",
+                "search_past_conversations", "browser_read", "app_read", "list_folder",
+                "find_files", "list_installed_apps", "list_windows", "list_running_apps",
+                "system_info", "system_report", "look_at_screen", "daily_brief", "recall"}
+
+# A request that asks for something to be done - it cannot be answered
+# with words alone.
+_ACTION_REQUEST = re.compile(
+    r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|now|just|and|so)\W+)*"
+    r"(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?"
+    r"(?:open|close|launch|start|stop|play|pause|resume|send|message|text|whatsapp|email|mail|"
+    r"call|ring|dial|set|turn|switch|delete|remove|move|rename|copy|download|remind|schedule|"
+    r"book|mute|unmute|lock|type|click|press|fill|submit|save|write|create|make|install|"
+    r"uninstall|shut|restart|reboot|sleep|minimi[sz]e|maximi[sz]e|close|kill|add|cancel|"
+    r"change|update|connect|disconnect|enable|disable)\b", re.I)
+
+_SPOKEN = ("\n\nThe reply is spoken aloud: talk like a capable, friendly person - "
+           "contractions, everyday words, no lists, markdown or symbols, usually one short "
+           "sentence.")
+
+
+def _first_sentences(text: str, n: int = 2) -> str:
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    return " ".join(parts[:n])[:300]
+
+
 def run(request: str, on_step: Callable[[str, dict, str], None] | None = None,
         only: list[str] | None = None, result_chars: int = 3000,
-        models: list[str] | None = None) -> str:
-    """Work through a multi-step request. Returns the reply for the user.
-    Raises Stuck if no hosted model answered before anything ran."""
+        models: list[str] | None = None, history: list[dict] | None = None,
+        quick: bool = False, voice: bool = False) -> str:
+    """Work through a request. Returns the reply for the user.
+    Raises Stuck if no hosted model answered before anything ran.
+
+    quick: an everyday request (llm.everyday: hosted) rather than a long
+    task - never wait on a rate limit, fewer extra tools, and a "final"
+    action answers in one call. history: the last few turns, so "open it"
+    and "what about tomorrow" mean something. voice: the reply is spoken.
+    """
     now = time.strftime("%A %d %B %Y, %H:%M")
     from . import profile
     about = profile.prompt_text()
@@ -241,7 +284,7 @@ def run(request: str, on_step: Callable[[str, dict, str], None] | None = None,
     # related ones - fewer tokens each step is a faster step.
     if only is None and cfg.get("planner.narrow_tools", True):
         picked = registry.select(request)
-        only = picked + registry.related(request, picked, k=15)
+        only = picked + registry.related(request, picked, k=6 if quick else 15)
     system = _SYSTEM.format(tools=_tool_list(only), now=now) + (
         f"\n\nAbout the user (from earlier conversations):\n{about}" if about else "")
     facts = _shareable_facts()
@@ -249,9 +292,18 @@ def run(request: str, on_step: Callable[[str, dict, str], None] | None = None,
         # "find my roll number and email it to the professor" needs the roll
         # number, and the planner never saw memory.json (28 Sep 2026).
         system += "\n\nThings the user asked Athena to remember:\n" + facts
-    messages = [{"role": "system", "content": system},
-                {"role": "user", "content": request}]
-    max_steps = int(cfg.get("planner.max_steps", 10))
+    if quick:
+        system += ("\n\nEveryday mode: general knowledge, maths and conversation need no tool - "
+                   'answer them straight away with {"done": ...}. Anything about this PC, the '
+                   "user's files, schedule, mail, messages or memory still needs a tool first.")
+    if voice:
+        system += _SPOKEN
+    messages = [{"role": "system", "content": system}]
+    for m in (history or [])[-6:]:
+        if m.get("role") in ("user", "assistant") and m.get("content"):
+            messages.append({"role": m["role"], "content": str(m["content"])[:400]})
+    messages.append({"role": "user", "content": request})
+    max_steps = int(cfg.get("llm.max_steps", 8) if quick else cfg.get("planner.max_steps", 10))
     ran: list[str] = []
     seen: dict[str, int] = {}
     pushed = False
@@ -259,7 +311,7 @@ def run(request: str, on_step: Callable[[str, dict, str], None] | None = None,
 
     for _ in range(max_steps):
         try:
-            reply, model = _chat(messages, models)
+            reply, model = _chat(messages, models, patient=not quick)
         except RuntimeError as e:
             if not ran:
                 raise Stuck(str(e))
@@ -285,6 +337,18 @@ def run(request: str, on_step: Callable[[str, dict, str], None] | None = None,
             # classes" with {"done": "87%, Physics at 9..."} - no tool run,
             # every word invented (25 Sep 2026). Nothing is "done" before a
             # tool has run; say so once, and if it insists, hand over.
+            if not ran and quick:
+                # Conversation needs no tool - but "what's my battery" answered
+                # "80 percent" from nothing would be believed. Anything about
+                # the user or this PC is sent back for a tool, as before.
+                # Judged on the request, not the answer: "Owls can turn their
+                # heads 270 degrees" is a fact with a verb in it, and checking
+                # answers for action words sent it back for a tool.
+                from .agent import _SYSTEM_TOPIC
+                personal = bool(re.search(r"\bmy\b|\bmine\b", request, re.I)
+                                or _SYSTEM_TOPIC.search(request))
+                if not personal and not _ACTION_REQUEST.match(request):
+                    return str(step["done"]).strip() or "Done."
             if not ran:
                 if pushed:
                     raise Stuck("planner answered without running any tool")
@@ -353,6 +417,11 @@ def run(request: str, on_step: Callable[[str, dict, str], None] | None = None,
             _log_step(name, args, result)
             if on_step:
                 on_step(name, args, result)
+            # One call, and its result is the answer: no second round trip -
+            # half the wait and half the free quota for "open spotify".
+            if (step.get("final") is True and name not in _RAW_RESULTS
+                    and not result.startswith(("ERROR", "REFUSED"))):
+                return _first_sentences(result)
         _shrink(messages)
         messages.append({"role": "user",
                          "content": f"Result of {name}:\n{result[:result_chars]}\n\nNext step?"})

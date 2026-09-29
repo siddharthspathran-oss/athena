@@ -337,7 +337,10 @@ def _keep_warm() -> None:
     ticks = 0
     while True:
         try:
-            if ticks == 0:                       # once, at start-up
+            # Once, at start-up - unless everyday requests go to a hosted
+            # model: then the local one stays off the GPU until a fallback
+            # actually needs it.
+            if ticks == 0 and not Agent._everyday_hosted():
                 warm.chat([{"role": "user", "content": "hi"}])
             # Every two minutes: is the model actually on the GPU? A server
             # started before the driver was ready stays on the CPU for good,

@@ -16,6 +16,20 @@ llm:
   # 5 minutes means the first command after a pause pays a reload plus a
   # re-read of every tool definition - several seconds of dead time.
   keep_alive: "10m"   # idle this long -> the model leaves the GPU (27 Sep 2026: was 30m)
+  # Who answers everyday requests that no direct route handles:
+  #   hosted - the planner's models (planner.model, then planner.fallback),
+  #            i.e. your free Groq / Gemini keys. Faster than the 7B here and
+  #            nothing is loaded on the GPU; the local model is not even
+  #            warmed at start-up. Any error, no network or a rate limit
+  #            falls back to the local model at once - it never waits.
+  #   local  - this model, always. Nothing leaves the PC.
+  # What hosted sends: the request, the last few turns, the tool list, each
+  # tool result, your profile and saved facts (anything that looks like a
+  # password or code is left out). Direct routes (open/close apps, music,
+  # volume, reminders, files...) never reach any model, hosted or local.
+  everyday: hosted
+  # Seconds to wait on the hosted model before answering locally instead.
+  hosted_timeout: 15
   # Show the model only the tools a request needs: a fixed core (open app,
   # files, web, reminders, music...) plus the groups its words point at
   # (registry.TOOL_GROUPS). All 92 at once is ~9k tokens - more than

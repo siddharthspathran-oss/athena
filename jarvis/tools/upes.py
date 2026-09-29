@@ -119,9 +119,16 @@ def _find_courses(responses: list, known_id, known_name: str) -> list[dict]:
 
 # ---------------------------------------------------------------- the browser
 
+# Without these Chrome announces it is automated (navigator.webdriver and
+# the "controlled by automated software" bar), and Google's reCAPTCHA on
+# the myUPES login would not load.
+_QUIET = dict(ignore_default_args=["--enable-automation"],
+              args=["--disable-blink-features=AutomationControlled"])
+
+
 def _open(pw, headless: bool):
     PROFILE.mkdir(parents=True, exist_ok=True)
-    kw = dict(user_data_dir=str(PROFILE), headless=headless, no_viewport=True)
+    kw = dict(user_data_dir=str(PROFILE), headless=headless, no_viewport=True, **_QUIET)
     try:
         return pw.chromium.launch_persistent_context(channel="chrome", **kw)
     except Exception:
@@ -216,9 +223,12 @@ def fetch(headless: bool = True, wait: float = 40) -> list[dict]:
             ctx.close()
 
 
+VISIBLE_FLAG = DATA / "upes_visible"      # set when reading only works in a shown window
+
+
 def refresh(headless: bool | None = None) -> list[dict]:
     if headless is None:
-        headless = bool(cfg.get("upes.headless", True))
+        headless = bool(cfg.get("upes.headless", True)) and not VISIBLE_FLAG.exists()
     with _lock:
         courses = fetch(headless=headless)
         if courses:
@@ -354,26 +364,69 @@ def start() -> None:
     threading.Thread(target=loop, daemon=True, name="athena-upes").start()
 
 
-def login() -> int:
-    """`python run.py upes-login`: a visible window to log in once, then a test read."""
-    from playwright.sync_api import sync_playwright
+def _real_browser() -> list[str] | None:
+    """Chrome (or Edge) itself, not driven by Playwright."""
+    import os
+    import shutil
 
-    with sync_playwright() as pw:
-        ctx = _open(pw, headless=False)
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.goto(PAGE, wait_until="domcontentloaded", timeout=60_000)
-        print("\nLog in to myUPES in the window that opened, until you see the")
-        print("attendance page. Then press Enter here.")
-        input()
-        ctx.close()
+    found = shutil.which("chrome") or shutil.which("msedge")
+    if found:
+        return [found]
+    for base in (os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)"),
+                 os.environ.get("LOCALAPPDATA")):
+        if not base:
+            continue
+        for rel in (r"Google\Chrome\Application\chrome.exe", r"Microsoft\Edge\Application\msedge.exe"):
+            p = Path(base) / rel
+            if p.exists():
+                return [str(p)]
+    return None
+
+
+def login() -> int:
+    """`python run.py upes-login`: log in once in a plain Chrome window, then a
+    test read.
+
+    The login window is ordinary Chrome started with Athena's profile - not
+    one Playwright drives - because reCAPTCHA would not load in an automated
+    browser (29 Sep 2026). Reads afterwards reuse the cookies it leaves.
+    """
+    import subprocess
+
+    PROFILE.mkdir(parents=True, exist_ok=True)
+    exe = _real_browser()
+    if not exe:
+        print("Chrome or Edge was not found. Install Chrome and run this again.")
+        return 1
+    proc = subprocess.Popen(exe + [f"--user-data-dir={PROFILE}", "--no-first-run",
+                                   "--no-default-browser-check", "--new-window", PAGE])
+    print("\nA Chrome window opened with Athena's own profile.")
+    print("1. Log in to myUPES there (the captcha works normally in it).")
+    print("2. When your attendance page shows, CLOSE that Chrome window.")
+    print("Waiting for the window to close...")
+    try:
+        proc.wait()
+    except KeyboardInterrupt:
+        pass
+    time.sleep(2)                       # let Chrome finish writing the profile
     print("Reading your attendance...")
     try:
         courses = refresh(headless=True)
+        VISIBLE_FLAG.unlink(missing_ok=True)
     except NotLoggedIn:
-        print("Still not logged in - the portal sent the page to its login again.")
-        print("If it only stays logged in while the window is open, tell Athena's")
-        print("developer; set upes.headless: false in config.yaml meanwhile.")
-        return 1
+        print("Not visible to a hidden window - trying once with the window shown...")
+        try:
+            courses = refresh(headless=False)
+            VISIBLE_FLAG.write_text("reads need a shown window")
+            print("That worked: Athena will show a Chrome window briefly when it reads.")
+        except NotLoggedIn:
+            print("Still not logged in - myUPES sent the page back to its login.")
+            print("Run this again and make sure the attendance page shows before")
+            print("closing the window.")
+            return 1
+        except Exception as e:
+            print(f"Could not read attendance: {e}")
+            return 1
     except Exception as e:
         print(f"Could not read attendance: {e}")
         return 1

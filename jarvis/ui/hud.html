@@ -185,6 +185,11 @@ form input::placeholder{color:var(--faint);letter-spacing:2px}
 .pb{width:38px;height:38px;border-radius:50%;border:1px solid var(--line);background:rgba(56,225,255,.05);
   display:grid;place-items:center;flex:none;cursor:pointer}
 .pb svg{width:18px;height:18px;color:#bfeaf6}
+@media (max-width:440px){form{gap:5px}.pb{width:34px;height:34px}form input::placeholder{letter-spacing:1px}}
+#shares{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}#shares:empty{display:none}
+#shares a,.jv a.dl{display:inline-block;padding:5px 10px;border:1px solid var(--line);border-radius:14px;
+  color:#bfeaf6;text-decoration:none;font-size:12px;background:rgba(56,225,255,.06)}
+#shares a small{opacity:.6;margin-left:6px}
 .pb.on{border-color:var(--c);box-shadow:var(--glow)}
 #go{background:linear-gradient(135deg,#38e1ff,#1aa6d6);border:0}
 #go svg{color:#022}
@@ -541,11 +546,14 @@ body.pageview main>.page{display:flex;flex-direction:column;grid-column:1/-1;gri
     <div class="wave" id="wave"></div>
     <div id="say"></div>
     <div class="chatbar"><button id="expandBtn">⤢ Full chat</button><button id="newChat2">+ New chat</button><button id="histBtn2">History</button></div>
+    <div id="shares"></div>
     <div id="chip"></div>
     <form id="f" autocomplete="off">
       <button type="button" class="pb" id="mic" title="Talk - same as saying 'Athena'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
       <label class="pb" for="pick" title="Attach a file"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.5l-8.5 8.5a5 5 0 0 1-7-7l9-9a3.3 3.3 0 0 1 4.7 4.7l-9 9a1.7 1.7 0 0 1-2.4-2.4l8.3-8.3"/></svg></label>
       <label class="pb" for="cam" id="camBtn" title="Take a photo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></label>
+      <label class="pb" for="toPC" title="Send files to the PC"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4M12 13V7M9 10l3-3 3 3"/></svg></label>
+      <input id="toPC" type="file" hidden multiple>
       <input id="pick" type="file" hidden accept="image/*,.pdf,.docx,.txt,.md,.csv,application/pdf">
       <input id="cam" type="file" hidden accept="image/*" capture="environment">
       <input id="q" type="text" placeholder="MESSAGE ATHENA…" enterkeyhint="send">
@@ -648,6 +656,8 @@ function md(t){
   t=t.replace(/^\s*[-*]\s+/gm,'• ');
   return t}
 function answer(text,err){
+  // [share:<id>] - a file the PC is sending: shown as a Download button.
+  const shared=[];text=(text||'').replace(/\s*\[share:([\w-]+)\]/g,(_,id)=>{shared.push(id);return ''});
   const m=(text||'').match(/\[([\w.\-]+\.html)\]\s*$/m);
   const body=(m?text.replace(m[0],'').trim():(text||''));
   const d=document.createElement('div');d.className='jv'+(err?' err':'');
@@ -661,7 +671,41 @@ function answer(text,err){
   if(m){const a=document.createElement('a');a.className='open';
     a.href='/answers/'+encodeURIComponent(m[1])+'?t='+encodeURIComponent(token());
     a.target='_blank';a.textContent='OPEN FULL ANSWER';d.appendChild(document.createElement('br'));d.appendChild(a)}
+  shared.forEach(id=>{const a=document.createElement('a');a.className='dl';a.href=shareLink(id);
+    a.setAttribute('download','');a.textContent='⬇ DOWNLOAD';d.appendChild(document.createElement('br'));d.appendChild(a)});
+  if(shared.length)loadShares();
   return d}
+function shareLink(id){return '/get/'+encodeURIComponent(id)+'?t='+encodeURIComponent(token())}
+
+// ---------- files between the PC and this phone ----------
+// Waiting downloads (made by "send me X", by voice or typed) stay listed
+// until they expire, so a file asked for by voice on the PC is found here.
+async function loadShares(){
+  try{const j=await api('/shares');const box=$('shares');box.innerHTML='';
+    (j.shares||[]).forEach(s=>{const a=document.createElement('a');a.href=shareLink(s.id);
+      a.setAttribute('download','');a.textContent='⬇ '+s.name;
+      const sm=document.createElement('small');sm.textContent=s.minutes_left+' min';a.appendChild(sm);
+      box.appendChild(a)})}catch(e){}
+}
+function sendToPC(files){
+  let i=0;
+  const next=()=>{if(i>=files.length)return;const f=files[i++];
+    const w=line('sending '+f.name+' to the PC… 0%','tr');
+    const x=new XMLHttpRequest();
+    x.open('POST','/upload?name='+encodeURIComponent(f.name||'file'));
+    x.setRequestHeader('X-Token',token());
+    x.upload.onprogress=e=>{if(e.lengthComputable)w.textContent='sending '+f.name+' to the PC… '+Math.floor(100*e.loaded/e.total)+'%'};
+    x.onload=()=>{let j={};try{j=JSON.parse(x.responseText)}catch(e){}
+      w.remove();
+      if(x.status==200)answer('Saved '+j.saved+' ('+j.size+') in '+j.folder+' on the PC.');
+      else answer(j.error||('Upload failed (HTTP '+x.status+').'),true);
+      next()};
+    x.onerror=()=>{w.remove();answer('Cannot reach the PC to send '+f.name+'.',true);next()};
+    x.send(f)};
+  next();
+}
+$('toPC').onchange=()=>{const fs=Array.from($('toPC').files||[]);$('toPC').value='';if(fs.length)sendToPC(fs)};
+loadShares();setInterval(()=>{if(!document.hidden)loadShares()},30000);
 function term(){}   // the old terminal panel; activity now shows in the live feed
 
 let busy=false;

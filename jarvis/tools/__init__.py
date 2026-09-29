@@ -1,5 +1,5 @@
 """Tool packages. Importing this module registers every tool."""
-from . import (apps, brief, browser, files, knowledge, messaging, places, routines,
+from . import (apps, brief, browser, files, knowledge, messaging, phonefiles, places, routines,
                ragazza, scheduler, screen, shell, study, system, taste, todo, web, windows)  # noqa: F401
 from .. import deadlines  # noqa: F401,E402  (registers check_deadlines)
 

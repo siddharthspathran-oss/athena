@@ -333,6 +333,18 @@ function add(text,cls){ const d=document.createElement('div');
 // is on the PC, so turn the reference into a link the phone can open - same
 // rendering, equations and tables and all.
 function addAnswer(text){
+  const shared=[];
+  text=(text||'').replace(/\s*\[share:([\w-]+)\]/g,function(_,id){shared.push(id);return '';});
+  if(shared.length){
+    const d=add(text,'msg bot');
+    shared.forEach(function(id){
+      const a=document.createElement('a');
+      a.href='/get/'+encodeURIComponent(id)+'?t='+encodeURIComponent(token());
+      a.setAttribute('download',''); a.className='page'; a.textContent='Download';
+      d.appendChild(document.createElement('br')); d.appendChild(a);
+    });
+    return d;
+  }
   const m=text.match(/\[([\w.\-]+\.html)\]$/m);
   if(!m){ return add(text,'msg bot'); }
   const d=add(text.replace(m[0],'').trim(),'msg bot');
@@ -907,8 +919,87 @@ class Handler(BaseHTTPRequestHandler):
             self._open_chat(path[len("/chats/"):])
         elif path.startswith("/answers/"):
             self._serve_answer(path)
+        elif path == "/shares":
+            if not self._authorised():
+                self._json(401, {"error": "Bad or missing token."})
+                return
+            from .. import share
+            self._json(200, {"shares": share.pending(), "folder": str(share.receive_folder())})
+        elif path.startswith("/get/"):
+            self._serve_share(path[len("/get/"):])
         else:
             self._json(404, {"error": "not found"})
+
+    # ---------- files between the PC and the phone ----------
+
+    def _serve_share(self, share_id: str) -> None:
+        """A file the PC shared with the phone (jarvis/share.py).
+
+        Like /answers, a link the phone's browser follows, so the token comes
+        in the query string. Both it and the share id must be right, and the
+        file is checked again now - still there, still allowed.
+        """
+        import urllib.parse
+
+        from .. import share
+
+        query = urllib.parse.parse_qs(self.path.partition("?")[2])
+        if not secrets.compare_digest((query.get("t") or [""])[0], get_token()):
+            self._send(401, b"Bad or missing token.", "text/plain; charset=utf-8")
+            return
+        target = share.resolve(urllib.parse.unquote(share_id))
+        if target is None:
+            self._send(404, b"That file is no longer shared - ask Athena to send it again.",
+                       "text/plain; charset=utf-8")
+            return
+        size = target.stat().st_size
+        quoted = urllib.parse.quote(target.name)
+        ascii_name = target.name.encode("ascii", "replace").decode().replace('"', "_")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition",
+                         f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        with open(target, "rb") as f:
+            while True:
+                block = f.read(1 << 20)
+                if not block:
+                    break
+                try:
+                    self.wfile.write(block)
+                except (BrokenPipeError, ConnectionResetError):
+                    return                      # the phone gave up; nothing to clean up
+        _log(f"phone downloaded {target.name}")
+
+    def _receive_upload(self) -> None:
+        """A file sent from the phone, streamed straight to disk (share.receive)."""
+        import urllib.parse
+
+        from .. import share
+
+        if not self._authorised():
+            self._json(401, {"error": "Bad or missing token."})
+            return
+        query = urllib.parse.parse_qs(self.path.partition("?")[2])
+        name = (query.get("name") or ["file"])[0]
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            length = 0
+        try:
+            saved = share.receive(self.rfile, length, name)
+        except share.UploadError as e:
+            self._json(e.status, {"error": str(e)})
+            return
+        except OSError as e:
+            self._json(500, {"error": f"Could not save it on the PC: {e}"})
+            return
+        _log(f"received from phone: {saved.name} ({share.human_size(saved.stat().st_size)})")
+        self._json(200, {"saved": saved.name, "folder": str(saved.parent),
+                         "size": share.human_size(saved.stat().st_size)})
 
     # ---------- saved conversations ----------
 
@@ -1178,6 +1269,9 @@ class Handler(BaseHTTPRequestHandler):
             _log(f"page action: {page} {body.get('action') or body.get('name') or ''}".strip())
             self._json(200, out)
             return
+        if route == "/upload":
+            self._receive_upload()
+            return
         if route == "/voice/start":
             if not self._authorised():
                 self._json(401, {"error": "Bad or missing token."})
@@ -1239,12 +1333,18 @@ class Handler(BaseHTTPRequestHandler):
 
             _agent.confirm = confirm
             _log(f"typed: {text[:70]}")
+            from .. import share
+            # Typed on the phone (or the HUD): "send me X" means this device,
+            # and it is already on screen, so no push is needed.
+            share.from_phone = True
             try:
                 answer = _agent.ask(text)
                 _log(f"replied: {answer.splitlines()[0][:70] if answer else ''}")
             except Exception as e:
                 self._json(500, {"error": f"Athena failed: {e}"})
                 return
+            finally:
+                share.from_phone = False
 
             if blocked:
                 self._json(200, {

@@ -132,11 +132,30 @@ ROUTES = {
     "open the scheduler pdf": ("open_file", {"path": "the scheduler pdf"}),
     # places and calls
     "call me": ("call_me", {"message": "Athena here. This is a test call. Alerts are working."}),
+    "call me on my phone": ("call_me", {"message": "Athena here. This is a test call. Alerts are working."}),
+    # files between the PC and the phone
+    "send the signals lab manual to my phone": ("send_to_phone", {"file": "signals lab manual"}),
+    "can you share my resume.pdf with my phone": ("send_to_phone", {"file": "resume.pdf"}),
+    "send it to my phone": ("send_to_phone", {"file": "it"}),
+    "send a message to my phone": None,
+    "send me the lab manual": None,          # said to the PC: "me" is not "my phone"
+    "open the file I sent from my phone": ("open_from_phone", {"which": "latest"}),
+    "show what my phone sent": ("open_from_phone", {"which": "folder"}),
     "is dominos open now": ("place_info", {"place": "dominos", "question": "is dominos open now"}),
     "book a table at barbeque nation for 4 tomorrow at 8":
         ("book_reservation", {"place": "barbeque nation", "when": "tomorrow at 8", "people": 4}),
     # conversation
     "tell me a joke": None,
+}
+
+# Typed in the phone's chat, where "send me X" means "to this phone".
+PHONE_ROUTES = {
+    "send me the lab manual": ("send_to_phone", {"file": "lab manual"}),
+    "please send me my resume.pdf": ("send_to_phone", {"file": "resume.pdf"}),
+    "send me a joke": None,
+    "send me some ideas for dinner": None,
+    "send me the summary": None,
+    "send me a reminder at 5": ("add_reminder", {"text": "Reminder", "when": "at 5"}),
 }
 
 # split_simple(text, strict=True): the sentence did not look multi-step,
@@ -162,12 +181,23 @@ SELECTION = [
     ("play something by arijit", ["music"], ["play_song", "play_track", "play_my_taste"]),
     ("what do you know about me, forget it", ["recall", "forget"], ["remember_about_me", "forget_about", "what_you_remember"]),
     ("show my store orders", ["store_orders"], []),
+    ("i need the physics notes on my mobile", ["send_to_phone"], []),
+    ("did my phone send anything", ["open_from_phone"], []),
     ("what can you do", [], ["store_orders", "free_gpu"]),
 ]
 
 
 def check_routes() -> list[str]:
     bad = []
+    from jarvis import share
+    share.from_phone = True                  # typed in the phone's chat
+    try:
+        for phrase, want in PHONE_ROUTES.items():
+            got = route(phrase)
+            if got != want:
+                bad.append(f"from the phone: route({phrase!r}) = {got}, want {want}")
+    finally:
+        share.from_phone = False
     for phrase, want in ROUTES.items():
         got = route(phrase)
         if got != want:
@@ -397,6 +427,6 @@ if __name__ == "__main__":
                 + check_planner() + check_offers())
     for f in failures:
         print("FAIL", f)
-    total = len(ROUTES) + len(SPLITS) + len(STRICT_SPLITS) + len(SELECTION) + 5
+    total = len(ROUTES) + len(PHONE_ROUTES) + len(SPLITS) + len(STRICT_SPLITS) + len(SELECTION) + 5
     print(f"{total} groups of cases, {len(failures)} failure(s)")
     sys.exit(1 if failures else 0)

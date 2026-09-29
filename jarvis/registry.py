@@ -280,8 +280,8 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
         r"\b(?:files?|folders?|director(?:y|ies)|pdfs?|docx?|documents?|downloads?|desktop|"
         r"delet|mov|renam|cop(?:y|ies)|writ|wrote|sav|size|organi[sz]|sort|tidy|clean|"
         r"path|drives?|zip|images?|photos?|pictures?|videos?|excel|word|csv|txt|notes?|"
-        r"read|contents?|list|show|where|explorer)" + _W, re.I),
-     ["find_document", "list_folder", "read_file", "write_file", "move_file", "delete_file",
+        r"read|contents?|list|show|where|explorer|phone|mobile)" + _W, re.I),
+     ["find_document", "send_to_phone", "open_from_phone", "list_folder", "read_file", "write_file", "move_file", "delete_file",
       "organize_folder", "folder_size", "reveal_path"]),
     ("media", re.compile(
         r"\b(?:songs?|tracks?|music|spotify|play|playlist|album|artist|pause|skip|"

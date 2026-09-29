@@ -750,7 +750,9 @@ class Speaker:
                     self._speaking.clear()
 
     def say(self, text: str) -> None:
-        # Strip markdown noise that sounds wrong when read aloud
+        # Strip markdown noise that sounds wrong when read aloud, and the
+        # [share:<id>] marker the phone's chat turns into a Download button.
+        text = re.sub(r"\s*\[share:[\w-]+\]", "", text)
         clean = text.replace("*", "").replace("`", "").replace("#", "")
         print(f"athena > {text}")
         self.q.put(clean[:600])

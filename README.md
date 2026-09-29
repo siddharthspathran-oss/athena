@@ -149,6 +149,24 @@ running late"*.
 
 **Memory** — tell it to remember something and it persists across sessions.
 
+**Files between the PC and your phone** — say or type *"send the signals lab
+manual to my phone"* (or, in the phone's chat, just *"send me the lab
+manual"*) and a **Download** button appears in Athena's chat on the phone; a
+file asked for by voice is listed above the message box there too, and a
+push says it is ready. The other way, the **send to PC** button (the monitor
+with an arrow) in the phone's message bar sends any files — photos, PDFs,
+videos — into `Downloads\From phone`; *"open the file I sent from my phone"*
+opens the newest. Settings are under `phone_files` in `config.yaml`.
+
+The file goes straight from the PC to the phone over your own Wi-Fi, or over
+Tailscale when you are out — never through a cloud service. A download link
+works for 15 minutes and only together with the interface's token. The push
+carries the file's name only (ntfy topics are readable by anyone who knows
+the name), never a link. Athena's own `data` folder, and files that look like
+keys or passwords (`.env`, `.pem`, `id_rsa`, `api_keys…`), are never sent,
+whatever is asked. A received file never overwrites one already there: it
+becomes `name (1).pdf`.
+
 ### Messaging composes, you send
 
 Both WhatsApp and email open with the message filled in and wait for you to

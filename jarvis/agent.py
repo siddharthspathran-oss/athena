@@ -1206,7 +1206,7 @@ def route(text: str) -> tuple[str, dict] | None:
     """
     said = _fix_verb(clean_speech(text))
     return (_direct_power(said) or _direct_basic(said) or _direct_memory(said)
-            or _direct_find_document(said)
+            or _direct_phone_files(said) or _direct_find_document(said)
             or _direct_store(said)
             or _direct_routine(said) or _direct_it(said)
             or _direct_reminder(said) or _direct_track(said)
@@ -1312,6 +1312,56 @@ _OPEN_ALL = re.compile(
     r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|now|just)\W+)*(?:(?:can|could|would|will)\s+you\s+)?"
     r"(?:please\s+)?(?:open|show|pull\s+up)\s+(?:up\s+)?(?:all|every|each)\s+(?:of\s+)?(?:the\s+|my\s+)?"
     r"(?P<q>.+?)\s*(?:files?|documents?|docs|pdfs?|notes|slides|ppts?|sheets?)\W*$", re.I)
+
+
+# ---------------------------------------------------------------- phone files
+# "send the lab manual to my phone", "share it with my phone", and - typed on
+# the phone itself - just "send me the lab manual".
+_NOT_A_FILE_TO_SEND = re.compile(
+    r"^(?:a|an|the|my)?\s*(?:message|text|msg|whatsapp|email|mail|reminder|notification|"
+    r"call|ring|alert|push|update|reply)\b", re.I)
+_SEND_TO_PHONE = re.compile(
+    r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|now|just)\W+)*(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:please\s+)?(?:send|share|transfer|move|copy|put|push|get)\s+(?:me\s+)?(?:over\s+)?"
+    r"(?P<q>.+?)\s+(?:to|on|onto|with|over\s+to|on\s+to)\s+(?:my\s+|the\s+)?(?:phone|mobile|cell(?:\s*phone)?)"
+    r"(?:\s+(?:please|now))*\W*$", re.I)
+_SEND_ME = re.compile(
+    r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|now|just)\W+)*(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:please\s+)?(?:send|give|share|pass)\s+me\s+(?P<q>.+?)(?:\s+(?:please|now))*\W*$", re.I)
+# "send me ..." typed on the phone, without "to my phone": a file is "the X"
+# or "my X"; "send me a joke", "send me some ideas" are asks for an answer.
+_NOT_A_FILE_TO_SEND_ME = re.compile(
+    r"^(?:a|an|some|any|more|another)\b|^(?:the\s+)?(?:jokes?|story|poem|quote|facts?|summary|list|"
+    r"links?|recipe|news|weather|info(?:rmation)?|details|answer|songs?|playlist|ideas?|tips?|"
+    r"suggestions?|something|anything)\b", re.I)
+_FROM_PHONE = re.compile(
+    r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|now|just)\W+)*(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:please\s+)?(?:open|show)\s+(?:me\s+)?(?:"
+    r"(?:the\s+)?(?P<latest>last|latest|newest|recent)?\s*(?P<kind>files?|photos?|pictures?|documents?|pdfs?|things?)\s+"
+    r"(?:(?:i|that\s+i|you)\s+)?(?:just\s+)?(?:sent|uploaded|shared|got|received)\s+(?:me\s+)?from\s+(?:my\s+|the\s+)?phone"
+    r"|(?:the\s+)?(?:files?\s+)?from\s+(?:my\s+|the\s+)?phone(?:\s+folder)?"
+    r"|what\s+(?:my\s+|the\s+)?phone\s+sent"
+    r")\W*$", re.I)
+
+
+def _direct_phone_files(text: str) -> tuple[str, dict] | None:
+    t = text.strip()
+    m = _FROM_PHONE.match(t)
+    if m:
+        kind = (m.group("kind") or "").lower()
+        latest = m.group("latest") or (kind and not kind.endswith("s"))
+        return "open_from_phone", {"which": "latest" if latest else "folder"}
+    m = _SEND_TO_PHONE.match(t)
+    if not m:
+        from . import share
+        m = _SEND_ME.match(t) if share.from_phone else None
+        if m and _NOT_A_FILE_TO_SEND_ME.match(m.group("q").strip()):
+            m = None
+    if m:
+        q = re.sub(r"^(?:the|my|a|an)\s+", "", m.group("q").strip(" .?"), flags=re.I)
+        if q and not _NOT_A_FILE_TO_SEND.match(q):
+            return "send_to_phone", {"file": q}
+    return None
 
 
 def _direct_find_document(text: str) -> tuple[str, dict] | None:
@@ -1695,7 +1745,7 @@ _PHONE_ME = re.compile(
     r"(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?"
     r"(?:"
     r"(?:(?:give\s+me|do|place|make|send\s+me|run)\s+a\s+)?test\s+(?:phone\s+)?call"
-    r"|(?:call|ring|phone)\s+(?:me|my\s+(?:phone|mobile|cell))"
+    r"|(?:call|ring|phone)\s+(?:me|my\s+(?:phone|mobile|cell))(?:\s+on\s+my\s+(?:phone|mobile|cell))?"
     r"|give\s+me\s+a\s+(?:call|ring)"
     r")"
     r"(?:\s+(?:now|right\s+now))?(?:\s+please)?\W*$",

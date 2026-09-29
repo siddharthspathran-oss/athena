@@ -35,6 +35,7 @@ SAVED = DATA / "upes_attendance.json"
 PROFILE = DATA / "portal_profile"          # shared with portal_capture
 PAGE = "https://myupes-beta.upes.ac.in/connectportal/user/student/student-attendance"
 SUMMARY = "studentattendancesummary"
+DEBUG_SHOT = DATA / "upes_debug.png"
 
 _lock = threading.Lock()
 
@@ -135,27 +136,88 @@ def _open(pw, headless: bool):
         return pw.chromium.launch_persistent_context(channel="msedge", **kw)
 
 
-def _pick_first_course(page) -> None:
-    """If the page waits for a choice, choose the first course, as a person would."""
-    for sel in ("mat-select", "[role=combobox]", "select", ".dropdown-toggle", "ng-select"):
-        el = page.query_selector(sel)
-        if not el:
-            continue
+_TRIGGERS = ("select", "mat-select", "ng-select", "p-dropdown", ".p-dropdown", ".ant-select-selector",
+             ".MuiSelect-select", "[role=combobox]", "[aria-haspopup=listbox]", ".dropdown-toggle",
+             ".select2-selection", ".form-select", "input[placeholder*=ourse]", "input[placeholder*=elect]")
+_OPTIONS = ("[role=option]", "mat-option", "li.p-dropdown-item", ".p-dropdown-item", ".ng-option",
+            ".ant-select-item-option", ".dropdown-item", "li[role=menuitem]", ".select2-results__option")
+
+
+def _course_names(loaded: list) -> list[str]:
+    """Names of courses in the JSON the page has loaded - what its dropdown
+    will offer - from lists of objects with a course-name-like field."""
+    names: list[str] = []
+
+    def walk(node):
+        if isinstance(node, list):
+            dicts = [x for x in node if isinstance(x, dict)]
+            if dicts:
+                key = next((k for k in dicts[0] if re.search(r"course.?name|coursetitle|subject.?name", k, re.I)), None)
+                if key:
+                    names.extend(str(d[key]).strip() for d in dicts if d.get(key))
+            for x in node:
+                walk(x)
+        elif isinstance(node, dict):
+            for v in node.values():
+                walk(v)
+    for body in loaded:
+        walk(body)
+    return list(dict.fromkeys(n for n in names if 2 < len(n) < 120))
+
+
+def _visible(el) -> bool:
+    try:
+        return el.is_visible()
+    except Exception:
+        return False
+
+
+def _click_text(page, names: list[str]) -> bool:
+    for n in names[:12]:
         try:
-            if sel == "select":
-                opts = el.query_selector_all("option")
-                vals = [o.get_attribute("value") for o in opts if o.get_attribute("value")]
-                if vals:
-                    el.select_option(vals[0])
-                    return
-            el.click()
-            page.wait_for_timeout(800)
-            opt = page.query_selector("[role=option], mat-option, .dropdown-item, .ng-option")
-            if opt:
-                opt.click()
-                return
+            loc = page.get_by_text(n, exact=True)
+            for i in range(min(loc.count(), 5)):
+                el = loc.nth(i)
+                if el.is_visible():
+                    el.click(timeout=3000)
+                    return True
         except Exception:
             continue
+    return False
+
+
+def _pick_first_course(page, names: list[str]) -> bool:
+    """Choose a course in the page's dropdown, as a person would: open the
+    dropdown, then click the first course it offers."""
+    for sel in _TRIGGERS:
+        try:
+            els = [e for e in page.query_selector_all(sel) if _visible(e)]
+        except Exception:
+            continue
+        for el in els[:3]:
+            try:
+                if sel == "select":
+                    labels = [o.inner_text().strip() for o in el.query_selector_all("option")]
+                    pick = next((lbl for lbl in labels if lbl in names), None) or next(
+                        (lbl for lbl in labels if lbl and not re.search(r"select|choose|--", lbl, re.I)), None)
+                    if pick:
+                        el.select_option(label=pick)
+                        return True
+                    continue
+                el.click(timeout=3000)
+                page.wait_for_timeout(900)
+                if _click_text(page, names):
+                    return True
+                for osel in _OPTIONS:
+                    opts = [o for o in page.query_selector_all(osel) if _visible(o)]
+                    opts = [o for o in opts if not re.search(r"^\s*(?:select|choose|--)", o.inner_text() or "", re.I)]
+                    if opts:
+                        opts[0].click(timeout=3000)
+                        return True
+                page.keyboard.press("Escape")
+            except Exception:
+                continue
+    return False
 
 
 def fetch(headless: bool = True, wait: float = 40) -> list[dict]:
@@ -187,18 +249,30 @@ def fetch(headless: bool = True, wait: float = 40) -> list[dict]:
             ctx.on("response", on_response)
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.goto(PAGE, wait_until="domcontentloaded", timeout=60_000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=20_000)
+            except Exception:
+                pass
             end = time.time() + wait
-            tried_pick = False
+            picks = 0
             while "req" not in seen and time.time() < end:
-                page.wait_for_timeout(500)
-                if not tried_pick and time.time() > end - wait / 2:
-                    tried_pick = True
-                    _pick_first_course(page)
+                page.wait_for_timeout(1000)
+                # The page asks nothing until a course is chosen (the real
+                # myUPES, 29 Sep 2026) - choose one, retrying while it fills in.
+                if "req" not in seen and picks < 4 and "student-attendance" in page.url.lower():
+                    picks += 1
+                    _pick_first_course(page, _course_names(loaded))
+                    page.wait_for_timeout(2500)
             if "req" not in seen:
                 url = page.url.lower()
                 if "student-attendance" not in url or re.search(r"login|signin|idp|auth", url):
                     raise NotLoggedIn(url)
-                raise RuntimeError("the attendance page loaded but never asked for attendance")
+                try:
+                    page.screenshot(path=str(DEBUG_SHOT), full_page=True)
+                except Exception:
+                    pass
+                raise RuntimeError("the attendance page loaded but never asked for attendance - "
+                                   f"a picture of what I saw is in {DEBUG_SHOT}")
             page.wait_for_timeout(1500)          # the rest of the page's lists
 
             url, headers, raw = seen["req"]
@@ -409,6 +483,11 @@ def login() -> int:
     except KeyboardInterrupt:
         pass
     time.sleep(2)                       # let Chrome finish writing the profile
+    return check()
+
+
+def check() -> int:
+    """`python run.py upes-check`: read attendance now and print it."""
     print("Reading your attendance...")
     try:
         courses = refresh(headless=True)

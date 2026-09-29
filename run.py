@@ -352,6 +352,11 @@ def main() -> int:
                 print("   ", n)
         return 0
 
+    if mode == "upes-check":
+        import jarvis.tools  # noqa: F401
+        from jarvis.tools import upes
+        return upes.check()
+
     if mode == "upes-login":
         # Log in to myUPES once in Athena's own Chrome window; attendance is
         # then read from there (jarvis/tools/upes.py).

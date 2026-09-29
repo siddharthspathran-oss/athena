@@ -106,8 +106,28 @@ fetch('/apigateway/course/list').then(r=>r.json()).then(j=>{
 </script>"""
 
 
+# The real page asks nothing until a course is picked from its dropdown -
+# a styled list, not a <select>.
+PICK_HTML = """<!doctype html><title>Attendance</title>
+<div class="p-dropdown" id=dd>Select Course</div><ul id=list style="display:none"></ul><script>
+let courses=[];
+fetch('/apigateway/course/list').then(r=>r.json()).then(j=>{courses=j.data;
+  const ul=document.getElementById('list');
+  courses.forEach(c=>{const li=document.createElement('li');li.className='p-dropdown-item';
+    li.setAttribute('role','option');li.textContent=c.courseName;li.onclick=()=>ask(c);ul.appendChild(li)});
+});
+document.getElementById('dd').onclick=()=>{document.getElementById('list').style.display='block'};
+function ask(c){fetch('/apigateway/student-attendance/studentattendancesummary',{method:'POST',
+  headers:{'Content-Type':'application/json','Authorization':'Bearer test-token-1',
+           'X-Applicationname':'connectportal','X-Appsecret':'app-key'},
+  body:JSON.stringify({StudentUniqueID:'abc',CourseFamilyId:172,TermCodeId:3,
+    StartDate:'2026-08-03',EndDate:'2026-12-25',CourseList:[{ID:c.courseId,Name:c.courseName}]})})}
+</script>"""
+
+
 class Portal(BaseHTTPRequestHandler):
     logged_in = True
+    needs_pick = False
     asked: list = []
 
     def log_message(self, *a):
@@ -127,7 +147,7 @@ class Portal(BaseHTTPRequestHandler):
                 self.send_header("Location", "/idp/login")
                 self.end_headers()
                 return
-            b = PAGE_HTML.encode()
+            b = (PICK_HTML if Portal.needs_pick else PAGE_HTML).encode()
         elif self.path.startswith("/apigateway/course/list"):
             return self._json(200, {"data": [{"courseId": k, "courseName": v} for k, v in NAMES.items()]})
         else:
@@ -186,6 +206,12 @@ def live():
         said = upes.attendance()
         check("low subject told to attend", "attend the next" in said and "Digital Signal Processing: 68.2%" in said, said)
         check("full subject", "Signals and Systems: 100.0% (30 of 30) - you can miss 10 more" in said, said)
+
+        Portal.needs_pick, Portal.asked = True, []
+        courses = upes.refresh()
+        check("course picked from a styled dropdown", len(courses) == 3 and len(Portal.asked) == 3,
+              (courses, Portal.asked))
+        Portal.needs_pick = False
 
         Portal.logged_in = False
         try:

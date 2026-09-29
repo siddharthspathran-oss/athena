@@ -10,4 +10,3 @@ graphify-out/
 .venv/
 venv/
 *.log
-portal_capture.txt

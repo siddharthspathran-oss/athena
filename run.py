@@ -352,24 +352,6 @@ def main() -> int:
                 print("   ", n)
         return 0
 
-    if mode == "upes-check":
-        import jarvis.tools  # noqa: F401
-        from jarvis.tools import upes
-        return upes.check()
-
-    if mode == "upes-login":
-        # Log in to myUPES once in Athena's own Chrome window; attendance is
-        # then read from there (jarvis/tools/upes.py).
-        import jarvis.tools  # noqa: F401
-        from jarvis.tools import upes
-        return upes.login()
-
-    if mode == "portal-capture":
-        # Open Chrome, watch a portal (UPES) while you use it, and write down
-        # how its pages get their data - login values taken out.
-        from jarvis import portal_capture
-        return portal_capture.run(sys.argv[2] if len(sys.argv) > 2 else "")
-
     if mode == "failures":
         # What went wrong lately, most common first: what to fix next.
         from jarvis import failures

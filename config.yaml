@@ -502,15 +502,6 @@ planner:
   max_steps: 20
   max_tokens: 1500
 
-# myUPES attendance (jarvis/tools/upes.py). Log in once with
-# `python run.py upes-login`; Athena reads it in the background after that.
-upes:
-  enabled: true
-  min_attendance: 75     # the % each subject must keep - change to your rule
-  every_hours: 6         # how often it is read again
-  push_warnings: true    # phone push when a subject can't afford another miss
-  headless: true         # false shows the Chrome window while it reads
-
 # Files between this PC and your phone (jarvis/share.py), through the web
 # interface - on the same Wi-Fi or over Tailscale, never through a cloud.
 # "send the lab manual to my phone" puts a Download button in the phone's

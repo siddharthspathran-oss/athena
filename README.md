@@ -317,12 +317,6 @@ In `config.yaml`:
   all 92 took. If the model says it can't do something, it is retried once
   with everything. A new tool not listed in any group is always shown.
 - **How much history it reads** — `llm.history_chars` (default 12000).
-- **Who answers everyday requests** — `llm.everyday`. `hosted` (the default
-  here) sends requests no direct route handles to your free Groq/Gemini keys
-  (the planner's models). That is faster than the 7B, and nothing sits on the
-  GPU. A single action answers in one call. Any error or rate limit falls
-  back to the local model at once. `local` keeps everything on the PC.
-  `python tests/hostedtest.py` checks the fallbacks without sending anything.
 - **Multi-step requests** — `planner.*`. Lookups that don't depend on each
   other ("battery, weather and tomorrow's classes") run at the same time,
   both in quick splits and in the planner. When the local model gets stuck

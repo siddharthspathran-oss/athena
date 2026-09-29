@@ -8,10 +8,8 @@ worksheet in under a minute.
 
 What that costs is privacy, and only you can decide whether the trade is
 worth it: the question and any attached document are sent to whichever
-provider you configure. It is opt-in per use: `study.model` for class work,
-`planner.*` for multi-step requests, and `llm.everyday: hosted` for ordinary
-requests no direct route handles (see config.yaml for exactly what is sent).
-With everyday set to local, voice, apps, messages and files stay here.
+provider you configure. So it is opt-in, scoped to `study.model` alone, and
+voice, apps, messages and files never come near it.
 
 Keys live in data/api_keys.json - never config.yaml, which is the file you
 would paste into a chat or commit to a repo. An environment variable

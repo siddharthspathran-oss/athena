@@ -84,18 +84,10 @@ def _gpu_has_room(log=print) -> bool:
     (voice.kokoro_min_free_gb) also covers the vision model, which is 0.4 GB
     bigger than the chat model it swaps in for.
     """
-    margin = float(cfg.get("voice.kokoro_min_free_gb", 1.6))
     try:
-        from .agent import Agent
         from .llm import LLM
 
-        llm = LLM()
-        if Agent._everyday_hosted():
-            # Everyday requests go to a hosted model, so the local one is not
-            # loaded at start-up. Leave room for it to load as a fallback.
-            if llm.processor() in ("not loaded", "unknown"):
-                return _free_vram_gb() >= margin + float(cfg.get("voice.chat_model_gb", 5.2))
-        deadline = time.time() + 90
+        llm, deadline = LLM(), time.time() + 90
         where = llm.processor()
         while where in ("not loaded", "unknown") and time.time() < deadline:
             time.sleep(2)
@@ -105,7 +97,7 @@ def _gpu_has_room(log=print) -> bool:
             return False
     except Exception:
         return False
-    return _free_vram_gb() >= margin
+    return _free_vram_gb() >= float(cfg.get("voice.kokoro_min_free_gb", 1.6))
 
 
 class Kokoro(Engine):

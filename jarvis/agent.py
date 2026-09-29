@@ -356,16 +356,6 @@ class Agent:
             if answer is not None:
                 return answer
 
-        # Everyday requests on a free hosted model (llm.everyday: hosted):
-        # faster than the 7B on this card and nothing loaded on it. No key,
-        # no network or a rate limit - it falls through to the local model
-        # below at once, without waiting.
-        if self._everyday_hosted():
-            answer = self._plan(user_input, quick=True)
-            if answer is not None:
-                return answer
-            self._trouble.append("hosted model unavailable - answered locally")
-
         shown = registry.select(user_input)
         tools = [registry.get(n).schema for n in shown]
         # The model is shown only the tools this request seems to need
@@ -533,26 +523,12 @@ class Agent:
             except Exception:
                 pass
 
-    @staticmethod
-    def _everyday_hosted() -> bool:
-        from . import cloud
-
-        if str(cfg.get("llm.everyday", "local")).lower() != "hosted":
-            return False
-        models = [cfg.get("planner.model", ""), *(cfg.get("planner.fallback") or [])]
-        return any(cloud.is_cloud(m) and cloud.get_key(cloud.split(m)[0]) for m in models if m)
-
-    def _plan(self, request: str, quick: bool = False) -> str | None:
+    def _plan(self, request: str) -> str | None:
         def step(name, args, result):
             self.on_step(Step(tool=name, args=args, result=result))
             self.memory.add_raw({"role": "tool", "name": name, "content": _truncate(result)})
-        # The conversation so far (not this request, which is the last user
-        # message), so a follow-up means something to the hosted model.
-        history = [m for m in self.memory.messages[:-1]
-                   if m.get("role") in ("user", "assistant") and m.get("content")]
         try:
-            answer = planner.run(request, on_step=step, history=history[-6:],
-                                 quick=quick, voice=self.speak is not None)
+            answer = planner.run(request, on_step=step)
         except planner.Stuck:
             return None
         except Exception as e:

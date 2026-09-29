@@ -125,9 +125,6 @@ def check_failure_log(bad):
     memory.MEM_FILE, profile.PROFILE = tmp / "memory.json", tmp / "profile.md"
     profile.journal = recall.note_voice = lambda *a, **k: None
     cfg._d.setdefault("planner", {})["rescue"] = False
-    # Never the real hosted model from a test: with a real key this request
-    # would go to Groq and could run real tools.
-    cfg._d.setdefault("llm", {})["everyday"] = "local"
 
     class Claims:
         def chat(self, *a, **k):

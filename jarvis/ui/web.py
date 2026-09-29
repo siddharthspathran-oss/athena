@@ -1426,6 +1426,8 @@ def run() -> None:
         taste.start_sampler()     # what you listen to, for "play something"
         from .. import deadlines
         deadlines.start()          # assignment dates from mail + calendar into Tasks
+        from ..tools import upes
+        upes.start()               # myUPES attendance, once logged in (run.py upes-login)
     except Exception:
         pass
     _log("core online: web interface up")

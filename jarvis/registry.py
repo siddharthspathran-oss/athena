@@ -290,8 +290,8 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
     ("schedule", re.compile(
         r"\b(?:remind|alarm|timer|tasks?|to-?dos?|deadline|assignment|due|schedul|calendar|"
         r"timetable|class|lecture|meeting|brief|today|tomorrow|tonight|week|agenda|"
-        r"time|date|day|free|busy|cancel)" + _W, re.I),
-     ["list_reminders", "cancel_reminder", "add_task", "complete_task", "list_tasks",
+        r"time|date|day|free|busy|cancel|attendance|bunk|upes)" + _W, re.I),
+     ["attendance", "list_reminders", "cancel_reminder", "add_task", "complete_task", "list_tasks",
       "check_deadlines", "daily_brief", "get_datetime", "show_timetable", "set_timetable",
       "add_calendar_feed", "list_calendar_feeds", "connect_google"]),
     ("messaging", re.compile(

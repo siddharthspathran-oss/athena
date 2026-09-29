@@ -1167,8 +1167,27 @@ _IP = re.compile(
     _INFO_LEAD + r"(?:what(?:'?s|\s+is)\s+)?(?:my|the|this\s+(?:pc'?s|laptop'?s))\s+(?:(?:public|local|private)\s+)?ip(?:\s+address)?\W*$", re.I)
 
 
+# "what's my attendance", "attendance in data structures", "how many classes
+# can I bunk in DSP" - answered from myUPES (tools/upes.py).
+_ATTENDANCE = re.compile(
+    r"^\W*(?:(?:athena|jarvis|hey|ok|okay)\W+)?(?:please\s+|can you\s+|could you\s+)*"
+    r"(?:(?:what'?s?|what\s+is|how'?s?|how\s+is|check|show|tell\s+me|read|get)\s+)?(?:me\s+)?(?:my\s+|the\s+)?"
+    r"(?P<fresh>(?:latest|current|updated|new)\s+)?attendance"
+    r"(?:\s+(?:in|for|of)\s+(?P<sub>.+?))?(?:\s+(?:now|today|please|on\s+myupes|from\s+myupes))*\W*$"
+    r"|^\W*(?:(?:athena|jarvis)\W+)?how\s+many\s+(?:classes|lectures)\s+can\s+i\s+(?:still\s+)?(?:miss|bunk|skip)"
+    r"(?:\s+(?:in|for|of)\s+(?P<sub2>.+?))?\W*$", re.I)
+
+
 def _direct_info(text: str) -> tuple[str, dict] | None:
     t = text.strip()
+    m = _ATTENDANCE.match(t)
+    if m:
+        sub = (m.group("sub") or m.group("sub2") or "").strip(" ?.")
+        sub = re.sub(r"^(?:the|my)\s+", "", sub, flags=re.I)
+        args = {"subject": sub} if sub else {}
+        if m.group("fresh"):
+            args["refresh_now"] = True
+        return "attendance", args
     m = _TIME_IN.match(t)
     if m and not re.fullmatch(r"(?:the\s+)?(?:morning|evening|afternoon|night|here|india\s+time)", m.group("place"), re.I):
         return "world_time", {"place": m.group("place").strip()}

@@ -352,6 +352,13 @@ def main() -> int:
                 print("   ", n)
         return 0
 
+    if mode == "upes-login":
+        # Log in to myUPES once in Athena's own Chrome window; attendance is
+        # then read from there (jarvis/tools/upes.py).
+        import jarvis.tools  # noqa: F401
+        from jarvis.tools import upes
+        return upes.login()
+
     if mode == "portal-capture":
         # Open Chrome, watch a portal (UPES) while you use it, and write down
         # how its pages get their data - login values taken out.

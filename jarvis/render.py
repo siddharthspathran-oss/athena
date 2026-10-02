@@ -18,7 +18,7 @@ import time
 import webbrowser
 from pathlib import Path
 
-from . import plot
+from . import diagram, plot
 from .config import DATA
 
 ANSWERS = DATA / "answers"
@@ -53,6 +53,9 @@ blockquote p { margin: .4rem 0; }
 blockquote ul { margin: .4rem 0; padding-left: 1.2rem; }
 img { max-width: 100%; border-radius: 8px; margin: 1.2rem 0;
       border: 1px solid #e3e0da; display: block; }
+img[alt^="Circuit"] { background: #fff; padding: 14px 18px; width: 640px; }   /* black ink, also in dark mode */
+pre.mermaid, svg.WaveDrom { background: none; text-align: center; }
+.dfail { color: #8a8580; font-style: italic; }
 strong { font-weight: 650; }
 @media (prefers-color-scheme: dark) {
   body { background: #1a1917; color: #e8e6e1; }
@@ -70,8 +73,34 @@ displayMath:[['\\\\[','\\\\]'],['$$','$$']]},options:{skipHtmlTags:['script','st
 """
 
 
+# State/block diagrams and timing diagrams: drawn in the page from the text.
+_MERMAID = """
+<script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({startOnLoad:false,theme:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'neutral'});
+// one bad diagram shows a quiet note, never mermaid's "Syntax error" bomb
+for(const el of document.querySelectorAll('pre.mermaid')){try{await mermaid.parse(el.textContent)}
+  catch(e){const p=document.createElement('p');p.className='dfail';p.textContent='(this diagram could not be drawn)';el.replaceWith(p)}}
+await mermaid.run({querySelector:'pre.mermaid'});</script>
+"""
+_WAVEDROM = """
+<script src="https://cdnjs.cloudflare.com/ajax/libs/wavedrom/3.5.0/skins/default.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/wavedrom/3.5.0/wavedrom.min.js"></script>
+<script>addEventListener('load',()=>WaveDrom.ProcessAll())</script>
+"""
+
 _DISPLAY_OR_FENCE = re.compile(r"(\$\$.*?\$\$|```.*?```|`[^`\n]*`)", re.S)
 _DOLLAR_MATH = re.compile(r"(?<!\$)\$(?!\$)[ \t]*([^$\n]+?)[ \t]*\$(?!\$)")
+
+
+_MATH_SPAN = re.compile(r"(\\\(.*?\\\)|\\\[.*?\\\]|\$\$.*?\$\$)", re.S)
+_BARRED = re.compile(r"(\\?[A-Za-z](?:_\{?\w+\}?)?)[̄̅]")
+
+
+def bars_in_math(md: str) -> str:
+    r"""Q̄ typed as a letter plus a combining bar is dropped by MathJax, so
+    "Q(n+1) = J·Q̄ + K̄·Q" came out as J·Q + K·Q - a wrong equation on the page
+    (2 Oct 2026). Inside maths it becomes \overline{Q}; text keeps the bar."""
+    return _MATH_SPAN.sub(lambda m: _BARRED.sub(lambda b: r"\overline{" + b.group(1) + "}", m.group(0)), md)
 
 
 def dollar_math(md: str) -> str:
@@ -108,6 +137,9 @@ def _inline(text: str) -> str:
     text = re.sub(r"!\[([^\]]*)\]\((data:image/[^)]+|[^)]+)\)",
                   lambda m: f'<img alt="{m.group(1)}" src="{m.group(2)}">',
                   text)
+    # Links: a found drawing credits where it came from.
+    text = re.sub(r"(?<!!)\[([^\]]+)\]\((https?://[^)\s]+)\)",
+                  lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', text)
     text = re.sub(r"`([^`]+)`", lambda m: "<code>" + m.group(1) + "</code>", text)
     text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", text)
@@ -129,15 +161,37 @@ def _table(rows: list[str]) -> str:
     return "".join(out)
 
 
+# Maths is set aside before the line-by-line Markdown pass and put back after.
+# |H(jω)| at the start of a line inside \[ ... \] was read as a table row, and a
+# "- 1" inside one as a list item, which shredded the 2nd-order Butterworth
+# derivation into raw LaTeX (2 Oct 2026). A token has no |, -, * or # in it.
+_MATH_ANY = re.compile(r"\\\[.*?\\\]|\$\$.*?\$\$|\\\(.*?\\\)", re.S)
+_MATH_TOKEN = re.compile(r"@@M(\d+)@@")
+
+
+def _shield(md: str) -> tuple[str, list[str]]:
+    spans: list[str] = []
+
+    def keep(m: re.Match) -> str:
+        spans.append(m.group(0))
+        return f"@@M{len(spans) - 1}@@"
+    parts = re.split(r"(```.*?```)", md, flags=re.S)       # code stays as written
+    for i in range(0, len(parts), 2):
+        parts[i] = _MATH_ANY.sub(keep, parts[i])
+    return "".join(parts), spans
+
+
 def to_html_body(md: str) -> str:
     """Markdown (with LaTeX left alone) to an HTML fragment."""
-    lines = dollar_math(md.replace("\r\n", "\n")).split("\n")
+    md, spans = _shield(dollar_math(md.replace("\r\n", "\n")))
+    lines = md.split("\n")
     out: list[str] = []
     para: list[str] = []
     table: list[str] = []
     quote: list[str] = []
     list_tag = ""
     in_code = False
+    fence = ""          # the open fence's language: mermaid and wavedrom are drawn by the page
 
     def flush_para():
         if para:
@@ -167,11 +221,16 @@ def to_html_body(md: str) -> str:
 
         if line.strip().startswith("```"):
             flush_para(); flush_table(); flush_list()
-            out.append("</code></pre>" if in_code else "<pre><code>")
+            if not in_code:
+                fence = line.strip()[3:].strip().lower()
+            out.append({"mermaid": ("<pre class='mermaid'>", "</pre>"),
+                        "wavedrom": ("<script type='WaveDrom'>", "</script>")}
+                       .get(fence, ("<pre><code>", "</code></pre>"))[1 if in_code else 0])
             in_code = not in_code
             continue
         if in_code:
-            out.append(html.escape(raw) + "\n")
+            # WaveJSON goes into a <script> raw; only a closing tag could break out
+            out.append((raw.replace("</", "<\\/") if fence == "wavedrom" else html.escape(raw)) + "\n")
             continue
 
         m = re.match(r"^\s*>\s?(.*)$", line)
@@ -220,7 +279,8 @@ def to_html_body(md: str) -> str:
     flush_para(); flush_table(); flush_list(); flush_quote()
     if in_code:
         out.append("</code></pre>")
-    return "\n".join(out)
+    return _MATH_TOKEN.sub(lambda m: html.escape(spans[int(m.group(1))], quote=False)
+                           if int(m.group(1)) < len(spans) else m.group(0), "\n".join(out))
 
 
 def write_page(question: str, answer: str, open_it: bool = True) -> Path:
@@ -233,6 +293,11 @@ def write_page(question: str, answer: str, open_it: bool = True) -> Path:
         answer, _drawn = plot.expand(answer)
     except Exception:
         pass        # a failed graph must not cost the whole answer
+    try:
+        answer = diagram.fix_mermaid(diagram.fix_tables(diagram.fix_timing(diagram.expand(answer))))
+    except Exception:
+        pass
+    answer = bars_in_math(answer)
     ANSWERS.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     slug = re.sub(r"[^a-z0-9]+", "-", question.lower())[:40].strip("-") or "answer"
@@ -242,7 +307,9 @@ def write_page(question: str, answer: str, open_it: bool = True) -> Path:
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>{html.escape(question[:70])}</title>"
-        f"<style>{_CSS}</style>{_MATHJAX}</head><body>"
+        f"<style>{_CSS}</style>{_MATHJAX}"
+        f"{_MERMAID if '```mermaid' in answer.lower() else ''}"
+        f"{_WAVEDROM if '```wavedrom' in answer.lower() else ''}</head><body>"
         f"<h1>{html.escape(question)}</h1>"
         f"<div class='q'>Answered by Athena - {time.strftime('%d %b %Y, %H:%M')}</div>"
         f"{to_html_body(answer)}"

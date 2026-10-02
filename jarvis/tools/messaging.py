@@ -296,6 +296,9 @@ def _chat_header(items) -> str:
     return best
 
 
+_SELF = {"me", "myself", "self", "my number", "my own chat"}
+
+
 def _same_person(contact: str, header: str) -> bool:
     """Is the open chat the contact we asked for?
 
@@ -308,6 +311,11 @@ def _same_person(contact: str, header: str) -> bool:
     h = header.strip().lower()
     if not c or not h:
         return False
+    # Your own chat: WhatsApp labels it "<your name> (You)" or "Message
+    # yourself", never "me" - so "message me" refused every time and the
+    # search fell back to a group, "Be10x Session" (2 Oct 2026).
+    if c in _SELF:
+        return "(you)" in h or "yourself" in h or h in ("you", "me")
     if c in h:
         return True
     return any(SequenceMatcher(None, c, word).ratio() >= 0.75
@@ -620,7 +628,7 @@ def whatsapp_message(to: str, text: str) -> str:
 
     Before typing a word it checks two things name the right person: the chat
     header, and the message box itself, which WhatsApp labels "Type a message
-    to <name>". Only then does it type and press Send.
+    to <name>". Only then does it type and press Enter.
 
     to: contact name, or a full phone number with country code
     text: the message to send
@@ -666,25 +674,34 @@ def whatsapp_message(to: str, text: str) -> str:
     if not box.press(hwnd):
         return f"Could not click the message box in {header}'s chat."
     time.sleep(0.5)
+    # One line: Enter sends in WhatsApp, so a newline would send half a message.
+    text = " ".join(text.split())
     if not winapi.type_text(text):
         return f"Could not type the message into {header}'s chat."
     time.sleep(0.6)
 
+    # Enter sends, the way a person does it. The on-screen Send button is the
+    # fallback - finding it by name is what failed and left "press it yourself".
+    winapi.press_vk(0x0D)
+    if _appeared(hwnd, text):
+        return f"Sent to {label}: \"{text}\""
     send = uia.find_button(hwnd, "Send")
-    if send is None or not send.press(hwnd):
-        return (f"Typed the message to {header} but could not press Send - "
-                f"press it yourself.")
+    if send is not None and send.press(hwnd) and _appeared(hwnd, text):
+        return f"Sent to {label}: \"{text}\""
+    return (f"Typed the message to {header} and pressed Enter, but could not "
+            f"confirm it went - check the chat.")
 
-    # Sent means the box is empty again and the text is in the conversation.
+
+def _appeared(hwnd: int, text: str) -> bool:
+    """Sent means the text is now in the conversation."""
     for _ in range(6):
         time.sleep(0.8)
         uia.wake(hwnd, settle=0.3)
         shown = {e.name for e in uia.elements(hwnd, uia.DATA_ITEM)
                  if e.on_screen and e.name}
         if any(text.strip() in n for n in shown):
-            return f"Sent to {label}: \"{text}\""
-    return (f"Pressed Send for {label} but could not confirm the message "
-            f"appeared - check the chat.")
+            return True
+    return False
 
 
 # ---------- email ----------

@@ -25,6 +25,7 @@ Configure with a prefix on the model name:
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.error
@@ -230,6 +231,36 @@ def list_models(provider: str) -> list[str]:
                       for m in data.get("models", [])
                       if "generateContent" in m.get("supportedGenerationMethods", []))
     return sorted(m.get("id", "") for m in data.get("data", []) if m.get("id"))
+
+
+def look(model: str, image: bytes, mime: str, prompt: str, timeout: int = 60) -> str:
+    """Show a Gemini model one image and ask about it. Used to check that a
+    diagram found on the web really is the circuit asked for."""
+    provider, name = split(model)
+    key = get_key(provider) if provider else ""
+    if not key:
+        raise RuntimeError(how_to_get_one(provider or "gemini"))
+    if provider != "gemini":        # OpenAI-shaped vision (Groq's Llama 4)
+        data = _post(PROVIDERS[provider]["url"], {"model": name, "temperature": 0, "max_tokens": 300,
+                     "messages": [{"role": "user", "content": [
+                         {"type": "text", "text": prompt},
+                         {"type": "image_url", "image_url": {
+                             "url": f"data:{mime};base64," + base64.b64encode(image).decode()}}]}]},
+                     {"Authorization": f"Bearer {key}"}, timeout)
+        try:
+            return data["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError):
+            raise RuntimeError("no answer returned") from None
+    payload = {"contents": [{"role": "user", "parts": [
+        {"inline_data": {"mime_type": mime, "data": base64.b64encode(image).decode()}},
+        {"text": prompt}]}],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 4000}}
+    data = _post(f"{PROVIDERS['gemini']['url']}/{name}:generateContent", payload,
+                 {"x-goog-api-key": key}, timeout)
+    try:
+        return "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
+    except (KeyError, IndexError):
+        raise RuntimeError("no answer returned") from None
 
 
 def chat(model: str, messages: list[dict], temperature: float = 0.1,

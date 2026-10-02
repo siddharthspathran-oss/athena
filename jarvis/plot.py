@@ -28,7 +28,7 @@ _SAFE = {
     "sin": np.sin, "cos": np.cos, "tan": np.tan,
     "asin": np.arcsin, "acos": np.arccos, "atan": np.arctan,
     "sinh": np.sinh, "cosh": np.cosh, "tanh": np.tanh,
-    "exp": np.exp, "log": np.log, "log10": np.log10, "log2": np.log2,
+    "exp": np.exp, "log": np.log, "ln": np.log, "log10": np.log10, "log2": np.log2,
     "sqrt": np.sqrt, "abs": np.abs, "sign": np.sign,
     "floor": np.floor, "ceil": np.ceil, "round": np.round,
     "min": np.minimum, "max": np.maximum,
@@ -45,6 +45,9 @@ _STYLE = {
 
 def _values(expr: str, x: np.ndarray) -> np.ndarray | None:
     """Evaluate one expression over x, or None if it will not evaluate."""
+    # Written as maths, not Python: x^4 is a power ("20*log10(1/sqrt(1+x^4))"
+    # failed as XOR on 2 Oct 2026), and ln is the natural log.
+    expr = expr.replace("^", "**")
     scope = dict(_SAFE)
     scope["x"] = x
     try:

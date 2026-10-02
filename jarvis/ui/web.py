@@ -368,7 +368,7 @@ function showChip(){
   const w=document.createElement('div'); w.className='att';
   const im=document.createElement('img'); im.src=pending.dataUrl;
   const t=document.createElement('span'); t.textContent=pending.name;
-  const x=document.createElement('span'); x.className='x'; x.textContent='âœ•';
+  const x=document.createElement('span'); x.className='x'; x.textContent='✕';
   x.onclick=()=>{ pending=null; showChip(); };
   w.append(im,t,x); chip.appendChild(w);
 }
@@ -458,10 +458,11 @@ async function loadChats(){
       row.className='chat'+(c.live?' live':'');
       const t=document.createElement('span'); t.className='t'; t.textContent=c.title;
       const w=document.createElement('span'); w.className='w'; w.textContent=c.when;
-      const d=document.createElement('span'); d.className='d'; d.textContent='âœ•';
+      const d=document.createElement('span'); d.className='d'; d.textContent='✕';
       t.onclick=w.onclick=()=>switchChat(c.id);
       d.onclick=async e=>{ e.stopPropagation();
-        if(!confirm('Delete "'+c.title+'"?')) return;
+        if(!d.dataset.sure){ d.dataset.sure=1; d.textContent='Delete?';
+          setTimeout(()=>{ delete d.dataset.sure; d.textContent='✕'; },3000); return; }
         await api('/chats/'+c.id,{method:'DELETE'}); loadChats(); };
       row.append(t,w,d); list.appendChild(row);
     });
@@ -688,6 +689,8 @@ def _gather_overview() -> dict:
                          "until": end.strftime("%H:%M"), "where": e.get("where", ""),
                          "state": state, "mins": int((s - now).total_seconds() // 60)})
         out["schedule"], out["unread"] = rows, len(mail)
+        # Senders only - brief gives "subject - from who"; the subject stays out.
+        out["mail_from"] = [m.rsplit(" - from ", 1)[-1] for m in mail if " - from " in m][:4]
         tomorrow = brief._first_tomorrow()
         out["tomorrow"] = ({"what": tomorrow["what"],
                             "at": brief._local(tomorrow["start"]).strftime("%H:%M")}
@@ -726,6 +729,32 @@ def _gather_overview() -> dict:
         out["routines"] = list(routines.load())[:8]
     except Exception:
         out["routines"] = []
+    # Command Centre: who messaged (sender only), open deadlines, today's reminders.
+    try:
+        from .. import phone_notify
+        out["senders"] = phone_notify.recent_senders()
+        out["notify_muted"] = phone_notify.muted()
+    except Exception:
+        out["senders"] = []
+    try:
+        from ..tools import todo
+        today = dt.date.today()
+        due = sorted((t for t in todo.load() if not t["done"] and t.get("due")), key=lambda t: t["due"])
+        out["deadlines"] = [{"text": t["text"][:60], "due": t["due"],
+                             "days": (dt.date.fromisoformat(t["due"][:10]) - today).days} for t in due[:3]]
+    except Exception:
+        out["deadlines"] = []
+    try:
+        from ..tools.scheduler import _load as load_jobs
+        rem = []
+        for j in load_jobs():
+            at = dt.datetime.fromisoformat(j["fire_at"])
+            if at.date() == dt.date.today():
+                rem.append({"what": j["text"][:50], "at": at.strftime("%H:%M"),
+                            "mins": int((at - dt.datetime.now()).total_seconds() // 60)})
+        out["reminders"] = sorted(rem, key=lambda r: r["at"])
+    except Exception:
+        out["reminders"] = []
     out["tools"] = len(registry.REGISTRY)
     out["city"] = cfg.get("assistant.city", "Dehradun")
     try:
@@ -957,20 +986,47 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"That file is no longer shared - ask Athena to send it again.",
                        "text/plain; charset=utf-8")
             return
+        import mimetypes
+        import re
+
         size = target.stat().st_size
         quoted = urllib.parse.quote(target.name)
         ascii_name = target.name.encode("ascii", "replace").decode().replace('"', "_")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(size))
+        # The real type, not application/octet-stream: with nosniff the phone
+        # saved a video as unknown data and showed "no preview" (2 Oct 2026).
+        ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        # Ranges: a big video resumes after a dropped connection, and a player
+        # can seek, instead of starting the whole download again.
+        start, end = 0, size - 1
+        rng = re.match(r"bytes=(\d*)-(\d*)$", self.headers.get("Range", "") or "")
+        if rng and (rng.group(1) or rng.group(2)):
+            if rng.group(1):
+                start = int(rng.group(1))
+                end = min(int(rng.group(2)), size - 1) if rng.group(2) else size - 1
+            else:
+                start = max(0, size - int(rng.group(2)))
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+        self.send_response(206 if rng and (start, end) != (0, size - 1) else 200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Accept-Ranges", "bytes")
+        if (start, end) != (0, size - 1):
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header("Content-Disposition",
                          f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
+        left = end - start + 1
         with open(target, "rb") as f:
-            while True:
-                block = f.read(1 << 20)
+            f.seek(start)
+            while left > 0:
+                block = f.read(min(1 << 20, left))
+                left -= len(block)
                 if not block:
                     break
                 try:
@@ -1262,6 +1318,9 @@ class Handler(BaseHTTPRequestHandler):
                     out = views.run_routine(body.get("name", ""))
                 elif page == "tasks":
                     out = views.task_action(body)
+                elif page == "notify":
+                    from .. import phone_notify
+                    out = phone_notify.set_muted(body.get("muted", True))
                 elif page == "forget":
                     out = views.forget(body.get("text", ""))
                 elif page == "phone":

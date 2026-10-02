@@ -17,7 +17,7 @@
   options:{skipHtmlTags:['script','style','textarea','code']},startup:{typeset:false}};</script>
 <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Figtree:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
   --bg:#07060b; --bg2:#0d0b13; --panel:rgba(16,14,22,.80); --panel2:rgba(22,20,31,.62);
@@ -92,7 +92,7 @@ nav .badge{margin-left:auto;font:11px var(--mono);background:rgba(196,168,255,.1
 .vwave i{width:2px;border-radius:2px;background:var(--c);opacity:.85;height:4px;transition:height .12s}
 .vcard p{margin:2px 0 8px;font-size:13px;color:var(--dim)}
 .bigmic{width:86px;height:86px;border-radius:50%;border:0;margin:4px auto 6px;display:grid;place-items:center;
-  background:radial-gradient(circle,#0f5a73,#062635 65%);position:relative;
+  background:radial-gradient(circle,#0f5a73,#1c1926 65%);position:relative;
   box-shadow:0 0 0 6px rgba(196,168,255,.08),0 0 0 14px rgba(196,168,255,.04),0 0 30px rgba(196,168,255,.35)}
 .bigmic svg{width:30px;height:30px;color:#f3efff}
 .bigmic.on{animation:ping 1.4s ease-out infinite}
@@ -176,7 +176,7 @@ body.stage .stagehead{display:flex;flex-direction:column;gap:14px;align-items:ce
 .stpills{display:flex;gap:8px}
 .stpills span{font:600 10px var(--mono);letter-spacing:2px;text-transform:uppercase;color:#6f6a82;padding:6px 12px;border:1px solid transparent;border-radius:999px;transition:all .35s}
 .stpills span.on{color:var(--facec);border-color:var(--facec);box-shadow:0 0 16px -5px var(--facec)}
-body.stage .orbwrap .title,body.stage .chatbar,body.stage #shares{display:none}
+body.stage .orbwrap .title,body.stage .chatbar{display:none}
 body.stage .orbwrap.hasface #faceOrb{inset:0 0 124px 0;height:calc(100% - 124px)}
 body.stage .orbwrap.hasface #faceCaps{height:124px}
 body.stage #f{max-width:720px;width:100%;margin:0 auto}
@@ -184,7 +184,7 @@ body.stage.chatting .stagehead h1{font-size:26px}
 /* desktop: the Athena screen (stage) is voice only - big face, last thing you said and her answer; typing lives in Chat */
 #tx{display:none}
 @media (min-width:901px){
-  body.stage .core #say,body.stage .core .chatbar,body.stage #shares,
+  body.stage .core #say,body.stage .core .chatbar,
   body.stage #chip,body.stage #f,body.stage #faceCaps{display:none !important}
   body.stage .orbwrap{flex:1 1 auto !important;min-height:260px}
   body.stage .orbwrap.hasface #faceOrb{inset:0 !important;height:100% !important}
@@ -248,7 +248,12 @@ form input::placeholder{color:var(--faint);letter-spacing:2px}
   display:grid;place-items:center;flex:none;cursor:pointer}
 .pb svg{width:18px;height:18px;color:#bfeaf6}
 @media (max-width:440px){form{gap:5px}.pb{width:34px;height:34px}form input::placeholder{letter-spacing:1px}}
-#shares{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}#shares:empty{display:none}
+/* files sent from the PC: a tray floating over every screen, so the Download button can't be hidden by a view */
+#shares{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(92px + env(safe-area-inset-bottom));z-index:15;
+  display:flex;flex-wrap:wrap;justify-content:center;gap:6px;max-width:calc(100vw - 32px);padding:10px;border-radius:14px;
+  background:rgba(13,11,19,.96);border:1px solid rgba(196,168,255,.45);box-shadow:0 12px 32px rgba(0,0,0,.6)}
+#shares::before{content:"FROM YOUR PC";flex-basis:100%;text-align:center;font:600 9px var(--mono);letter-spacing:2.5px;color:var(--dim)}
+#shares:empty{display:none}
 #shares a,.jv a.dl{display:inline-block;padding:5px 10px;border:1px solid var(--line);border-radius:14px;
   color:#bfeaf6;text-decoration:none;font-size:12px;background:rgba(196,168,255,.06)}
 #shares a small{opacity:.6;margin-left:6px}
@@ -377,9 +382,9 @@ body.fullchat #say{display:block}
 body.fullchat .me{max-width:70%}body.fullchat .jv{max-width:85%}
 
 /* overlays */
-.veil{position:fixed;inset:0;z-index:20;background:rgba(1,6,10,.72);display:none;backdrop-filter:blur(3px)}
+.veil{position:fixed;inset:0;z-index:20;background:rgba(4,3,8,.75);display:none;backdrop-filter:blur(3px)}
 .veil.open{display:block}
-.drawer{position:absolute;top:0;bottom:0;left:0;width:min(1100px,94vw);background:#04131d;border-right:1px solid var(--line);
+.drawer{position:absolute;top:0;bottom:0;left:0;width:min(1100px,94vw);background:#0c0b11;border-right:1px solid var(--line);
   padding:18px;display:flex;flex-direction:column;gap:10px;padding-top:calc(18px + env(safe-area-inset-top))}
 .drawer h3{margin:6px 0 0;font:600 12px var(--mono);letter-spacing:3px;color:var(--dim)}
 .drawer .new{border:1px solid var(--c);border-radius:9px;background:rgba(196,168,255,.06);color:var(--c);padding:11px;
@@ -390,10 +395,11 @@ body.fullchat .me{max-width:70%}body.fullchat .jv{max-width:85%}
 .chat .t{flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer}
 .chat .w{font-size:11px;color:var(--faint)}
 .chat .d{color:var(--faint);cursor:pointer;padding:0 4px}
-.dialog{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(440px,92vw);background:#04131d;
+.chat .d.sure{color:#ff6b8a;font-size:12px;font-weight:600}
+.dialog{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(440px,92vw);background:#0c0b11;
   border:1px solid var(--line);border-radius:12px;padding:20px}
 .dialog h3{margin:0 0 14px;font:600 12px var(--mono);letter-spacing:3px;color:var(--dim)}
-.dialog select{width:100%;background:#021016;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:16px}
+.dialog select{width:100%;background:#0b0a10;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:16px}
 .dialog p{font-size:13px;color:var(--dim);margin:12px 0 0}
 .dialog button{margin-top:16px;border:1px solid var(--c);border-radius:8px;background:none;color:var(--c);padding:9px 16px;letter-spacing:2px}
 .mnav{display:none}
@@ -408,7 +414,7 @@ body.pageview main>.page{display:flex;flex-direction:column;grid-column:1/-1;gri
 #pgBody::-webkit-scrollbar{width:6px}#pgBody::-webkit-scrollbar-thumb{background:var(--faint);border-radius:3px}
 .tbl{width:100%;border-collapse:separate;border-spacing:0 6px;font-size:14px}
 .tbl th{text-align:left;font:600 11px var(--mono);letter-spacing:2px;color:var(--dim);padding:4px 12px;
-  position:sticky;top:0;background:#061a26;z-index:1}
+  position:sticky;top:0;background:#121019;z-index:1}
 .tbl td{padding:10px 12px;background:rgba(13,12,18,.55);border-top:1px solid var(--line2);border-bottom:1px solid var(--line2);
   vertical-align:middle}
 .tbl td:first-child{border-left:1px solid var(--line2);border-radius:9px 0 0 9px}
@@ -434,9 +440,9 @@ body.pageview main>.page{display:flex;flex-direction:column;grid-column:1/-1;gri
 .big{font:700 26px var(--disp);color:#eafcff}
 .hero{display:grid;grid-template-columns:auto minmax(0,1fr);gap:22px;align-items:center;border:1px solid var(--line);
   border-radius:16px;padding:18px;margin-bottom:16px;background:radial-gradient(ellipse at 20% 50%,rgba(196,168,255,.14),rgba(13,12,18,.6) 70%)}
-.art{width:170px;height:170px;border-radius:14px;background:#041722 center/cover;border:1px solid var(--line);
+.art{width:170px;height:170px;border-radius:14px;background:#100e16 center/cover;border:1px solid var(--line);
   box-shadow:0 0 30px rgba(196,168,255,.25);display:grid;place-items:center;overflow:hidden}
-.vinyl{width:130px;height:130px;border-radius:50%;background:repeating-radial-gradient(#0b2430 0 2px,#061520 2px 4px);
+.vinyl{width:130px;height:130px;border-radius:50%;background:repeating-radial-gradient(#1a1724 0 2px,#0e0c13 2px 4px);
   border:2px solid var(--line);position:relative}
 .vinyl::after{content:"";position:absolute;inset:45px;border-radius:50%;background:var(--c);box-shadow:var(--glow)}
 .vinyl.spin2{animation:spin 3s linear infinite}
@@ -454,10 +460,10 @@ body.pageview main>.page{display:flex;flex-direction:column;grid-column:1/-1;gri
 .rt ol{margin:0;padding-left:18px;color:var(--dim);font-size:13px}
 .rt button{align-self:flex-start;border:1px solid var(--c);border-radius:8px;background:rgba(196,168,255,.08);color:var(--c);padding:6px 14px}
 .addrow{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
-.addrow input,.addrow select{background:#021016;border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:16px;min-width:0}
+.addrow input,.addrow select{background:#0b0a10;border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:16px;min-width:0}
 .addrow input{flex:1}
 .addrow button{border:0;border-radius:9px;background:linear-gradient(135deg,#c4a8ff,#8f72ff);color:#022;padding:9px 16px;font-weight:700}
-.filter{width:100%;background:#021016;border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:16px;margin-bottom:10px}
+.filter{width:100%;background:#0b0a10;border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:16px;margin-bottom:10px}
 .muted{color:var(--dim);font-size:14px}
 @media (max-width:900px){
   body.pageview main>.page{min-height:calc(100dvh - 150px)}
@@ -481,7 +487,7 @@ body.pageview main>.page{display:flex;flex-direction:column;grid-column:1/-1;gri
 .held b{flex:1;color:var(--warn)}
 .held button{border-radius:8px;padding:8px 14px;border:0;font-weight:700}
 .fgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.fgrid input,.fgrid select{background:#021016;border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:16px;min-width:0;width:100%}
+.fgrid input,.fgrid select{background:#0b0a10;border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:16px;min-width:0;width:100%}
 .fgrid .full{grid-column:1/-1}
 .gobtn{margin-top:10px;width:100%;border:0;border-radius:9px;background:linear-gradient(135deg,#c4a8ff,#8f72ff);color:#022;padding:10px;font-weight:700}
 .gobtn:disabled{opacity:.5}
@@ -526,6 +532,152 @@ body.pageview main>.page{display:flex;flex-direction:column;grid-column:1/-1;gri
   body.fullchat .core{max-height:none;min-height:0;height:calc(100dvh - 150px)}
 }
 @media (prefers-reduced-motion:reduce){.spin,.lat,.gem,.bigmic.on,.talk.on,.ag.act::after{animation:none}}
+/* phone: the Athena screen keeps the top bar (menu, chats) and the Talk button - without them there is no way out */
+@media (max-width:900px){
+  body.stage>header,body.stage>footer{display:grid}
+  body.stage{grid-template-rows:auto minmax(0,1fr) auto}
+  body.stage main{grid-row:2;padding:10px 12px}
+  body.stage .stagetop{display:none}
+  body.stage .stagehead{gap:10px;padding-top:0}
+  .orbwrap.hasface .title,#expandBtn{display:none}
+  form input::placeholder{letter-spacing:.5px;font-size:13px}
+}
+/* ================= Command Centre: "Holo" (design E) =================
+   body.dash = the Command Centre view. Old dashboard cards stay in the DOM
+   (their pages and pollers use them) but are hidden here. */
+.hx{display:none}
+#dial{display:none}
+body.dash:not(.pageview){background:radial-gradient(40% 48% at 50% 45%,rgba(124,92,255,.14),transparent 70%),
+  radial-gradient(rgba(190,170,255,.06) 1px,transparent 1.2px) 0 0/26px 26px,#030207}
+body.dash:not(.pageview)::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:3;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.014) 0 1px,transparent 1px 3px)}
+body.dash:not(.pageview) main>.card:not(.core){display:none}
+body.dash:not(.pageview) .hx{display:flex}
+.hp{position:relative;background:linear-gradient(180deg,rgba(28,22,48,.45),rgba(10,8,18,.8));border:1px solid rgba(190,170,255,.18);
+  clip-path:polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px);padding:14px 16px;min-width:0;min-height:0}
+.hp.grow{flex:1;overflow:auto}
+.hh{font:600 11px 'Chakra Petch',var(--head);letter-spacing:3.5px;color:#d7c6ff;text-transform:uppercase;display:flex;
+  justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px}
+.hh span{font:400 9px var(--mono);letter-spacing:2px;color:#7d769c}
+.hxcol{flex-direction:column;gap:14px;min-height:0;position:relative;z-index:1}
+.hempty{font-size:13px;color:#7d769c}
+/* header */
+#hxTop{grid-column:1/-1;display:none;align-items:center;justify-content:space-between;position:relative;z-index:1}
+body.dash:not(.pageview) #hxTop{display:grid;grid-template-columns:1fr auto 1fr}
+.hxb{display:flex;align-items:center;gap:14px}
+.hex{width:34px;height:34px;flex:none;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:linear-gradient(135deg,#b9a2ff,#ff7ad1);display:grid;place-items:center}
+.hex::before{content:"";width:26px;height:26px;clip-path:inherit;background:#030207;grid-area:1/1}
+.hex::after{content:"";width:8px;height:8px;border-radius:50%;background:#fff;box-shadow:0 0 10px #d7c6ff;grid-area:1/1}
+.hxb b{display:block;font:700 18px 'Chakra Petch',var(--head);letter-spacing:8px}
+.hxb small{font:9px var(--mono);letter-spacing:3px;color:#7d769c}
+.hxc{text-align:center}
+.hxc b{font:300 34px var(--mono);letter-spacing:4px;text-shadow:0 0 18px rgba(185,162,255,.6)}
+.hxc b span{font-size:16px;color:#8d84b0}
+.hxc small{display:block;font:9px var(--mono);letter-spacing:4px;color:#7d769c}
+.hxp{display:flex;justify-content:flex-end;gap:10px}
+.hxp span{font:10px var(--mono);letter-spacing:2px;padding:7px 11px;border:1px solid rgba(190,170,255,.22);color:#d6d0ee;white-space:nowrap}
+.hxp .ok{border-color:rgba(98,245,192,.35);color:#62f5c0}.hxp .bad{border-color:rgba(255,110,110,.45);color:#ff8a8a}
+#hxMic{border-color:color-mix(in srgb,var(--facec,#c4a8ff) 55%,transparent);color:var(--facec,#c4a8ff)}
+/* next up */
+.hp.hot{background:linear-gradient(135deg,rgba(255,122,209,.14),rgba(10,8,18,.82) 60%);border-color:rgba(255,122,209,.35)}
+.hp.hot .hh{color:#ffb3e3}
+.nxw{font:700 24px/1.12 'Chakra Petch',var(--head);overflow-wrap:anywhere}
+.nxs{font:11px var(--mono);color:#a49dc4;margin-top:6px}
+.nxc{display:flex;align-items:baseline;gap:8px;margin-top:12px}.nxc[hidden]{display:none}
+.nxc b{font:300 36px var(--mono);color:#ff7ad1;text-shadow:0 0 14px rgba(255,122,209,.6)}
+.nxc span{font:10px var(--mono);letter-spacing:2px;color:#a49dc4}
+/* today */
+.trk{position:relative;padding-left:22px;display:flex;flex-direction:column;gap:12px}
+.trk::before{content:"";position:absolute;left:5px;top:4px;bottom:4px;width:1px;background:linear-gradient(180deg,#5d5680,#b9a2ff 40%,#ff7ad1)}
+.trk>div{position:relative}
+.trk i{position:absolute;left:-21px;top:4px;width:9px;height:9px;transform:rotate(45deg);border:1px solid #b9a2ff}
+.trk time{display:block;font:10px var(--mono);letter-spacing:1.5px;color:#b9a2ff}
+.trk b{display:block;font-weight:500;font-size:14px;margin-top:1px}
+.trk .done i{background:#3a3354;border-color:#6d6688}.trk .done time{color:#6d6688}.trk .done b{color:#8d84b0}
+.trk .now i{background:#ff7ad1;border-color:#ff7ad1;box-shadow:0 0 8px #ff7ad1}.trk .now time{color:#ff7ad1}.trk .now b{color:#fff}
+/* messages */
+.nmute{font:600 9px var(--mono);letter-spacing:1.5px;padding:6px 9px;min-height:28px;border:1px solid rgba(98,245,192,.4);background:rgba(98,245,192,.06);color:#62f5c0;
+  clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px)}
+.nmute.off{border-color:rgba(255,110,140,.45);background:rgba(255,110,140,.08);color:#ff8aa5}
+.msg{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:center;padding:4px 0}
+.msg i{width:28px;height:28px;display:grid;place-items:center;font:700 12px 'Chakra Petch',var(--head);font-style:normal;
+  clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:currentColor}
+.msg i span{color:#030207}
+.msg b{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msg small{font:9px var(--mono);letter-spacing:1.5px;color:#7d769c}
+.msg em{font:11px var(--mono);font-style:normal}
+/* quick actions */
+.qas{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.qa{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-height:64px;padding:10px 11px;border:1px solid rgba(190,170,255,.16);
+  background:rgba(190,170,255,.035);color:#ece8ff;font:600 11px 'Chakra Petch',var(--head);letter-spacing:1.2px;text-transform:uppercase;text-align:left;
+  clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
+.qa:hover{border-color:#b9a2ff;background:rgba(190,170,255,.09)}
+.qa svg{width:18px;height:18px;color:#b9a2ff}
+/* now playing */
+.np{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px;align-items:center}
+.np .art{width:52px;height:52px;background:conic-gradient(from 30deg,#b9a2ff,#ff7ad1,#ffb35c,#b9a2ff) center/cover;
+  clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
+.np b{display:block;font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.np small{font:10px var(--mono);color:#a49dc4;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.npc{display:flex;align-items:center;gap:8px;margin-top:12px}
+.npc button{width:44px;height:34px;border:1px solid rgba(190,170,255,.2);background:none;color:#d7c6ff;display:grid;place-items:center;padding:0}
+.npc button.pp{border:0;background:#b9a2ff;color:#12091f}
+.npc svg{width:14px;height:14px}
+.npc u{flex:1;height:3px;background:rgba(190,170,255,.14);text-decoration:none;display:block}
+.npc u i{display:block;height:100%;width:0;background:#ff7ad1;box-shadow:0 0 6px #ff7ad1}
+/* deadlines */
+.due{margin-bottom:12px}
+.due>div:first-child{display:flex;justify-content:space-between;gap:10px;font-size:14px;font-weight:500}
+.due>div:first-child span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.due>div:first-child em{font:11px var(--mono);font-style:normal;white-space:nowrap}
+.segs{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:3px;margin-top:6px}
+.segs i{height:5px;background:rgba(190,170,255,.10)}
+/* the centre: face inside an instrument dial */
+body.dash:not(.pageview) main>.core{background:none;border:0;box-shadow:none;padding:0;backdrop-filter:none;z-index:1}
+body.dash:not(.pageview) main>.core::after{display:none}
+body.dash:not(.pageview) #dial{display:block;position:absolute;left:50%;top:50%;height:96%;max-width:100%;aspect-ratio:1;transform:translate(-50%,-50%);pointer-events:none}
+#dial .tk,#dial .tk2{position:absolute;inset:0;border-radius:50%;
+  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 7px),#000 calc(100% - 7px));mask:radial-gradient(farthest-side,transparent calc(100% - 7px),#000 calc(100% - 7px));
+  background:repeating-conic-gradient(rgba(190,170,255,.3) 0 .35deg,transparent .35deg 3deg)}
+#dial .tk2{-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 15px),#000 calc(100% - 15px));mask:radial-gradient(farthest-side,transparent calc(100% - 15px),#000 calc(100% - 15px));
+  background:repeating-conic-gradient(rgba(215,198,255,.75) 0 .45deg,transparent .45deg 30deg)}
+#dial .arc{position:absolute;inset:6%;border-radius:50%;background:conic-gradient(from 200deg,transparent 0 6%,var(--facec,#c4a8ff) 6% 30%,transparent 30%);
+  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 3px));mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 3px));
+  filter:drop-shadow(0 0 8px var(--facec,#c4a8ff));transition:background .5s}
+#dial[data-s=thinking] .arc{animation:spin 1.6s linear infinite}
+#dial[data-s=speaking] .arc{animation:spin 6s linear infinite}
+#dial .ring2{position:absolute;inset:8.5%;border-radius:50%;border:1px dashed color-mix(in srgb,var(--facec,#c4a8ff) 30%,transparent)}
+#dial b{position:absolute;left:50%;top:24px;transform:translateX(-50%);font:10px var(--mono);letter-spacing:4px;color:var(--facec,#c4a8ff);white-space:nowrap}
+body.dash:not(.pageview) .core .orbwrap{flex:1 1 auto !important;min-height:300px}
+body.dash:not(.pageview) .orbwrap.hasface #faceOrb{inset:16% 0 !important;height:68% !important}
+body.dash:not(.pageview) .core #say,body.dash:not(.pageview) #faceCaps,body.dash:not(.pageview) .orbwrap .title,
+
+body.dash:not(.pageview) #tx{display:grid;gap:5px;text-align:center;padding:4px 6px 2px;width:100%;max-width:640px;margin:0 auto}
+body.dash:not(.pageview) #tx p{grid-template-columns:none;display:block}
+body.dash:not(.pageview) #tx b{margin-right:10px;letter-spacing:3px}
+body.dash:not(.pageview) #tx .you b::after{content:" ›"}body.dash:not(.pageview) #tx .ath b::after{content:" ›"}
+body.dash:not(.pageview) #tx span{display:inline;font-size:15px}
+body.dash:not(.pageview) #tx .ath span{font-size:17px;font-weight:500}
+body.dash:not(.pageview) .chatbar{justify-content:center}
+body.dash:not(.pageview) #f{max-width:640px;width:100%;margin:0 auto;border-radius:0;border-color:rgba(190,170,255,.3);background:rgba(10,8,18,.85);
+  clip-path:polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px)}
+body.dash:not(.pageview) #f input::placeholder{font-family:var(--mono);letter-spacing:2px}
+/* desktop grid */
+@media (min-width:901px){
+  body.dash:not(.pageview)>header,body.dash:not(.pageview)>footer{display:none}
+  body.dash:not(.pageview){grid-template-rows:minmax(0,1fr)}
+  body.dash:not(.pageview) main{grid-row:1/-1;grid-template-columns:300px minmax(0,1fr) 310px;grid-template-rows:60px minmax(0,1fr);
+    grid-auto-rows:0;padding:22px 40px 26px;gap:16px 26px;overflow:hidden}
+  #hxL{grid-column:1;grid-row:2}#hxR{grid-column:3;grid-row:2}
+  body.dash:not(.pageview) main>.core{grid-column:2 !important;grid-row:2 !important;min-height:0}
+}
+/* phone: header and Talk bar stay; the face first, then the panels */
+@media (max-width:900px){
+  #hxTop{display:none !important}
+  body.dash:not(.pageview) main>.core{order:-1}
+  body.dash:not(.pageview) #dial{height:100%}
+  body.dash:not(.pageview) .core .orbwrap{min-height:0;flex:0 0 340px !important}
+}
 </style></head><body>
 
 <!-- ======================= sidebar ======================= -->
@@ -575,6 +727,38 @@ body.pageview main>.page{display:flex;flex-direction:column;grid-column:1/-1;gri
 
 <!-- ======================= dashboard ======================= -->
 <main>
+  <!-- Command Centre (design E): header row and the two side columns; the face is the .core card -->
+  <div class="hx" id="hxTop">
+    <div class="hxb"><div class="hex"></div><div><b>ATHENA</b><small id="hxHi">COMMAND CENTRE</small></div></div>
+    <div class="hxc"><b id="hxClock">--:--</b><small id="hxDate">--</small></div>
+    <div class="hxp"><span id="hxOn">--</span><span id="hxGpu">GPU --</span><span id="hxMic">--</span></div>
+  </div>
+  <div class="hx hxcol" id="hxL">
+    <section class="hp hot"><div class="hh">Next up<span id="nxSrc">TODAY</span></div>
+      <div class="nxw" id="nxWhat">Nothing scheduled</div><div class="nxs" id="nxWhere"></div>
+      <div class="nxc" id="nxC" hidden><b id="nxIn">--</b><span>TO GO</span></div></section>
+    <section class="hp grow"><div class="hh">Today<span id="tdLeft"></span></div><div class="trk" id="track"><div class="hempty">Loading…</div></div></section>
+    <section class="hp"><div class="hh">Messages<button class="nmute" id="nMute" title="Athena reading out WhatsApp and text messages">READ-OUT --</button></div><div id="msgs"><div class="hempty">Loading…</div></div></section>
+  </div>
+  <div class="hx hxcol" id="hxR">
+    <section class="hp"><div class="hh">Quick actions<span>ONE TAP</span></div>
+      <div class="qas">
+        <button class="qa" data-cmd="brief me"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Brief me</button>
+        <button class="qa" data-cmd="study mode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>Focus</button>
+        <button class="qa" data-cmd="game mode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="7" width="18" height="11" rx="4"/><path d="M8 11v3M6.5 12.5h3M15 12h.01M17 14h.01"/></svg>Game</button>
+        <button class="qa" data-cmd="what am I looking at on my screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>Screen</button>
+        <button class="qa" data-cmd="play something I like"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>Music</button>
+        <button class="qa" data-cmd="lock my pc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Lock PC</button>
+      </div></section>
+    <section class="hp"><div class="hh">Now playing<span id="npApp">MEDIA</span></div>
+      <div class="np"><div class="art" id="npArt"></div><div style="min-width:0"><b id="npT">Nothing playing</b><small id="npA">Say "play some music"</small></div></div>
+      <div class="npc"><button data-m="previous" aria-label="Previous"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+        <button class="pp" id="npPP" data-m="pause" aria-label="Pause"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></button>
+        <button data-m="next" aria-label="Next"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+        <u><i id="npBar"></i></u></div></section>
+    <section class="hp grow"><div class="hh">Deadlines<span>COUNTDOWN</span></div><div id="dues"><div class="hempty">Loading…</div></div></section>
+  </div>
+
   <section class="card" style="grid-column:1;grid-row:1">
     <div class="ch"><b>AI CORE OVERVIEW</b></div>
     <div class="ov">
@@ -592,6 +776,7 @@ body.pageview main>.page{display:flex;flex-direction:column;grid-column:1/-1;gri
       <h1 id="stTitle">Say <em>Athena.</em></h1>
       <div class="stpills"><span data-s="listening">Listening</span><span data-s="thinking">Thinking</span><span data-s="speaking">Speaking</span></div></div>
     <div class="orbwrap" id="orbwrap">
+      <div id="dial" data-s="idle"><i class="tk"></i><i class="tk2"></i><i class="ring2"></i><i class="arc"></i><b id="dialLab">STANDING BY</b></div>
       <svg viewBox="0 0 400 400">
         <defs>
           <radialGradient id="sph" cx="50%" cy="45%" r="55%"><stop offset="0" stop-color="#5a4a9a" stop-opacity=".55"/><stop offset=".65" stop-color="#16131f" stop-opacity=".55"/><stop offset="1" stop-color="#c4a8ff" stop-opacity=".25"/></radialGradient>
@@ -728,6 +913,7 @@ function md(t){
   t=t.replace(/^\s*[-*]\s+/gm,'• ');
   return t}
 function answer(text,err){
+  if(!err&&text)$('txAth').textContent=String(text).replace(/\[share:[\w-]+\]/g,'').replace(/[*_`#>]/g,'').trim().slice(0,400);
   // [share:<id>] - a file the PC is sending: shown as a Download button.
   const shared=[];text=(text||'').replace(/\s*\[share:([\w-]+)\]/g,(_,id)=>{shared.push(id);return ''});
   const m=(text||'').match(/\[([\w.\-]+\.html)\]\s*$/m);
@@ -777,7 +963,7 @@ function sendToPC(files){
   next();
 }
 $('toPC').onchange=()=>{const fs=Array.from($('toPC').files||[]);$('toPC').value='';if(fs.length)sendToPC(fs)};
-loadShares();setInterval(()=>{if(!document.hidden)loadShares()},30000);
+loadShares();setInterval(()=>{if(!document.hidden)loadShares()},8000);
 function term(){}   // the old terminal panel; activity now shows in the live feed
 
 let busy=false;
@@ -793,7 +979,7 @@ async function send(text,force){
   }catch(e){w.remove();answer('Cannot reach the PC. Is it awake and on Tailscale?',true)}
   finally{setBusy(false)}
 }
-function ask(text){if(busy||!text)return;line(text,'me');send(text)}
+function ask(text){if(busy||!text)return;line(text,'me');$('txYou').textContent=text;send(text)}
 
 // ---------- attachments ----------
 let pending=null;
@@ -851,7 +1037,7 @@ document.querySelectorAll('[data-cmd]').forEach(b=>b.onclick=()=>{closeVeils();
 
 // ---------- views ----------
 let lastView='stage';
-function setView(v){lastView=v;if(typeof closePage==='function'&&pageName)closePage();document.body.classList.toggle('fullchat',v==='chat');document.body.classList.toggle('stage',v==='stage');
+function setView(v){lastView=v;if(typeof closePage==='function'&&pageName)closePage();document.body.classList.toggle('fullchat',v==='chat');document.body.classList.toggle('stage',v==='stage');document.body.classList.toggle('dash',v==='dash');
   document.querySelectorAll('nav button[data-view]').forEach(b=>b.classList.toggle('on',b.dataset.view===v));
   if(v==='chat'){document.body.classList.add('chatting');say.scrollTop=say.scrollHeight}}
 document.querySelectorAll('nav button[data-view]').forEach(b=>b.onclick=()=>{closeVeils();setView(b.dataset.view)});
@@ -1003,7 +1189,7 @@ const PAGES={
      'background:'+(brainTab===k?'rgba(196,168,255,.14)':'transparent')+';border:1px solid '+(brainTab===k?'var(--c)':'var(--line)')+';color:'+(brainTab===k?'var(--c)':'var(--dim)')+'">'+t+'</button>';
    $('pgBody').innerHTML='<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">'+tab('mind','KNOWLEDGE')+(d.code_map?tab('code','CODE'):'')+
      '<span class="muted" id="brainInfo"></span></div>'+
-     '<div id="brainNet" style="height:calc(100vh - 310px);min-height:380px;border:1px solid var(--line);border-radius:10px;background:radial-gradient(circle at 50% 50%,#08202e,#030b12)"></div>';
+     '<div id="brainNet" style="height:calc(100vh - 310px);min-height:380px;border:1px solid var(--line);border-radius:10px;background:radial-gradient(circle at 50% 50%,#16131f,#030b12)"></div>';
    document.querySelectorAll('[data-bt]').forEach(b=>b.onclick=()=>{brainTab=b.dataset.bt;PAGES.brain(d)});
    brainShow(d)},
  calendar(d){if(d.error){$('pgBody').innerHTML='<div class="muted">'+esc2(d.error)+'</div>';return}
@@ -1018,7 +1204,7 @@ const PAGES={
    html+='<div class="pbox"><h4>SAVED FACTS</h4>'+(d.facts.length?'<ul>'+d.facts.map(f=>'<li><span><b>'+esc2(f.key)+'</b>: '+esc2(f.value)+'</span></li>').join('')+'</ul>':'<div class="muted">None.</div>')+'</div>';
    html+='<div class="pbox"><h4>HISTORY</h4><ul><li><span>Conversations saved</span><b>'+d.chats+'</b></li><li><span>Searchable snippets</span><b>'+d.snippets+'</b></li></ul><p class="muted">Say "remember that …" to add, or edit '+esc2(d.file)+'.</p></div></div>';
    $('pgBody').innerHTML=html;
-   $('pgBody').querySelectorAll('[data-forget]').forEach(b=>b.onclick=async()=>{if(!confirm('Forget "'+b.dataset.forget+'"?'))return;
+   $('pgBody').querySelectorAll('[data-forget]').forEach(b=>b.onclick=async()=>{if(b.dataset.sure!=='1'){b.dataset.sure='1';b.textContent='Sure?';return}
      await act('forget',{text:b.dataset.forget});renderPage()})},
  workflows(d,quiet){const m=d.music;
    const hero='<div class="hero"><div class="art" id="art">'+(m&&m.art?'':'<div class="vinyl'+(m&&m.playing?' spin2':'')+'"></div>')+'</div><div style="min-width:0">'+
@@ -1184,6 +1370,8 @@ async function pollLive(){
     $('vText').textContent=!j.running?'Voice is not running':st==='listening'?'Listening…':st==='thinking'?'Thinking…':st==='speaking'?'Speaking…':'Say "Athena" or tap';
     $('oVoice').textContent=j.running?'Online · '+st:(st==='stopped'?'Stopped':'Offline');$('oVoice').className=j.running?'':'w';
     $('startVoice').style.display=j.running?'none':'';
+    $('hxOn').textContent=j.running?'● ONLINE':'● OFFLINE';$('hxOn').className=j.running?'ok':'bad';
+    $('hxMic').textContent=!j.running?'VOICE OFF':st==='muted'?'MIC MUTED':'MIC ON';
     if(!$('talk').classList.contains('on'))$('talkSub').textContent=st==='listening'?'I am listening…':'tap, or say "Athena"';
     // Spoken conversation appears in the transcript too - the window is live,
     // not a chat box that only knows what was typed.
@@ -1191,10 +1379,11 @@ async function pollLive(){
       face.setState(fs);face.setLevel(fs==='listening'?Math.min(1,lv*1.4):0);
       document.documentElement.style.setProperty('--facec',FACE_COL[fs]);
       const H={idle:'Say <em>Athena.</em>',listening:"I'm <em>listening.</em>",thinking:'Let me <em>think.</em>',speaking:'<em>Speaking.</em>'};
+      $('dial').dataset.s=fs;$('dialLab').textContent={idle:'STANDING BY',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'}[fs];
       if($('stTitle').dataset.s!==fs){$('stTitle').innerHTML=H[fs];$('stTitle').dataset.s=fs;
         document.querySelectorAll('.stpills span').forEach(x=>x.classList.toggle('on',x.dataset.s===fs))}}
     if(j.heard&&j.heard!==lastHeard){line(j.heard,'me voice');lastHeard=j.heard;$('txYou').textContent=j.heard;faceSay(j.heard,FACE_COL.listening,170)}
-    if(j.reply&&j.reply!==lastReply){answer(j.reply);lastReply=j.reply;$('txAth').textContent=j.reply;faceSay(j.reply,FACE_COL.speaking,300)}
+    if(j.reply&&j.reply!==lastReply){if(/\[share:/.test(j.reply))loadShares();answer(j.reply);lastReply=j.reply;$('txAth').textContent=j.reply;faceSay(j.reply,FACE_COL.speaking,300)}
     feed(j.log);agents();
   }catch(e){$('stat').textContent='LINK LOST';$('sdot').className='dot warn'}
 }
@@ -1216,6 +1405,8 @@ async function pollStatus(){
     $('oSys').textContent=s.cpu>90?'Under load':'Optimal';$('oSys').className=s.cpu>90?'w':'';
     studyModel=(s.study_model||'').split(/[:/]/).slice(-1)[0]||'';showLLM();
     $('user').textContent=s.user||'Operator';
+    $('hxGpu').textContent=s.gpu?'GPU '+s.gpu.vram_used+' / '+s.gpu.vram_total+' GB':'GPU --';
+    $('hxHi').textContent=greet()+(s.user?', '+String(s.user).split(' ')[0].toUpperCase():'');
     $('net').textContent='↓'+Math.round(s.down_kbs)+' ↑'+Math.round(s.up_kbs)+' KB/s';
   }catch(e){}
 }
@@ -1230,7 +1421,7 @@ function constellation(n){const svg=$('constel');svg.innerHTML='';const pts=[];l
 const PROV=[['groq','Groq','G','var(--org)'],['gemini','Gemini','✦','var(--c)'],['openrouter','OpenRouter','⇄','var(--vio)'],
   ['cerebras','Cerebras','C','var(--warn)'],['ollama','Ollama (local)','◉','var(--ok)'],['claude','Claude API','✺','var(--dim)']];
 async function pollOverview(){
-  try{const o=await api('/overview');if(!o||!o.t)return;
+  try{const o=await api('/overview');if(!o||!o.t)return;try{holo(o)}catch(e){}
     const tl=$('tl');tl.innerHTML='';const sc=o.schedule||[];
     const left=sc.filter(e=>e.state!=='done');
     if(!sc.length)tl.innerHTML='<div class="empty">Nothing scheduled today.</div>';
@@ -1258,9 +1449,69 @@ async function pollOverview(){
   }catch(e){}
 }
 
+
+// ---------- Command Centre (design E): next up, today, messages, deadlines, music ----------
+let nxAt=null;
+function greet(){const h=new Date().getHours();return h<5?'GOOD NIGHT':h<12?'GOOD MORNING':h<17?'GOOD AFTERNOON':'GOOD EVENING'}
+function holo(o){
+  const now=new Date(),past=at=>{const [h,m]=at.split(':').map(Number);return h*60+m<now.getHours()*60+now.getMinutes()};
+  const items=[...(o.schedule||[]).filter(e=>e.at!=='all day').map(e=>({what:e.what,where:e.where||'',at:e.at,state:e.state})),
+    ...(o.reminders||[]).map(r=>({what:r.what,where:'Reminder',at:r.at,state:past(r.at)?'done':'next'}))].sort((a,b)=>a.at<b.at?-1:a.at>b.at?1:0);
+  const next=items.find(e=>e.state==='next'),busyNow=items.find(e=>e.state==='now');
+  $('nxWhat').textContent=next?next.what:busyNow?busyNow.what:(o.tomorrow?'Tomorrow: '+o.tomorrow.what:'Nothing scheduled');
+  $('nxWhere').textContent=next?((next.where?next.where.toUpperCase()+' · ':'')+next.at):busyNow?'HAPPENING NOW':(o.tomorrow?o.tomorrow.at:'');
+  nxAt=null;if(next){const [h,m]=next.at.split(':').map(Number);nxAt=new Date();nxAt.setHours(h,m,0,0)}
+  $('nxC').hidden=!next;tickNext();
+  const t=$('track');t.innerHTML='';
+  if(!items.length)t.innerHTML='<div class="hempty">Nothing on today.</div>';
+  items.forEach(e=>{const d=document.createElement('div');d.className=e.state;d.innerHTML='<i></i><time></time><b></b>';
+    d.querySelector('time').textContent=e.at+(e.state==='now'?' · NOW':'');d.querySelector('b').textContent=e.what;t.appendChild(d)});
+  $('tdLeft').textContent=items.length?items.filter(e=>e.state!=='done').length+' LEFT':'';
+  // who wrote - never what; the backend sends no message text
+  const COL={WhatsApp:'#62f5c0',SMS:'#b9a2ff',Gmail:'#ff7ad1'};
+  const ms=[...(o.senders||[]),...(o.mail_from||[]).map(w=>({who:w,app:'Gmail',n:1}))].slice(0,4);
+  const box=$('msgs');box.innerHTML='';
+  if(!ms.length)box.innerHTML='<div class="hempty">No messages today.</div>';
+  ms.forEach(m=>{const d=document.createElement('div');d.className='msg';d.style.color=COL[m.app]||'#b9a2ff';
+    d.innerHTML='<i><span></span></i><div style="min-width:0"><b style="color:#ece8ff"></b><small></small></div><em></em>';
+    d.querySelector('span').textContent=((m.who||'').match(/[\p{L}\d]/u)||['·'])[0].toUpperCase();
+    d.querySelector('b').textContent=m.who;d.querySelector('small').textContent=m.app.toUpperCase();
+    d.querySelector('em').textContent=m.n+(m.app==='Gmail'?' UNREAD':m.n>1?' MSGS':' MSG');box.appendChild(d)});
+  const du=$('dues');du.innerHTML='';const dl=o.deadlines||[];
+  if(!dl.length)du.innerHTML='<div class="hempty">Nothing due. Say "check my deadlines".</div>';
+  dl.forEach(x=>{const col=x.days<=1?'#ff7ad1':x.days<=4?'#ffb35c':'#b9a2ff';
+    const lab=x.days<0?'OVERDUE':x.days===0?'TODAY':x.days===1?'1 DAY':x.days+' DAYS';
+    const fill=Math.max(1,Math.min(10,10-x.days));
+    const d=document.createElement('div');d.className='due';
+    d.innerHTML='<div><span></span><em style="color:'+col+'">'+lab+'</em></div><div class="segs">'+
+      Array.from({length:10},(_,i)=>'<i'+(i<fill?' style="background:'+col+'"':'')+'></i>').join('')+'</div>';
+    d.querySelector('span').textContent=x.text;du.appendChild(d)})}
+function tickNext(){if(!nxAt)return;const m=Math.max(0,Math.round((nxAt-new Date())/60000));
+  $('nxIn').textContent=Math.floor(m/60)+':'+String(m%60).padStart(2,'0')}
+const PLAY='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4v16l13-8z"/></svg>',
+  PAUSE='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+async function pollMusic(){if(document.hidden||!document.body.classList.contains('dash')||document.body.classList.contains('pageview'))return;
+  try{const m=(await api('/view/workflows')).music,on=!!(m&&m.title);
+    $('npT').textContent=on?m.title:'Nothing playing';$('npA').textContent=on?(m.artist||''):'Say "play some music"';
+    $('npApp').textContent=on&&(m.app||'').toLowerCase().includes('spotify')?'SPOTIFY':'MEDIA';
+    $('npArt').style.backgroundImage=on&&m.art?'url("'+m.art+'")':'';
+    $('npBar').style.width=on&&m.length?Math.min(100,m.position/m.length*100)+'%':'0';
+    const pp=$('npPP'),playing=on&&m.playing;pp.dataset.m=playing?'pause':'play';pp.innerHTML=playing?PAUSE:PLAY;
+    pp.setAttribute('aria-label',playing?'Pause':'Play')}catch(e){}}
+document.querySelectorAll('.npc [data-m]').forEach(b=>b.onclick=async()=>{await act('music',{action:b.dataset.m});setTimeout(pollMusic,700)});
+setInterval(pollMusic,4000);
+// Read-outs of WhatsApp/SMS on the PC speakers: one switch, takes effect at once.
+function showMute(m){const b=$('nMute');b.textContent=m?'READ-OUT OFF':'READ-OUT ON';b.classList.toggle('off',!!m);b.dataset.m=m?'1':''}
+async function loadMute(){try{showMute((await api('/view/notify')).muted)}catch(e){}}
+$('nMute').onclick=async()=>{const want=!$('nMute').dataset.m;try{showMute((await api('/view/notify',{method:'POST',body:JSON.stringify({muted:want})})).muted)}catch(e){}};
+loadMute();
+
 // ---------- clock ----------
 function tick(){const d=new Date();$('clock').textContent=d.toTimeString().slice(0,8);$('stClock').textContent=d.toTimeString().slice(0,5);
-  $('date').textContent=d.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long',year:'numeric'})}
+  $('date').textContent=d.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  const ts=d.toTimeString();$('hxClock').innerHTML=ts.slice(0,5)+'<span>:'+ts.slice(6,8)+'</span>';
+  $('hxDate').textContent=d.toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric'}).toUpperCase().replace(/,/g,' ·').replace(/\//g,'.');
+  if(d.getSeconds()===0)tickNext()}
 tick();setInterval(tick,1000);
 
 // ---------- conversations ----------
@@ -1272,15 +1523,19 @@ async function loadChats(){const l=$('chatlist');
       const w=document.createElement('span');w.className='w';w.textContent=c.when;
       const d=document.createElement('span');d.className='d';d.textContent='✕';
       t.onclick=()=>openChat(c.id);
-      d.onclick=async()=>{if(!confirm('Delete "'+c.title+'"?'))return;
-        await api('/chats/'+c.id,{method:'DELETE'});loadChats()};
+      // tap once: "Delete?"; tap again within 3 s: gone. confirm() is blocked in the app window.
+      d.onclick=async e=>{e.stopPropagation();
+        if(!d.classList.contains('sure')){d.classList.add('sure');d.textContent='Delete?';
+          setTimeout(()=>{d.classList.remove('sure');d.textContent='✕'},3000);return}
+        try{await api('/chats/'+encodeURIComponent(c.id),{method:'DELETE'})}catch(err){d.textContent='Failed';return}
+        loadChats()};
       r.append(t,w,d);l.appendChild(r)});
     if(!(j.chats||[]).length)l.textContent='Nothing saved yet.'}
   catch(e){l.textContent='Cannot reach the PC.'}}
 async function openChat(id){
   try{const j=await api('/chats/'+id);say.innerHTML='';document.body.classList.remove('chatting');
     (j.messages||[]).forEach(m=>m.role==='user'?line(m.text,'me'):answer(m.text));
-    closeVeils()}
+    closeVeils();if(id!=='new')setView('chat')}   // the list is hidden on the stage and Command Centre
   catch(e){answer('Could not open that conversation.',true)}}
 const openHist=()=>{$('histVeil').classList.add('open');loadChats()};
 $('histBtn').onclick=openHist;$('histBtn2').onclick=openHist;

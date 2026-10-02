@@ -514,5 +514,10 @@ def store() -> dict:
         return {"error": str(e)}
 
 
-GET = {"store": store, "phone": phone, "codegraph": codegraph, "calendar": calendar, "memory": memory, "workflows": workflows,
+def notify() -> dict:
+    from .. import phone_notify
+    return {"muted": phone_notify.muted()}
+
+
+GET = {"notify": notify, "store": store, "phone": phone, "codegraph": codegraph, "calendar": calendar, "memory": memory, "workflows": workflows,
        "system": system, "tasks": tasks, "skills": skills, "brain": brain}

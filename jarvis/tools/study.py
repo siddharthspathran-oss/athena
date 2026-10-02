@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 import time
 
-from .. import cloud, plot, render, verify
+from .. import cloud, diagram, plot, render, verify
 from ..config import DATA, cfg
 from ..llm import LLM
 from ..registry import tool
@@ -98,6 +98,41 @@ page rather than spoken.
     0 to 4. With x in seconds it would be sin(2*pi*1000*x). Count the cycles
     your expression gives over the range and check it against the frequency
     you were given before you write it down.
+- Circuit and logic diagrams are never drawn in words or ASCII art. If the
+  question asks for a circuit diagram, or the topic has a standard one, put
+  its drawing in by writing a fenced block holding only its name:
+
+  ```circuit jk_flipflop```
+
+  Drawings available: jk_flipflop, t_flipflop, d_flipflop, sr_flipflop,
+  sr_latch_nor, sr_latch_nand, half_adder, full_adder, mux_2to1, rc_lowpass,
+  rc_highpass, inverting_amp, noninverting_amp, voltage_follower,
+  sallen_key_lowpass, sallen_key_highpass (the usual 2nd-order Butterworth
+  realisation). For ANY other circuit, still write ```circuit <its usual
+  textbook name>``` - for example ```circuit full wave bridge rectifier```
+  or ```circuit 3-bit asynchronous up counter``` - and a checked drawing is
+  found and put in for you. Never replace a circuit with a block diagram.
+  Use ```mermaid only for block diagrams of whole systems; in it put every
+  node and arrow label in double quotes - A["Input (Vin)"] -->|"R1"| B["Op-amp"].
+- A displayed equation goes on its own lines between \\[ and \\], never with
+  a Markdown table, list or heading inside it.
+- A flip-flop, counter or other sequential circuit also gets a timing diagram
+  as a ```wavedrom block of WaveJSON, worked out edge by edge from its
+  characteristic table, and, where it helps, a state diagram as a ```mermaid
+  stateDiagram-v2. For example:
+
+  ```wavedrom
+  {"signal": [{"name": "CLK", "wave": "p......"},
+              {"name": "J", "wave": "01..0.."},
+              {"name": "K", "wave": "0..1.0."},
+              {"name": "Q", "wave": "0.1.0.."}]}
+  ```
+
+- Flip-flops and other standard circuits: give the characteristic table and
+  the characteristic equation in LaTeX with \\overline for a complement -
+  JK: \\(Q_{n+1} = J\\overline{Q_n} + \\overline{K}Q_n\\), D: \\(Q_{n+1} = D\\),
+  T: \\(Q_{n+1} = T \\oplus Q_n\\) - and check every row of the table against
+  the equation before writing it: J = 1, K = 0 sets Q to 1 whatever Q was.
 - Define each symbol the first time it appears, with its unit.
 - Finish with a short "In short" line.
 
@@ -424,7 +459,7 @@ def _ask(llm: LLM, messages: list[dict], think: bool | None = None) -> str:
 def _faults(answer: str) -> list[str]:
     """Everything checkable that is wrong with an answer."""
     try:
-        return verify.problems(answer) + plot.problems(answer)
+        return verify.problems(answer) + plot.problems(answer) + diagram.problems(answer)
     except Exception:
         # The checker is a safety net, not a gate. If it throws, the answer
         # still goes out.
@@ -560,6 +595,45 @@ def _finished(started: float) -> None:
                   f"Your study answer is ready. It took {round(took / 60)} minutes.")
 
 
+# ---------- a circuit drawing does not depend on the model remembering one ----------
+# "explain jk flip flop to d flip flop conversion" came back with no circuit at all
+# (2 Oct 2026): the prompt asks for a ```circuit block and the model simply did not
+# write one. So for electronics questions Athena checks the answer herself and, if
+# no drawing is there, asks for the circuit's name and adds it.
+_WANTS_DRAWING = re.compile(
+    r"\b(?:diagram|circuit|draw|sketch|schematic|figure|wiring|flip[- ]?flops?|latch(?:es)?|"
+    r"counters?|shift registers?|rectifiers?|amplifiers?|op[- ]?amps?|filters?|oscillators?|"
+    r"adders?|subtractors?|multiplexers?|mux|demultiplexers?|decoders?|encoders?|comparators?|"
+    r"regulators?|clippers?|clampers?|multivibrators?|555|logic gates?|transistor|bjt|mosfet|"
+    r"butterworth|sallen)\b", re.I)
+_HAS_DRAWING = re.compile(r"```circuit|!\[", re.I)
+
+
+def _ensure_drawing(llm: LLM, question: str, answer: str) -> str:
+    if not _WANTS_DRAWING.search(question) or _HAS_DRAWING.search(answer):
+        return answer
+    try:
+        name = _ask(llm, [
+            {"role": "system", "content": "You name circuit diagrams. Reply with the name only."},
+            {"role": "user", "content":
+                f"Question: {question}\n\nWhich single circuit diagram belongs in the answer? "
+                f"Give its usual textbook name, correcting any mis-heard words (\"dr flip flop\" "
+                f"is a D flip-flop) - for example \"JK flip-flop to D flip-flop conversion\" or "
+                f"\"full wave bridge rectifier\". If no circuit diagram fits, reply NONE."}],
+            think=False).strip().strip('"`.').split("\n")[0][:80]
+    except Exception:
+        return answer
+    if not name or name.upper().startswith("NONE"):
+        return answer
+    block = f"\n\n```circuit {name}```\n\n"
+    # under a heading about the circuit if there is one, else after the opening paragraph
+    m = re.search(r"^#{1,4}[^\n]*(?:circuit|diagram|logic|implementation|construction)[^\n]*\n", answer, re.I | re.M)
+    if not m:
+        m = re.search(r"\n\s*\n", answer)
+    at = m.end() if m else len(answer)
+    return answer[:at] + block + answer[at:]
+
+
 def answer_worksheet(context: str, source: str, note=None) -> str | None:
     """Answer a numbered worksheet one question at a time, or None if it
     does not look like one."""
@@ -637,6 +711,7 @@ def answer_page(question: str, context: str = "", source: str = "") -> str:
         return "The model returned nothing for that question."
 
     title = question.strip() or f"Working through {source or 'the attached file'}"
+    answer = _ensure_drawing(llm, question, answer)
     try:
         path = render.write_page(title, answer)
     except Exception as e:
@@ -676,6 +751,7 @@ def explain(question: str) -> str:
     if not answer:
         return "The model returned nothing for that question."
 
+    answer = _ensure_drawing(llm, question, answer)
     try:
         path = render.write_page(question.strip(), answer)
     except Exception as e:

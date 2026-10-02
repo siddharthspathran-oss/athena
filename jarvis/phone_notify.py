@@ -105,6 +105,39 @@ def split(texts: list[str]) -> tuple[str, str]:
     return texts[0], " ".join(texts[1:])
 
 
+MUTE = DATA / "notify_mute.json"
+
+
+def muted() -> bool:
+    """The HUD's switch: read-outs off until switched back on. Read on every
+    message, so it works at once in the voice process without a restart."""
+    return bool(load_json(MUTE, {}).get("muted"))
+
+
+def set_muted(on: bool) -> dict:
+    save_json(MUTE, {"muted": bool(on)})
+    return {"muted": bool(on)}
+
+
+def recent_senders(hours: float = 24, limit: int = 4) -> list[dict]:
+    """Who messaged in the last `hours`, newest first, for the HUD - the
+    sender and a count only, never what they wrote."""
+    since = int((time.time() + 11644473600 - hours * 3600) * 10**7)   # Windows FILETIME
+    seen: dict[str, dict] = {}
+    for t, app, texts in _new_since(since):
+        if not texts or not is_message(app, texts):
+            continue
+        who = split(texts)[0].strip()[:30]
+        if not who or _CODE.search(who):
+            continue
+        kind = "WhatsApp" if "whatsapp" in (app + texts[0]).lower() else "SMS"
+        s = seen.setdefault(who, {"who": who, "app": kind, "n": 0, "t": 0})
+        s["n"] += 1
+        s["t"] = max(s["t"], t)
+    rows = sorted(seen.values(), key=lambda s: -s["t"])[:limit]
+    return [{k: s[k] for k in ("who", "app", "n")} for s in rows]
+
+
 def worth_saying(sender: str, message: str, contacts: list[tuple[str, str]]) -> str | None:
     """What to say for this message, or None to stay quiet. Only who it is
     from - never what it says (asked for 27 Sep 2026)."""
@@ -172,7 +205,7 @@ def start(say, busy=lambda: False) -> None:
                 # the alerts' 23:00-07:00 while you were up and waiting for it.
                 if in_quiet_hours(dt.datetime.now(), cfg.get("phone_notify.quiet_start", "01:00"),
                                   cfg.get("phone_notify.quiet_end", "07:00")) \
-                        or not cfg.get("phone_notify.speak", True):
+                        or not cfg.get("phone_notify.speak", True) or muted():
                     continue
                 for _ in range(60):         # wait for Athena to finish talking
                     if not busy():

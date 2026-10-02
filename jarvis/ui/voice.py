@@ -365,7 +365,8 @@ _COMMANDISH = re.compile(
     r"read|look|check|search|find|google|book|reserve|order|start|launch|run|lock|shut|shutdown|"
     r"restart|sleep|take|explain|summari[sz]e|brief|list|write|type|create|make|schedule|go|"
     r"switch|minimi[sz]e|maximi[sz]e|screenshot|note|save|copy|paste|end|hang\s+up|answer|help|"
-    r"i\s+need|i\s+want|let's|focus|study)\b", re.I)
+    r"i\s+need|i\s+want|let's|focus|study|hi|hello|hey|good|can|could|would|will|please|are|am|"
+    r"any|thanks?|wake|you\s+there)\b", re.I)
 
 
 _FILLER_ONLY = re.compile(
@@ -1621,7 +1622,8 @@ def _voice_loop() -> None:
                     if p is not None and p < float(cfg.get("voice.wake_min_prob", 0.6)) and not (
                             (p >= float(cfg.get("voice.wake_floor_prob", 0.1))
                              and _COMMANDISH.match(remainder or ""))
-                            or (not remainder and p >= float(cfg.get("voice.wake_bare_prob", 0.3)))):
+                            or (p >= float(cfg.get("voice.wake_bare_prob", 0.3))
+                                and not _FILLER_ONLY.match(remainder or ""))):
                         print(f"   [wake word too uncertain ({p:.2f}) - ignored]")
                         heard_wake = False
                 still_awake = _ENGAGED and time.time() < awake_until and followups > 0

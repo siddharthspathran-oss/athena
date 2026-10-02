@@ -905,6 +905,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/sw.js":
             self._send(200, SERVICE_WORKER.encode("utf-8"),
                        "application/javascript; charset=utf-8")
+        elif path == "/face.js":
+            # The particle face (no data in it, so no token): served from disk
+            # so editing face.js only needs a page reload.
+            self._send(200, (Path(__file__).parent / "face.js").read_bytes(),
+                       "application/javascript; charset=utf-8")
         elif path.startswith("/icons/"):
             self._serve_icon(path)
         elif path == "/models":

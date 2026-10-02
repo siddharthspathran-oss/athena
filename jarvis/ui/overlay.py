@@ -237,6 +237,17 @@ class Orb:
         """
         t0 = time.time()
         jobs: list[tuple[str, int, object]] = []
+        # The particle face from the HUD, pre-rendered by orb_frames.py, when
+        # its frames are there; otherwise the original numpy orb below.
+        try:
+            jobs = self._load_face_frames()
+        except Exception as e:
+            print(f"[orb: particle frames unusable ({e}) - using the classic orb]")
+            jobs = []
+        if jobs:
+            self._pending = jobs
+            self._render_secs = time.time() - t0
+            return
         specs = [("thinking", 0.0), ("speaking", 0.0)]
         specs += [(f"listening{b}", b / (LEVEL_STEPS - 1)) for b in range(LEVEL_STEPS)]
         for key, lvl in specs:
@@ -247,6 +258,34 @@ class Orb:
                 jobs.append((key, i, img))
         self._pending = jobs
         self._render_secs = time.time() - t0
+
+    def _load_face_frames(self) -> list[tuple[str, int, object]]:
+        """data/orb_frames/<key>/NNN.png -> jobs, resized to this orb's size.
+
+        Keys: thinking, speaking, listening0..N (quiet to loud). Sets FRAMES
+        and the listening steps from what is on disk.
+        """
+        global FRAMES, LEVEL_STEPS
+        from PIL import Image
+        from ..config import DATA
+
+        root = DATA / "orb_frames"
+        keys = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.exists() else []
+        listening = [k for k in keys if k.startswith("listening")]
+        if not ({"thinking", "speaking"} <= set(keys) and listening):
+            return []
+        n = min(len(list((root / k).glob("*.png"))) for k in keys)
+        if n < 8:
+            return []
+        jobs = []
+        for key in keys:
+            for i in range(n):
+                img = Image.open(root / key / f"{i:03d}.png").convert("RGB")
+                if img.size != (self.size, self.size):
+                    img = img.resize((self.size, self.size), Image.LANCZOS)
+                jobs.append((key, i, img))
+        FRAMES, LEVEL_STEPS = n, len(listening)
+        return jobs
 
     def _drain_pending(self) -> None:
         if self._ready or not self._pending:

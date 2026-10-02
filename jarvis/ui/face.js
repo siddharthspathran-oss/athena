@@ -11,7 +11,7 @@
   "use strict";
 
   const STATES = {
-    idle:      { c1: [0.66, 0.56, 1.00], c2: [0.86, 0.78, 1.00], morph: 0, amp: 0.05, shimmer: 0.25, glow: 0.50, spin: 0.08, size: 1.0 },
+    idle:      { c1: [0.66, 0.56, 1.00], c2: [0.86, 0.78, 1.00], morph: 0, amp: 0.05, shimmer: 0.25, glow: 0.85, spin: 0.08, size: 1.0 },
     listening: { c1: [0.97, 0.64, 0.26], c2: [1.00, 0.76, 0.36], morph: 0, amp: 0.07, shimmer: 0.65, glow: 0.95, spin: 0.10, size: 1.0 },
     thinking:  { c1: [0.52, 0.40, 1.00], c2: [0.68, 0.54, 1.00], morph: 1, amp: 0.00, shimmer: 0.20, glow: 1.00, spin: 0.55, size: 0.9 },
     speaking:  { c1: [1.00, 0.36, 0.72], c2: [1.00, 0.52, 0.80], morph: 0, amp: 0.42, shimmer: 0.35, glow: 1.00, spin: 0.16, size: 1.0 },
@@ -93,7 +93,7 @@
   void main(){
     float d = length(gl_PointCoord - 0.5);
     float a = smoothstep(0.5, 0.0, d);
-    gl_FragColor = vec4(mix(uC1, uC2, vMix) * uGlow, min(1.0, a * vAlpha * 1.35 * uDensity));
+    gl_FragColor = vec4(mix(uC1, uC2, vMix) * uGlow * 1.15, min(1.0, a * vAlpha * 2.0 * uDensity));
   }`;
 
   class AthenaFace {

@@ -85,13 +85,117 @@ Write-Output "$res"
     return f"Asked to turn {kind} {state.lower()}, but it is now reported as {now}."
 
 
-@tool(tags=TAG)
-def bluetooth(action: str = "status") -> str:
-    """Turn Bluetooth on or off, or report whether it is currently on.
+# ---------- connecting a paired device ----------
+# The tool used to have no way to connect anything: asked to "connect to echo"
+# on 3 Oct 2026 it checked Bluetooth was on and the model announced "Echo is
+# now connected" while the speaker sat disconnected. Switching the device's
+# audio service off and on (BluetoothSetServiceState) makes Windows connect it.
 
-    action: one of on, off, status, settings
+def _bt():
+    import ctypes
+    from ctypes import wintypes as w
+
+    class SYSTEMTIME(ctypes.Structure):
+        _fields_ = [(n, w.WORD) for n in ("y", "mo", "dw", "d", "h", "mi", "s", "ms")]
+
+    class Info(ctypes.Structure):
+        _fields_ = [("dwSize", w.DWORD), ("Address", ctypes.c_ulonglong), ("ulClassofDevice", w.ULONG),
+                    ("fConnected", w.BOOL), ("fRemembered", w.BOOL), ("fAuthenticated", w.BOOL),
+                    ("stLastSeen", SYSTEMTIME), ("stLastUsed", SYSTEMTIME), ("szName", w.WCHAR * 248)]
+
+    class Search(ctypes.Structure):
+        _fields_ = [("dwSize", w.DWORD), ("fReturnAuthenticated", w.BOOL), ("fReturnRemembered", w.BOOL),
+                    ("fReturnUnknown", w.BOOL), ("fReturnConnected", w.BOOL), ("fIssueInquiry", w.BOOL),
+                    ("cTimeoutMultiplier", ctypes.c_ubyte), ("hRadio", w.HANDLE)]
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", w.DWORD), ("b", w.WORD), ("c", w.WORD), ("d", ctypes.c_ubyte * 8)]
+
+    lib = ctypes.WinDLL("bthprops.cpl")
+    lib.BluetoothFindFirstDevice.restype = w.HANDLE
+    return ctypes, lib, Info, Search, GUID
+
+
+def _paired() -> list:
+    ctypes, lib, Info, Search, _ = _bt()
+    search = Search(dwSize=ctypes.sizeof(Search), fReturnAuthenticated=1, fReturnRemembered=1,
+                    fReturnConnected=1)
+    info = Info(dwSize=ctypes.sizeof(Info))
+    out = []
+    h = lib.BluetoothFindFirstDevice(ctypes.byref(search), ctypes.byref(info))
+    if not h:
+        return out
+    while True:
+        out.append((info.szName, info.Address, bool(info.fConnected), info.ulClassofDevice))
+        info = Info(dwSize=ctypes.sizeof(Info))
+        if not lib.BluetoothFindNextDevice(w_handle(h), ctypes.byref(info)):
+            break
+    lib.BluetoothFindDeviceClose(w_handle(h))
+    return out
+
+
+def w_handle(h):
+    import ctypes
+    return ctypes.c_void_p(h)
+
+
+def connect_device(name: str) -> str:
+    from difflib import SequenceMatcher
+    import time as _t
+
+    want = name.strip().lower()
+    devices = _paired()
+    if not devices:
+        return "I couldn't read the list of paired Bluetooth devices - is Bluetooth on?"
+    scored = sorted(((1.0 if want in d[0].lower() else SequenceMatcher(None, want, d[0].lower()).ratio(), d)
+                     for d in devices), key=lambda x: -x[0])
+    score, (label, address, connected, _cod) = scored[0]
+    if score < 0.5:
+        # "my headphones" names a kind, not a device: use the class each
+        # device reports (major 4 = audio; minor 1/2/6 worn, 5 speaker).
+        kinds = {"headphones": {1, 2, 6}, "headphone": {1, 2, 6}, "earphones": {1, 2, 6},
+                 "earbuds": {1, 2, 6}, "buds": {1, 2, 6}, "headset": {1, 2, 6}, "speaker": {5, 7},
+                 "speakers": {5, 7}}
+        kind = next((v for k, v in kinds.items() if k in want.split()), None)
+        if kind:
+            fit = [d for d in devices if (d[3] >> 8) & 0x1F == 4 and (d[3] >> 2) & 0x3F in kind]
+            if len(fit) == 1:
+                score, (label, address, connected, _cod) = 1.0, fit[0]
+            elif fit:
+                return "Which one - " + " or ".join(d[0] for d in fit) + "?"
+    if score < 0.5:
+        return (f"No paired device sounds like {name}. Paired: "
+                + ", ".join(sorted({d[0] for d in devices})) + ".")
+    if connected:
+        return f"{label} is already connected."
+    ctypes, lib, Info, _, GUID = _bt()
+    info = Info(dwSize=ctypes.sizeof(Info), Address=address)
+    lib.BluetoothGetDeviceInfo(None, ctypes.byref(info))
+    sink = GUID(0x110B, 0, 0x1000, (ctypes.c_ubyte * 8)(0x80, 0, 0, 0x80, 0x5F, 0x9B, 0x34, 0xFB))
+    lib.BluetoothSetServiceState(None, ctypes.byref(info), ctypes.byref(sink), 0)
+    _t.sleep(1.5)
+    lib.BluetoothSetServiceState(None, ctypes.byref(info), ctypes.byref(sink), 1)
+    for _ in range(12):                 # connected only when Windows says so
+        _t.sleep(1)
+        lib.BluetoothGetDeviceInfo(None, ctypes.byref(info))
+        if info.fConnected:
+            return f"Connected to {label}."
+    return f"Asked {label} to connect, but it didn't - is it switched on and nearby?"
+
+
+@tool(tags=TAG)
+def bluetooth(action: str = "status", device: str = "") -> str:
+    """Turn Bluetooth on or off, report whether it is on, or connect a paired
+    device such as a speaker or headphones ("connect to echo").
+
+    action: one of on, off, status, settings, connect
+    device: for connect, the device's name in the user's words, e.g. echo, buds, headphones
     """
     a = action.strip().lower()
+    if a == "connect" or (device and a not in ("on", "off", "status", "settings")):
+        if not device.strip():
+            return "Which device should I connect?"
+        return connect_device(device)
     if a in ("settings", "open"):
         return open_windows_settings("bluetooth")
     if a in ("on", "enable", "true"):

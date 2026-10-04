@@ -33,9 +33,16 @@ def _day_events(day: dt.date) -> list[dict]:
     return events
 
 
+def _sources_changed() -> float:
+    """When Athena last re-read the timetable or Teams: the calendar is
+    rebuilt the moment either changes, not three minutes later."""
+    from ..config import DATA
+    return max((f.stat().st_mtime for f in (DATA / "upes_cache.json", DATA / "teams.json") if f.exists()), default=0)
+
+
 def calendar(days: int = 7) -> dict:
     """The next `days` days of calendar and timetable, one row per event."""
-    if _cal_cache["data"] and time.time() - _cal_cache["t"] < 180:
+    if _cal_cache["data"] and time.time() - _cal_cache["t"] < 180 and _cal_cache["t"] > _sources_changed():
         return _cal_cache["data"]
     from ..tools import brief
 
@@ -519,5 +526,10 @@ def notify() -> dict:
     return {"muted": phone_notify.muted()}
 
 
-GET = {"notify": notify, "store": store, "phone": phone, "codegraph": codegraph, "calendar": calendar, "memory": memory, "workflows": workflows,
+def alarm_state() -> dict:
+    from .. import alarm
+    return {"ringing": alarm.ringing()}
+
+
+GET = {"alarm": alarm_state, "notify": notify, "store": store, "phone": phone, "codegraph": codegraph, "calendar": calendar, "memory": memory, "workflows": workflows,
        "system": system, "tasks": tasks, "skills": skills, "brain": brain}

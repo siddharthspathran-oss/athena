@@ -78,8 +78,12 @@ Your reply is spoken aloud in a natural human voice, so talk like a capable,
 friendly person rather than a machine: contractions, everyday words, no lists,
 headings, markdown, emoji or symbols. Length costs the user real seconds of
 waiting: usually one short sentence, under fifteen words. State the result and
-stop - no restating the question, no offering further help. A little warmth
-is good when it costs nothing: "Done - it's open." "Sure, playing it now."
+stop - no restating the question, no offering further help.
+Personality: calm, quick, quietly confident, with a dry sense of humour now and
+then - like a trusted assistant who has known the user for years, not a help
+desk. Confirm actions in a word or two: "Done." "On it." "Playing it now."
+Use the user's name only occasionally. One light remark is fine when nothing is
+urgent; never joke about bad news.
 Good: "You're on 43 percent, running on battery." Bad: "Your battery is
 currently at 43 percent and you are running on battery power. Let me know if
 you need anything else."
@@ -158,6 +162,38 @@ class Agent:
             return True
         return bool(cfg.get("safety.confirm_destructive", True))
 
+    def _follow_up(self, text: str) -> tuple[str, dict] | None:
+        """The last command again with one thing changed, for a follow-up
+        said within three minutes of it: "and tomorrow?" after the classes,
+        "what about DSA?" after the attendance, "open it" after LMS."""
+        last = getattr(self, "_last_route", None)
+        if not last or time.time() - last[2] > 180:
+            return None
+        name, args, _ = last
+        if _OPEN_IT.match(text) and name == "lms_deadlines":
+            from . import upes
+            from .store import load_json
+            open_ = sorted((e for e in load_json(upes.LMS_CACHE, {}).get("events", []) if not e["done"]),
+                           key=lambda e: e["due"])
+            return ("open_lms", {"what": open_[0]["name"]}) if open_ else None
+        m = _FOLLOW.match(text)
+        if not m:
+            return None
+        x = (m.group("x") or m.group("x2")).strip()
+        # "and open Chrome" is a new command, not a follow-up.
+        if len(x.split()) > 4 or re.match(r"(?:open|close|play|send|call|set|remind|turn|search|find|show|tell|"
+                                          r"what|how|who|message|text|start|stop|add|delete|remove)\b", x, re.I):
+            return None
+        import inspect
+        params = inspect.signature(registry.get(name).fn).parameters
+        is_day = re.fullmatch(r"(?:the\s+)?(?:today|tomorrow|next(?:\s+one)?)", x, re.I)
+        if is_day:
+            return (name, {**args, "day": "next" if x.lower().startswith("next") else x.lower()}) if "day" in params else None
+        for key in ("course", "what", "which", "place", "query", "name", "contact"):
+            if key in params:
+                return name, {**args, key: x}
+        return None
+
     def _declined(self, name: str, args: dict) -> str:
         """End the turn when a confirmation is refused or still pending.
 
@@ -186,7 +222,17 @@ class Agent:
         """
         self._trouble: list[str] = []
         started = time.time()
-        answer = self._ask(user_input)
+        try:
+            answer = self._ask(user_input)
+        except Exception as e:
+            # A crash in here used to reach the user as a blank reply - the
+            # voice thread died and nothing was said (3 Oct 2026, Ollama
+            # restarting mid-request). Say what happened instead.
+            self._trouble.append(f"crashed: {type(e).__name__}")
+            dropped = type(e).__name__ in getattr(self.llm, "_DROPPED", ())
+            answer = ("I lost my connection to the model for a moment - say that again?" if dropped
+                      else "Something went wrong on my side with that - try once more?")
+            self._last_answer = answer
         try:
             self._log_trouble(user_input, answer, time.time() - started)
         except Exception:
@@ -223,7 +269,18 @@ class Agent:
             failures.log(", ".join(dict.fromkeys(kinds)), said, answer)
 
     def _ask(self, user_input: str) -> str:
-        from . import gaming, offer
+        from . import alarm, gaming, offer
+        # An alarm ringing: almost anything short you say means "stop it".
+        if alarm.ringing():
+            sn = re.match(r"^\W*(?:(?:athena|jarvis)\W*)?snooze(?:\s+(?:it|the\s+alarm))?(?:\s+for\s+(\d+)\s*min\w*)?\W*$",
+                          user_input, re.I)
+            if sn:
+                return alarm.snooze(int(sn.group(1) or 10))
+            if re.match(r"^\W*(?:(?:athena|jarvis)\W*)?(?:stop|enough|ok(?:ay)?|i'?m\s+up|yes|thanks?|dismiss|"
+                        r"silence|quiet|shut\s+up|turn\s+(?:it|that|the\s+alarm)\s+off|alarm\s+off|"
+                        r"stop\s+(?:it|the\s+alarm|ringing)|got\s+it|done)?\W*(?:(?:the\s+)?alarm)?\W*$",
+                        user_input, re.I):
+                return alarm.stop()
         gaming.set_on(False)     # you asked something: the model may load again
         self.spoken = ""
         self.cancelled = False
@@ -287,8 +344,13 @@ class Agent:
 
         # "yes" / "no" right after Athena asked something is an answer, not a
         # fragment: the model has the question in front of it.
-        replying = (self._last_answer.rstrip().endswith("?")
+        offered = _OFFERED.search(self._last_answer or "")
+        replying = ((self._last_answer.rstrip().endswith("?") or bool(offered))
                     and bool(offer.YES.match(user_input) or offer.NO.match(user_input)))
+        # A bare "please" after "let me know if you want to play it" was read
+        # as "pause" (3 Oct 2026). Spell the yes out with what was offered.
+        if offered and offer.YES.match(user_input):
+            user_input = f"Yes, {offered.group(1).strip()}."
         if _is_vague(user_input) and not replying:
             self._trouble.append("not understood")
             answer = _pick_line("missed")
@@ -321,7 +383,20 @@ class Agent:
         # router: "find the scheduler pdf and send it to Rahul" would parse
         # as a WhatsApp message to Rahul reading "find the scheduler pdf".
         multi = cfg.get("planner.enabled", True) and planner.is_multistep(user_input)
-        direct = None if multi else route(user_input)
+        # "and tomorrow?" / "what about DSA?" / "open it" right after a command
+        # carries on from it, instead of starting from nothing.
+        follow = self._follow_up(user_input)
+        if follow is not None:
+            multi = False
+        direct = follow or (None if multi else route(user_input))
+        # "open WhatsApp and message maa ..." is one job - the message tool opens
+        # WhatsApp itself. Sent to the planner it re-ran whatsapp_message until
+        # it timed out: 101 s and nothing sent (3 Oct 2026).
+        lead = _OPEN_WHATSAPP.match(user_input)
+        if multi and lead:
+            rest = route(user_input[lead.end():])
+            if rest is not None and rest[0] in ("whatsapp_message", "whatsapp_call"):
+                multi, direct = False, rest
         if direct is not None and registry.get(direct[0]) is None:
             # A router naming a tool that is not registered crashed "brief
             # me" outright (25 Sep 2026, a misplaced @tool). Let the model
@@ -344,6 +419,7 @@ class Agent:
                 else:
                     answer = result if not result.startswith("ERROR") else (
                         "I could not do that.")
+                self._last_route = (name, args, time.time())
             self._last_answer = answer
             self.memory.add("assistant", answer)
             return answer
@@ -767,6 +843,21 @@ _GREETING = re.compile(
 
 # "Athena, unlock" / "unlock my laptop" / "log me in". Not "unlock my phone
 # screen rotation" or anything naming another thing to unlock.
+# What the last reply offered to do: "let me know if you want to play it or
+# add it to your queue" -> "play it". The first option only, up to " or ".
+_FOLLOW = re.compile(r"^\W*(?:(?:athena|jarvis|ok|okay|so|hmm|and)\W+)*(?:and\s+)?(?:what\s+about|how\s+about|what\s+of|"
+                     r"and\s+for|same\s+for|and)\s+(?P<x>[^.?!]+?)\W*$|"
+                     r"^\W*(?:(?:athena|jarvis|and|so)\W+)*(?P<x2>today|tomorrow)\W*$", re.I)
+_OPEN_IT = re.compile(r"^\W*(?:(?:athena|jarvis|ok|okay|then|so|yes)\W+)*(?:open|show|start)\s+"
+                      r"(?:it|that|that\s+one|the\s+first\s+one)(?:\s+please)?\W*$", re.I)
+
+_OFFERED = re.compile(
+    r"\b(?:let me know if you(?:'d)? (?:want|like) (?:me )?to|(?:do )?you want me to|want me to|"
+    r"shall i|should i|would you like me to|i can)\s+(.+?)(?:\s+or\s+.*)?[.?!]?\s*$", re.I)
+
+_OPEN_WHATSAPP = re.compile(
+    r"^\W*(?:(?:athena|jarvis)\W+)?(?:please\s+)?open\s+(?:the\s+)?whats\s?app(?:\s+app)?\s*(?:,\s*)?(?:and|then|&)?\s+", re.I)
+
 _UNLOCK = re.compile(
     r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please)\W+)*(?:(?:can|could|would|will)\s+you\s+)?"
     r"(?:please\s+)?(?:unlock|log\s*me\s+in|sign\s+me\s+in|log\s+in|sign\s+in)"
@@ -1023,6 +1114,7 @@ _ORDINALS = {
     "twelve": 12, "thirteenth": 13, "13th": 13, "thirteen": 13,
     "fourteenth": 14, "14th": 14, "fourteen": 14, "fifteenth": 15,
     "15th": 15, "fifteen": 15, "twentieth": 20, "20th": 20, "twenty": 20,
+    "last": -1, "final": -1,          # play_track scrolls to the end of the list
 }
 
 # Speech does not deliver "the seventh song" tidily. It came back as "a seven
@@ -1035,6 +1127,7 @@ _TRACK_CMD = re.compile(
     r"(?P<num>\d+|" + "|".join(sorted(_ORDINALS, key=len, reverse=True)) + r")"
     r"(?:\s*(?:st|nd|rd|th))?"
     r"(?:\s+(?:number|song|songs|track|music|one))*"
+    r"(?:\s+(?:of|in|from|on)\s+(?:my|the|this)\s+(?:playlist|list|queue|album|liked songs))?"
     r"\W*$",
     re.I,
 )
@@ -1047,7 +1140,7 @@ def _direct_track(text: str) -> tuple[str, dict] | None:
         return None
     raw = m.group("num").lower()
     number = int(raw) if raw.isdigit() else _ORDINALS.get(raw, 0)
-    if number < 1:
+    if number == 0:
         return None
     return "play_track", {"position": number}
 
@@ -1220,6 +1313,42 @@ def _direct_brief(text: str) -> tuple[str, dict] | None:
     return "daily_brief", {"day": day, "full": full}
 
 
+# A question about the user's own data that no router above caught. Left to
+# the model, it guessed: "your next MS Teams meeting is tomorrow at 14:00",
+# repeated even after "but tomorrow is Sunday" (3 Oct 2026). These always go
+# to the tool that has the real answer.
+_G_ASK = re.compile(r"^\W*(?:(?:athena|jarvis|so|and|hey|ok|okay|but|then)\W+)*(?:what|when|which|where|how\s+(?:many|much|is|are|'?s)|"
+                    r"do\s+i|did\s+i|am\s+i|is\s+there|are\s+there|any|anything|tell\s+me|show|check|list|have\s+i|"
+                    r"can\s+you\s+(?:tell|check|show)|is\s+my|are\s+my|what'?s)\b", re.I)
+_G_MINE = re.compile(r"\b(?:my|i|me|mine|i'?ve|i'?m)\b", re.I)
+_GROUNDS = (
+    (r"\battendance\b|\bbunk|\bskip\b", "my_attendance", None),
+    (r"\bteams?\b.*\b(?:meeting|class|lecture|call)s?\b|\bmeetings?\b", "teams_meetings", "day"),
+    (r"\b(?:class|classes|lecture|lectures|timetable|lab)\b", "upes_classes", "day"),
+    (r"\b(?:deadline|deadlines|assignment|assignments|due|submission|quiz|quizzes|homework|lms)\b", "lms_deadlines", None),
+    (r"\b(?:task|tasks|to-?dos?)\b", "list_tasks", None),
+    (r"\b(?:reminder|reminders|alarm|alarms)\b", "list_reminders", None),
+    (r"\b(?:schedule|agenda|calendar|plans?|busy|free)\b", "daily_brief", "brief"),
+    (r"\b(?:battery|charge|charging)\b", "battery", None),
+    (r"\b(?:mail|mails|email|emails|inbox)\b", "inbox_summary", None),
+)
+
+
+def _direct_grounded(text: str) -> tuple[str, dict] | None:
+    if not (_G_ASK.match(text) and _G_MINE.search(text)):
+        return None
+    day = ("next" if re.search(r"\bnext\b|\bwhen\b", text, re.I) else
+           "tomorrow" if re.search(r"\btomorrow\b", text, re.I) else "today")
+    for pattern, name, arg in _GROUNDS:
+        if re.search(pattern, text, re.I) and registry.get(name) is not None:
+            if arg == "day":
+                return name, {"day": day}
+            if arg == "brief":
+                return name, {"day": "tomorrow" if day == "tomorrow" else "today", "full": False}
+            return name, {}
+    return None
+
+
 def _direct_explain(text: str) -> tuple[str, dict] | None:
     """Send a class question to the explainer rather than the spoken reply.
 
@@ -1243,7 +1372,10 @@ def _direct_explain(text: str) -> tuple[str, dict] | None:
         return "explain", {"question": q}
 
     m = _STUDY_WHAT.match(q)
-    if m and len(m.group("topic").split()) >= 2 and not _QUICK_FACT.match(m.group("topic")):
+    # "what are you doing" is talk, not a topic (it rendered a study page, 3 Oct 2026).
+    if m and len(m.group("topic").split()) >= 2 and not _QUICK_FACT.match(m.group("topic")) \
+            and not re.match(r"(?:you|your|yours|we|i|me|my|he|she|they|it|this|that|there|up)\b",
+                             m.group("topic"), re.I):
         return "explain", {"question": q}
     return None
 
@@ -1293,16 +1425,201 @@ def route(text: str) -> tuple[str, dict] | None:
     "open downloads" exactly as you would.
     """
     said = _fix_verb(clean_speech(text))
-    return (_direct_power(said) or _direct_basic(said) or _direct_info(said) or _direct_memory(said)
+    return (_direct_phone_ctl(said) or _direct_teams(said) or _direct_power(said) or _direct_basic(said) or _direct_info(said) or _direct_memory(said)
             or _direct_phone_files(said) or _direct_find_document(said)
             or _direct_store(said)
             or _direct_routine(said) or _direct_it(said)
-            or _direct_reminder(said) or _direct_track(said)
+            or _direct_reminder(said) or _direct_rules(said) or _direct_track(said)
             or _direct_phone_me(said)
             or _direct_call(said) or _direct_places(said) or _direct_folder(said)
+            or _direct_bluetooth(said)
             or _direct_app(said) or _direct_file(said)
             or _direct_message(said) or _direct_song(said)
-            or _direct_brief(said) or _direct_explain(said))
+            or _direct_brief(said) or _direct_grounded(said) or _direct_explain(said))
+
+
+# Automations (jarvis/rules.py). A rule needs its trigger set off by a comma -
+# "when I get home, play my playlist" - or the action first - "organise my
+# downloads every 2 hours"; a bare "when is my next class" is a question.
+_R_LEAD = r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please)\W+)*(?:can\s+you\s+)?(?:please\s+)?"
+_R_PAUSE = re.compile(_R_LEAD + r"(?:pause|stop|disable|turn\s+off)\s+(?:all\s+)?(?:the\s+|your\s+)?"
+                      r"(?:automations?|autopilot|rules)(?:\s+for\s+(?P<n>\d+)\s+(?P<u>min|minute|hour)s?)?\W*$", re.I)
+_R_RESUME = re.compile(_R_LEAD + r"(?:resume|restart|enable|turn\s+on|start)\s+(?:all\s+)?(?:the\s+|your\s+)?"
+                       r"(?:automations?|autopilot|rules)\W*$", re.I)
+_R_LIST = re.compile(_R_LEAD + r"(?:list|show|what\s+are)\s+(?:me\s+)?(?:my\s+|your\s+|all\s+)?(?:automations|rules)\W*$", re.I)
+_R_DID = re.compile(_R_LEAD + r"what\s+(?:did|have)\s+you\s+(?:done|do)\s+(?:on\s+your\s+own|by\s+yourself|"
+                    r"automatically)(?:\s+today)?\W*$", re.I)
+_R_TRIGGER = r"(?:every\s*time|whenever|each\s+time|when|every\s+(?:day|morning|night|evening|\d+\s+\w+|hour|minute)|daily|hourly|at\s+\d)"
+_R_WHEN_FIRST = re.compile(_R_LEAD + r"(?P<when>" + _R_TRIGGER + r"[^,]{2,60}?)\s*,\s*(?P<do>.{3,})$", re.I)
+_R_DO_FIRST = re.compile(_R_LEAD + r"(?P<do>(?!remind)(?:play|open|close|connect|turn|start|lock|organi[sz]e|tidy|clean|"
+                         r"check|run|say|send|switch)\b.{2,80}?)\s+(?P<when>(?:every\s*time|whenever|every\s+(?:day|morning|"
+                         r"night|evening|\d+\s+(?:min|minute|hour|day)s?|hour)|daily|hourly)\b.*)$", re.I)
+
+
+def _direct_rules(text: str) -> tuple[str, dict] | None:
+    m = _R_PAUSE.match(text)
+    if m:
+        n = int(m.group("n") or 0) * (60 if (m.group("u") or "").startswith("hour") else 1)
+        return "pause_automation", {"minutes": n}
+    if _R_RESUME.match(text):
+        return "resume_automation", {}
+    if _R_LIST.match(text):
+        return "list_rules", {}
+    if _R_DID.match(text):
+        return "what_did_you_do", {}
+    if re.match(_R_LEAD + r"(?:run\s+(?:a\s+)?)?(?:health\s*check|check\s+yourself|self[\s-]?check|"
+                r"how\s+are\s+you\s+running|any\s+problems\s+with\s+you)\W*$", text, re.I):
+        return "health_check", {}
+    if re.match(_R_LEAD + r"(?:retrain|re-train|train)\s+(?:athena|yourself)(?:\s+tonight)?\W*$", text, re.I):
+        return "retrain_athena", {}
+    if re.match(_R_LEAD + r"(?:check|read|summari[sz]e|go\s+through|what'?s\s+(?:new\s+)?in)\s+(?:my\s+)?(?:e-?mails?|inbox|mail)"
+                r"(?:\s+and\s+draft\s+repl(?:y|ies))?\W*$|" + _R_LEAD + r"draft\s+(?:my\s+)?(?:e-?mail\s+)?repl(?:y|ies)\W*$",
+                text, re.I):
+        return "inbox_summary", {"draft_replies": True}
+    if re.match(_R_LEAD + r"connect\s+(?:my\s+)?gmail\s+drafts?\W*$", text, re.I):
+        return "connect_gmail_drafts", {}
+    if re.match(_R_LEAD + r"(?:stop|turn\s+off|dismiss|silence)\s+(?:the\s+)?alarm\W*$|" + _R_LEAD + r"alarm\s+off\W*$", text, re.I):
+        return "stop_alarm", {}
+    m = re.match(_R_LEAD + r"snooze(?:\s+(?:it|the\s+alarm))?(?:\s+for\s+(?P<n>\d+)\s*min\w*)?\W*$", text, re.I)
+    if m:
+        return "snooze_alarm", {"minutes": int(m.group("n") or 10)}
+    # UPES portal (upes.py): attendance, bunk maths, classes with rooms.
+    m = re.match(_R_LEAD + r"(?:can|should|could)\s+i\s+(?:skip|bunk|miss|leave)\s+(?:the\s+|my\s+|today'?s\s+|tomorrow'?s\s+)?"
+                 r"(?P<c>.+?)(?:\s+(?:class|lecture|lab))?(?:\s+(?:today|tomorrow|this\s+week))?\W*$", text, re.I)
+    if m and m.group("c").lower() not in ("it", "that", "this", "class", "the class", "today", "tomorrow"):
+        return "can_i_skip", {"course": m.group("c")}
+    m = re.match(_R_LEAD + r"(?:what'?s|what\s+is|how'?s|how\s+is|show|check|tell\s+me)\s+(?:me\s+)?(?:my\s+)?attendance"
+                 r"(?:\s+(?:in|for|of)\s+(?P<c>.+?))?\W*$|" + _R_LEAD + r"(?:my\s+)?attendance(?:\s+(?:in|for)\s+(?P<c2>.+?))?\W*$",
+                 text, re.I)
+    if m:
+        return "my_attendance", {"course": (m.group("c") or m.group("c2") or "").strip()}
+    m = re.match(_R_LEAD + r"(?:what|which)\s+classes\s+(?:do\s+i\s+have|have\s+i\s+got|are\s+there)\s*(?P<d>today|tomorrow)?\W*$|"
+                 + _R_LEAD + r"(?:where|which\s+room)\s+is\s+my\s+(?:next\s+)?class\W*$", text, re.I)
+    if m:
+        return "upes_classes", {"day": (m.group("d") or "today").lower()}
+    if re.match(_R_LEAD + r"(?:what'?s|what\s+is|anything|check|show)\s+(?:me\s+)?(?:due\s+)?(?:on\s+)?(?:my\s+)?(?:the\s+)?lms"
+                r"(?:\s+deadlines?|\s+assignments?)?\W*$|" + _R_LEAD + r"(?:what'?s|what\s+is)\s+due\s+on\s+(?:the\s+)?lms\W*$|"
+                + _R_LEAD + r"(?:lms|moodle)\s+(?:deadlines?|assignments?)\W*$", text, re.I):
+        return "lms_deadlines", {}
+    # LMS items open signed in (upes.open_lms) - "open the feedback forum for
+    # leading conversation" went to open_url with a guessed address (3 Oct 2026).
+    m = re.match(_R_LEAD + r"open\s+(?:up\s+)?(?:the\s+|my\s+)?(?P<w>.*?\b(?:forum|assignment|quiz|submission|lab\s+record|"
+                 r"discussion|course|lms|moodle)\b.*?)(?:\s+(?:on|in|from)\s+(?:the\s+)?(?:lms|moodle))?\W*$", text, re.I)
+    if m and not re.search(r"\b(?:file|folder|pdf|docx?|pptx?)\b", m.group("w"), re.I):
+        w = m.group("w").strip()
+        return "open_lms", {"what": "" if w.lower() in ("lms", "the lms", "moodle") else w}
+    # Whisper hears UPES as "UPS" (3 Oct 2026); bare "open UPES" means the portal too.
+    if re.match(_R_LEAD + r"open\s+(?:the\s+|my\s+)?(?:upes|ups|u\.?\s*p\.?\s*e\.?\s*s|university|uni|college)\s*"
+                r"(?:portal\s*)?(?:login|log\s+in|sign[\s-]?in|website|site)?\W*$", text, re.I) \
+            and not re.match(_R_LEAD + r"open\s+(?:the\s+|my\s+)?(?:university|uni|college)\W*$", text, re.I):
+        return "open_upes_login", {}
+    if re.match(_R_LEAD + r"(?:plan|schedule|organi[sz]e)\s+(?:my\s+|the\s+)?(?:assignments?|deadlines|homework)\W*$", text, re.I):
+        return "plan_my_assignments", {}
+    if re.match(_R_LEAD + r"(?:prepare|prep|get)\s+(?:me\s+)?(?:ready\s+)?for\s+tomorrow(?:'?s)?(?:\s+classes)?\W*$"
+                r"|" + _R_LEAD + r"(?:make|write)\s+(?:me\s+)?primers?\s+for\s+tomorrow", text, re.I):
+        return "prepare_for_tomorrow", {}
+    m = re.match(_R_LEAD + r"(?:make|create|give)\s+(?:me\s+)?(?:a\s+)?(?:revision|study|exam)\s+(?:plan|timetable|schedule)"
+                 r"\s+for\s+(?:my\s+)?(?P<subs>.+?)\s+(?:exams?\s+)?(?:on|by|before)\s+(?:the\s+)?(?P<date>[\w -]+?)\W*$", text, re.I)
+    if m:
+        return "exam_plan", {"exam_date": m.group("date"), "subjects": re.sub(r"\bexams?\b", "", m.group("subs")).strip()}
+    if re.match(_R_LEAD + r"(?:watch|keep\s+an?\s+eye\s+on|monitor|check)\s+(?:my\s+)?(?:ragazza\s+|store\s+)?orders\b"
+                r"|.*\b(?:order|orders)\b.*\bstuck\b", text, re.I):
+        d = re.search(r"(\d+)\s*days?", text)
+        return "add_watch", {"what": "stuck_orders", "every_hours": 6, "value": d.group(1) if d else "2"}
+    if re.match(_R_LEAD + r"(?:warn|tell|alert)\s+me\s+(?:if|when)\s+(?:my\s+)?attendance\b", text, re.I):
+        p = re.search(r"(\d+)\s*(?:%|percent)", text)
+        return "add_watch", {"what": "attendance", "every_hours": 12, "value": p.group(1) if p else "75"}
+    if re.match(_R_LEAD + r"(?:every\s+(?:evening|night)\s*,?\s*)?(?:tell|remind|warn)\s+me\s+(?:what'?s|what\s+is|about\s+"
+                r"(?:anything|things|tasks))\s+due\s+(?:by\s+)?tomorrow(?:\s+every\s+(?:evening|night))?\W*$", text, re.I):
+        return "add_rule", {"when": "every day at 8pm", "do": "watch:due_soon"}
+    m = _R_WHEN_FIRST.match(text) or _R_DO_FIRST.match(text)
+    if m:
+        from .rules import parse_when
+        if parse_when(m.group("when")):
+            return "add_rule", {"when": m.group("when").strip(), "do": m.group("do").strip(" .")}
+    return None
+
+
+# Teams classes (tools/teams.py).
+_TEAMS_LIST = re.compile(r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please)\W+)*(?:can\s+you\s+)?(?:please\s+)?"
+                         r"(?=.*\b(?:teams?|online)\b)(?=.*\b(?:class|classes|meeting|meetings|lecture|lectures|calendar)\b)"
+                         r"(?:what|which|any|show|list|tell\s+me|check|do\s+i\s+have|when|so)\b", re.I)
+_TEAMS_JOIN = re.compile(r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please)\W+)*(?:can\s+you\s+)?(?:please\s+)?join\s+"
+                         r"(?:my\s+|the\s+)?(?:(?P<next>next|current|ongoing)\s+)?(?:(?:online|teams)\s+)?"
+                         r"(?P<what>class|meeting|lecture|call|.+?)(?:\s+(?:on|in)\s+teams)?\W*$", re.I)
+
+
+# The phone over Wi-Fi (tools/android.py). First in the chain: "phone battery"
+# must not be read as the laptop's, nor "open WhatsApp on my phone" as the PC app.
+_P_LEAD = r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|can\s+you|could\s+you)\W+)*"
+_P_MY = r"(?:my\s+|the\s+)?(?:phone|mobile|galaxy|samsung)"
+
+
+def _direct_phone_ctl(text: str) -> tuple[str, dict] | None:
+    t = text.strip()
+    if re.match(_P_LEAD + r"(?:show|open|mirror|cast)\s+(?:me\s+)?" + _P_MY + r"(?:'?s)?(?:\s+screen)?(?:\s+on\s+(?:the\s+)?(?:pc|laptop|screen))?\W*$", t, re.I):
+        return "show_phone", {}
+    m = re.match(_P_LEAD + r"(?:open|launch|start)\s+(?P<app>.+?)\s+(?:on|in)\s+" + _P_MY + r"\W*$", t, re.I)
+    if m:
+        return "phone_open_app", {"name": m.group("app")}
+    if re.match(_P_LEAD + r"(?:where'?s|where\s+is|find|ring)\s+" + _P_MY + r"\W*$", t, re.I) \
+            or re.match(_P_LEAD + r"i\s+(?:can'?t|cannot)\s+find\s+" + _P_MY + r"\W*$", t, re.I):
+        return "find_my_phone", {}
+    if re.search(r"\b(?:battery|charge|charging)\b", t, re.I) and re.search(r"\b(?:phone|mobile)\b", t, re.I):
+        return "phone_status", {}
+    if re.match(_P_LEAD + r"lock\s+" + _P_MY + r"\W*$", t, re.I):
+        return "lock_phone", {}
+    if re.match(_P_LEAD + r"(?:take\s+(?:a\s+)?)?(?:screenshot|screen\s*shot)\s+(?:of|on)\s+" + _P_MY + r"\W*$|"
+                + _P_LEAD + r"(?:take\s+(?:a\s+)?)?(?:phone|mobile)\s+screenshot\W*$", t, re.I):
+        return "phone_screenshot", {}
+    m = re.match(_P_LEAD + r"(?P<a>pause|play|resume|next|skip|previous|mute|volume\s+up|volume\s+down|turn\s+(?:it\s+)?up|turn\s+(?:it\s+)?down)"
+                 r"(?:\s+(?:the\s+)?(?:music|song|track|video))?\s+(?:on|in)\s+" + _P_MY + r"\W*$", t, re.I)
+    if m:
+        a = m.group("a").lower()
+        a = {"resume": "play", "skip": "next", "turn up": "volume up", "turn it up": "volume up",
+             "turn down": "volume down", "turn it down": "volume down"}.get(a, a)
+        return "phone_media", {"action": re.sub(r"\s+", " ", a)}
+    return None
+
+
+def _direct_teams(text: str) -> tuple[str, dict] | None:
+    # "do I have any MS meetings?" came back as "MS Mutings" and the model
+    # invented a "mute" tool (3 Oct 2026).
+    # "when is my next MS team meeting" (team, singular) missed this and the
+    # model made up "tomorrow at 14:00" (3 Oct 2026).
+    day = ("next" if re.search(r"\bnext\b|\bwhen\b", text, re.I) else
+           "tomorrow" if re.search(r"tomorrow", text, re.I) else "today")
+    if re.search(r"\b(?:ms|microsoft|m\.s\.)\s+(?:teams?\s+)?(?:meetings?|mutings?|meating?s?|classes|calls?)\b", text, re.I):
+        return "teams_meetings", {"day": day}
+    m = _TEAMS_LIST.match(text)
+    if m:
+        return "teams_meetings", {"day": day}
+    m = _TEAMS_JOIN.match(text)
+    if m and (re.search(r"\bteams\b", text, re.I) or m.group("what").lower() in ("class", "meeting", "lecture")):
+        what = m.group("what").strip()
+        return "join_teams_meeting", {"which": "next" if what.lower() in ("class", "meeting", "lecture", "call")
+                                      else what}
+    return None
+
+
+# Bluetooth. "connect to echo" reached the model, which had no connect action
+# and announced a connection that never happened (3 Oct 2026).
+_BT_LEAD = r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please)\W+)*(?:can\s+you\s+|could\s+you\s+)?(?:please\s+)?"
+_BT_CONNECT = re.compile(_BT_LEAD + r"(?:connect|pair)\s+(?:(?:to|with)\s+)?(?:my\s+|the\s+)?"
+                         r"(?P<d>[\w'+.\- ]{2,40}?)(?:\s+(?:via|over|on|through|with)\s+bluetooth)?\W*$", re.I)
+_BT_TOGGLE = re.compile(_BT_LEAD + r"(?:turn|switch)\s+(?:(?P<a>on|off)\s+(?:the\s+)?bluetooth|"
+                        r"(?:the\s+)?bluetooth\s+(?P<b>on|off))\W*$|" + _BT_LEAD + r"bluetooth\s+(?P<c>on|off)\W*$", re.I)
+
+
+def _direct_bluetooth(text: str) -> tuple[str, dict] | None:
+    m = _BT_CONNECT.match(text)
+    if m and not re.search(r"\b(?:wi-?fi|internet|vpn|network|hotspot|server|database|it|that|this)\b",
+                           m.group("d"), re.I):
+        return "bluetooth", {"action": "connect", "device": m.group("d").strip()}
+    m = _BT_TOGGLE.match(text)
+    if m:
+        return "bluetooth", {"action": (m.group("a") or m.group("b") or m.group("c")).lower()}
+    return None
 
 
 # Memory controls. "remember that I ..." goes to the learned profile (it is

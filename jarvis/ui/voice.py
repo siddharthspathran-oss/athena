@@ -17,14 +17,13 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import live, offer
+from .. import live, offer, presence
 from ..agent import Agent, Step
 from ..config import cfg
 from ..tools import scheduler
 
 SAMPLE_RATE = 16000
 BLOCK = 1600          # 100 ms blocks
-SILENCE_RMS = 0.012   # below this counts as silence
 MIN_SPEECH_S = 0.4    # ignore blips shorter than this
 MAX_UTTERANCE_S = 15.0  # hard cap on one recording
 CONFIRM_TIMEOUT = 12.0  # how long to wait for a yes/no before giving up
@@ -143,6 +142,7 @@ def _on_wake(reason: str) -> None:
             live.note(f"{reason} - HUD {_show_hud()}")
         except Exception as e:
             live.note(f"{reason} - could not open the HUD ({e})")
+        presence.greet(reason)
 
     threading.Thread(target=go, daemon=True, name="jarvis-wake-hud").start()
 
@@ -296,10 +296,15 @@ def build_prompt_bias() -> str:
             bias += " Contacts: " + ", ".join(people) + "."
     except Exception:
         pass
+    # Games and names not in the Start menu: "Fortnite" came back as "40 point".
+    extra = [str(w) for w in (cfg.get("voice.extra_words") or [])]
+    if extra:
+        bias += " Also: " + ", ".join(extra) + "."
     return bias
 
 
 PROMPT_BIAS = _BASE_BIAS  # replaced at startup by build_prompt_bias()
+MULTILINGUAL = False      # set at startup: a model without .en hears Hindi too
 
 # Small speech models mangle proper nouns; these are what "Athena" tends to
 # come back as. Cheaper and more predictable than lowering the match threshold.
@@ -581,7 +586,18 @@ def _for_speech(text: str) -> str:
     t = t.replace("_", " ").replace("&", " and ").replace("%", " percent")
     t = _re.sub(r"\band/or\b", "and or", t, flags=_re.I)
     t = _re.sub(r"(?<=\w)/(?=\w)", " or ", t)
+    t = _re.sub(r"\s+[-–—]+\s+", ", ", t)      # a spoken dash is a pause; Piper ran straight through it
     return _re.sub(r"\s+", " ", t).strip()
+
+
+def _breathe(audio, text: str, rate: int):
+    """The pause a person leaves after a piece of speech: longer after a full
+    stop than after a comma. Sentences used to be played back to back with
+    no gap at all, which is what made Athena sound read out (3 Oct 2026)."""
+    import numpy as np
+    end = text.rstrip()[-1:] if text.strip() else ""
+    gap = float(cfg.get("voice.sentence_pause", 0.32)) if end in ".!?।" else 0.18 if end in ",;:-–" else 0.12
+    return np.concatenate([audio, np.zeros(int(gap * rate), dtype=audio.dtype)])
 
 
 class Speaker:
@@ -671,11 +687,21 @@ class Speaker:
             text = self.q.get()
             if text is None:
                 return
+            hindi = isinstance(text, tuple)              # (text, "hi"): reply in Hindi
+            if hindi:
+                text = text[0]
             if self._neural is not None:
                 gen = self._gen
                 self._synthing.set()
                 try:
-                    audio = self._neural.synth(_for_speech(text))
+                    if hindi and getattr(self._neural, "speaks_hindi", False):
+                        from .. import hindi as _hi
+                        text = _hi.to_hindi(text)
+                        audio = self._neural.synth(text, hindi=True)
+                    else:
+                        audio = self._neural.synth(_for_speech(text))
+                    if len(audio):
+                        audio = _breathe(audio, text, self._neural.sample_rate)
                     if gen == self._gen and len(audio):
                         self._play_q.put((gen, text, audio, self._neural.sample_rate))
                     continue
@@ -753,13 +779,13 @@ class Speaker:
                 if self._play_q.empty():
                     self._speaking.clear()
 
-    def say(self, text: str) -> None:
+    def say(self, text: str, hindi: bool = False) -> None:
         # Strip markdown noise that sounds wrong when read aloud, and the
         # [share:<id>] marker the phone's chat turns into a Download button.
         text = re.sub(r"\s*\[share:[\w-]+\]", "", text)
         clean = text.replace("*", "").replace("`", "").replace("#", "")
-        print(f"athena > {text}")
-        self.q.put(clean[:600])
+        print(f"athena > {text}" + ("   (in Hindi)" if hindi else ""))
+        self.q.put((clean[:600], "hi") if hindi else clean[:600])
 
     def busy(self) -> bool:
         """True while there is still speech queued, being made, or playing."""
@@ -827,7 +853,7 @@ def fix_mishearings(text: str) -> str:
         r"^\s*(1|one|won|wan|opan|ope)\b[\s,.]*"
         r"(?!hundred|thousand|million|billion|dozen|percent|degrees?|"
         r"minutes?|seconds?|hours?|days?|weeks?|months?|years?|"
-        r"o'?clock|o|am|pm|and|of|$)"
+        r"o'?clock|o\b|am\b|pm\b|and\b|of\b|$)"
         r"(?=\S)",
         "open ", text, count=1, flags=re.IGNORECASE)
 
@@ -966,6 +992,7 @@ class Listener:
         self.blocks: queue.Queue[np.ndarray] = queue.Queue(maxsize=600)
         self._stream = None
         self.last_wait = 0.0      # how long the last sentence waited for its end
+        self.floor = 0.0          # the room's quiet level, learned as it listens
 
     def _callback(self, indata, _frames, _t, status) -> None:
         try:
@@ -1088,6 +1115,8 @@ class Listener:
                      until=None):
         """One open microphone stream. Returns (audio or None, reopen?)."""
         captured: list[np.ndarray] = []
+        from collections import deque
+        preroll: deque = deque(maxlen=4)       # 0.3 s before speech, plus the block that starts it
         speaking = False
         last_voice = time.time()
         stalls = 0
@@ -1115,10 +1144,25 @@ class Listener:
 
             rms = float(np.sqrt(np.mean(block ** 2)))
             _orb_level(rms)
-            if rms > SILENCE_RMS:
+            # The threshold follows the room: a little above its own quiet, not
+            # a fixed 0.012 - two metres away you peaked at 0.02 and mostly sat
+            # under it (4 Oct 2026). Never below voice.silence_rms.
+            gate = max(float(cfg.get("voice.silence_rms", 0.006)), self.floor * float(cfg.get("voice.gate_ratio", 2.5)))
+            if not speaking:
+                preroll.append(block)
+                # Quick to fall, slow to rise: a word or a door slam barely
+                # moves it. Learning only below the threshold, it never learnt
+                # a room louder than the starting threshold.
+                self.floor = (rms if self.floor == 0 else
+                              0.9 * self.floor + 0.1 * rms if rms < self.floor else
+                              0.995 * self.floor + 0.005 * rms)
+            if rms > gate:
                 if not speaking:
                     speaking = True
-                    captured = []
+                    # The 0.3 s before it got loud: the soft start of "Athena"
+                    # was cut off, and Whisper heard "You now" (4 Oct 2026).
+                    captured = list(preroll)[:-1]
+                    preroll.clear()
                     heard_speech, next_check = False, 0
                 last_voice = time.time()
                 captured.append(block)
@@ -1267,20 +1311,59 @@ def _load_whisper(model_size: str, device: str):
         return model
 
     if device in ("cuda", "auto"):
-        try:
-            # int8_float16: int8 weights, fp16 maths - about half the VRAM of
-            # float16 at practically the same accuracy and speed.
-            model = _build("cuda", cfg.get("voice.whisper_compute", "float16"))
-            print(f"Whisper ({model_size}) running on the GPU.")
-            return model
-        except Exception as e:
-            reason = str(e).split("\n")[0][:120]
-            print(f"GPU unavailable for Whisper ({reason})")
-            print("Falling back to CPU - for base.en this is still comfortably fast.")
+        # A few tries before settling for the CPU. On 3 Oct 2026 Ollama updated
+        # and restarted while voice was starting; cuBLAS failed once with
+        # INVALID_VALUE, and every command after that took 5 s to hear instead
+        # of 0.5. A moment later the same GPU load works.
+        reason = ""
+        for attempt, compute in enumerate([cfg.get("voice.whisper_compute", "float16")] * 3 + ["int8_float16"]):
+            if attempt:
+                time.sleep(5)
+            try:
+                # int8_float16: int8 weights, fp16 maths - about half the VRAM of
+                # float16 at practically the same accuracy and speed.
+                model = _build("cuda", compute)
+                print(f"Whisper ({model_size}) running on the GPU.")
+                return model
+            except Exception as e:
+                reason = str(e).split("\n")[0][:120]
+        print(f"GPU unavailable for Whisper ({reason})")
+        print("Falling back to CPU - for base.en this is still comfortably fast.")
 
     model = _build("cpu", "int8")
     print(f"Whisper ({model_size}) running on the CPU.")
     return model
+
+
+def _level(audio: np.ndarray) -> np.ndarray:
+    """Quiet speech brought up to a normal level before Whisper. From two
+    metres you peaked at 0.02 against 0.06 at the desk (4 Oct 2026) - too
+    faint for a confident "Athena". At most voice.max_gain times, so a near
+    silent recording is not turned into loud noise."""
+    peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+    if peak < 1e-4:
+        return audio
+    gain = min(float(cfg.get("voice.max_gain", 8.0)), 0.5 / peak)
+    return (audio * gain).astype(np.float32) if gain > 1 else audio
+
+
+def _start_wake_shadow() -> None:
+    """The silent test of the trained wake word (finetune/wake_shadow.py),
+    started with Athena so a shutdown does not end it. voice.wake_shadow:
+    false once the test is over."""
+    script = Path(__file__).resolve().parents[3] / "finetune" / "wake_shadow.py"
+    if not cfg.get("voice.wake_shadow", False) or not script.exists():
+        return
+    try:
+        import subprocess
+
+        import psutil
+        if any("wake_shadow" in " ".join(p.info["cmdline"] or []) for p in psutil.process_iter(["cmdline"])):
+            return
+        subprocess.Popen([str(Path(sys.executable).with_name("pythonw.exe")), str(script)],
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as e:
+        print(f"[wake test not started: {e}]")
 
 
 def _voice_loop() -> None:
@@ -1300,6 +1383,13 @@ def _voice_loop() -> None:
     timeout = float(cfg.get("voice.silence_timeout", 1.2))
     pp = _porcupine()             # dedicated wake-word engine, when set up
 
+    try:
+        # Imported once, here: the voice's loader thread and the speech
+        # detector importing it at the same moment left the detector with
+        # "requires the onnxruntime package" (3 Oct 2026, onnxruntime-gpu).
+        import onnxruntime  # noqa: F401
+    except Exception:
+        pass
     print(f"Loading Whisper ({model_size})...")
     try:
         stt = _load_whisper(model_size, device)
@@ -1307,8 +1397,9 @@ def _voice_loop() -> None:
         print(f"ERROR: could not load Whisper at all: {e}")
         return
 
-    global PROMPT_BIAS
+    global PROMPT_BIAS, MULTILINGUAL
     PROMPT_BIAS = build_prompt_bias()
+    MULTILINGUAL = not str(model_size).endswith(".en")
 
     speaker = Speaker()
 
@@ -1376,22 +1467,26 @@ def _voice_loop() -> None:
         print(msg)
         return
 
+    # Away and back, "sorry to interrupt", welcome-backs (presence.py).
+    presence.set_speaker(speaker.say, speaker.busy)
+    _start_wake_shadow()
+    presence.start()
     threading.Thread(target=_keep_warm, daemon=True, name="jarvis-warm").start()
     threading.Thread(target=_watch_wake, daemon=True, name="jarvis-wake").start()
     try:
         # Important phone messages read out. Straight into the speech queue:
         # speaker.say would also copy the message text into voice.log.
         from .. import phone_notify
-        phone_notify.start(lambda line: speaker.q.put(line), speaker.busy)
+        phone_notify.start(lambda line: presence.say_or_hold(line, speaker.q.put), speaker.busy)
     except Exception as e:
         print(f"[phone messages: not started ({e})]")
 
     # A reminder with no task of its own is just "Reminder", and prefixing
     # that gives "Reminder: Reminder" out loud.
-    scheduler.set_notifier(
-        lambda text: speaker.say(
-            "Reminder." if text.strip().lower() == "reminder"
-            else f"Reminder: {text}"))
+    # Reminders ring (alarm.py) until you say stop - not one sentence you can miss.
+    from .. import alarm
+    scheduler.set_notifier(lambda text: alarm.ring(text, speaker.say, speaker.busy))
+    alarm.start(speaker.say, speaker.busy)
     scheduler.start_scheduler("voice")
 
     # Phone alerts live here because voice is the process autostart always
@@ -1401,6 +1496,31 @@ def _voice_loop() -> None:
         alerts.start()
     except Exception as e:
         print(f"[alerts unavailable: {e}]")
+
+    # Teams classes: each morning into tasks and reminders; joined at start time.
+    try:
+        from ..tools import teams
+        teams.start(note=lambda line: print(f"[teams] {line}") if line else None)
+    except Exception as e:
+        print(f"[teams: not started ({e})]")
+
+    # Automations ("when this happens, do that"), and their "say ..." steps.
+    try:
+        from .. import rules
+        rules.set_speaker(speaker.say)
+        rules.start()
+        from .. import health          # the 3 am self-check
+        health.start()
+        from .. import habits          # "you usually ... around now - every day?"
+        habits.start(speaker.say)
+        from .. import inbox           # 8 am: summary + drafted replies (never sent)
+        inbox.start()
+        from .. import studyauto       # 7 pm assignment plans, 8:30 pm primers
+        studyauto.start()
+        from .. import upes            # live attendance + timetable, every 30 min
+        upes.start()
+    except Exception as e:
+        print(f"[automations: not started ({e})]")
 
     # The profile learner, for the same reason: voice is always running. It
     # only works while Athena is idle, so it never holds up a reply.
@@ -1413,7 +1533,11 @@ def _voice_loop() -> None:
 
     hint = f" Say '{wake}' first to address me." if wake else ""
     print(f"\nListening.{hint} Press Ctrl+C to stop.\n")
-    speaker.say(cfg.get("assistant.greeting", "Ready."))
+    # Jarvis-style: what's next, what's overdue - not just "Ready."
+    if cfg.get("presence.greet", True):
+        threading.Thread(target=presence.greet, args=("start", 0), daemon=True).start()
+    else:
+        speaker.say(cfg.get("assistant.greeting", "Ready."))
 
 
     # After the wake word, stay awake for a while so follow-up commands do not
@@ -1491,14 +1615,25 @@ def _voice_loop() -> None:
             print(f"   [while busy, heard: {heard!r} ({len(audio) / SAMPLE_RATE:.1f}s)]")
         if not heard or is_hallucination(heard):
             return None
+        # Primed with stop words, Whisper turns a cough or a fan into "Stop."
+        # - which cancelled "what are you doing?" before Athena had said a
+        # word (3 Oct 2026). A stop without her name must be clearly speech.
+        # Not only a bare "Stop.": primed with "Athena, stop", Whisper also
+        # made a stop out of Athena's own voice and cut her off in the middle
+        # of the attendance (4 Oct 2026). No stop, named or not, on a
+        # transcript the decoder itself doubted.
+        unsure = (max((float(s.no_speech_prob or 0) for s in segs), default=0) > float(cfg.get("voice.primer_no_speech", 0.3))
+                  or min((float(s.avg_logprob or 0) for s in segs), default=0) < float(cfg.get("voice.primer_logprob", -0.7)))
         # A bare "Stop." while Athena is talking is meant for it - the second
         # try came through as exactly that, with "Athena" lost in the noise.
-        if _STOP.match(heard.strip()) and not (said and _echo(heard, said)):
+        if _STOP.match(heard.strip()) and not (said and _echo(heard, said)) and not unsure:
+            print(f"   [stopped - heard {heard!r} while busy]")
             return ""
         # "Arvis, stop." - the first "J" lost as the recording caught up.
         # Anything that ends in a stop word, and is not Athena's own words
         # coming back through the mic, is a stop.
-        if _STOP_TAIL.search(heard) and not (said and _echo(heard, said)):
+        if _STOP_TAIL.search(heard) and not (said and _echo(heard, said)) and not unsure:
+            print(f"   [stopped - heard {heard!r} while busy]")
             return ""
         if wake:
             m = re.search(rf"\b(?:{re.escape(wake)}|athina|atheena|athene|atena|thena|athenas)\b"
@@ -1516,10 +1651,14 @@ def _voice_loop() -> None:
             print(f"   [ignored while busy: {heard!r} - the speech primer, not you]")
             return None
         if not rest or _STOP.match(rest):
+            if unsure:                       # "Athena." out of her own voice or noise
+                return None
+            print(f"   [stopped - heard {heard!r} while busy]")
             return ""
         return rest
 
     while True:
+        hindi_turn = False
         try:
             if _ENGAGED and time.time() >= awake_until:
                 _engage(False)
@@ -1535,6 +1674,7 @@ def _voice_loop() -> None:
                 via_wake = True
                 print(f"you > {text}")
                 live.heard(text)
+                presence.talked()
                 _engage(True)
                 _orb_state("thinking")
             else:
@@ -1568,18 +1708,32 @@ def _voice_loop() -> None:
 
                 # Priming the decoder with the words we expect makes a small model
                 # far better at proper nouns - "Athena" instead of "Here's your wrist".
-                segments, _ = stt.transcribe(
-                    audio, language="en", beam_size=5,
+                # A multilingual model hears English or Hindi (hindi.py); any
+                # other language it thinks it heard is noise or an accent, and
+                # is decoded again as English.
+                audio = _level(audio)
+                multi = MULTILINGUAL and cfg.get("language.hindi", True)
+                segments, info = stt.transcribe(
+                    audio, language=None if multi else "en", beam_size=5,
                     initial_prompt=PROMPT_BIAS,
                     condition_on_previous_text=False,
                     word_timestamps=True,
                 )
                 segments = list(segments)
+                lang = getattr(info, "language", "en") if multi else "en"
+                if lang not in ("en", "hi") or (lang == "hi" and getattr(info, "language_probability", 1) < 0.6):
+                    segments, _ = stt.transcribe(audio, language="en", beam_size=5, initial_prompt=PROMPT_BIAS,
+                                                 condition_on_previous_text=False, word_timestamps=True)
+                    segments, lang = list(segments), "en"
+                hindi_turn = lang == "hi"
                 t_heard = time.time()
                 # No orb yet - we do not know if this was meant for us. It lights
                 # up below, once the wake word has actually been found.
                 from ..agent import clean_speech
                 text = clean_speech(fix_mishearings(_from_last_name(_trusted_text(segments))))
+                if hindi_turn:
+                    from .. import hindi
+                    text = hindi.wake_to_latin(text)
                 # "yes", "two", "all" are too short to count as commands - except
                 # as the answer to a question Athena just asked.
                 answering = invited and bool(offer.REPLY.match(text))
@@ -1662,6 +1816,7 @@ def _voice_loop() -> None:
                     print(f"you > {text}")
                 if addressed:
                     live.heard(text)
+                    presence.talked()
                 if any(w in spoken for w in ("stop listening", "goodbye athena", "shut down athena")):
                     speaker.say("Going quiet.")
                     live.state("stopped")     # asked to stop: not to be restarted
@@ -1693,12 +1848,41 @@ def _voice_loop() -> None:
                             _orb_state("listening")
                             continue
 
+            # Hindi: translated now - only once it is known to be meant for
+            # Athena - and answered in Hindi. "...in Hindi" asks for a Hindi
+            # answer to an English question.
+            reply_hindi = hindi_turn or bool(re.search(r"\b(?:in|into)\s+hindi\W*$", text, re.I))
+            if cfg.get("language.reply", "match") == "english":
+                reply_hindi = False
+            if hindi_turn:
+                from .. import hindi
+                try:
+                    english = hindi.to_english(text)
+                    # English in an Indian accent can be taken for Hindi; if
+                    # "translating" it changes nothing, it was English.
+                    same = re.sub(r"\W+", " ", english).strip().lower() == re.sub(r"\W+", " ", text).strip().lower()
+                    if same:
+                        reply_hindi = bool(re.search(r"\b(?:in|into)\s+hindi\W*$", text, re.I))
+                    else:
+                        print(f"   (in English: {english})")
+                    text = english
+                except Exception as e:
+                    print(f"   [hindi: could not translate ({str(e)[:80]})]")
+            hindi_turn = False
+
             # "Athena, stop" on its own: stop whatever is running, say nothing.
             # Sent to the model it became a 2-minute runaway that the next
             # command then queued behind (27 Sep 2026).
             if _STOP.match(text.strip()):
                 agent.cancelled = True
                 speaker.stop()
+                # ...including a ringing alarm: "Athena, stop" was caught here and the
+                # alarm rang on through three of them (3 Oct 2026).
+                from .. import alarm
+                if alarm.ringing():
+                    alarm.stop()
+                    print("athena > (alarm off)")
+                    live.note("alarm off")
                 print("athena > (stopped)")
                 live.note("stopped")
                 listener.drain()
@@ -1711,9 +1895,9 @@ def _voice_loop() -> None:
             t_ask = time.time()
             n_started = len(speaker.started)
 
-            def _say_part(sentence: str) -> None:
+            def _say_part(sentence: str, _hi=reply_hindi) -> None:
                 _orb_state("speaking")
-                speaker.say(sentence)
+                speaker.say(sentence, hindi=_hi)
             agent.speak = _say_part
             box: dict = {}
             worker = threading.Thread(target=lambda: box.update(a=agent.ask(text)),
@@ -1724,7 +1908,10 @@ def _voice_loop() -> None:
             while worker.is_alive():
                 # Athena may already be talking (streamed sentences) - pass what
                 # she is saying so her own words are not taken for a command.
-                got = _barge_in(speaker.current if speaker.busy() else "",
+                # Everything said this turn, not only the sentence playing now:
+                # between sentences that was "", and her own "What can I do for
+                # you today" came back as your command (4 Oct 2026).
+                got = _barge_in(" ".join(x for x in (agent.spoken, speaker.current if speaker.busy() else "") if x),
                                 done=lambda: not worker.is_alive())
                 if got is not None:
                     cut = got
@@ -1737,13 +1924,13 @@ def _voice_loop() -> None:
                 _orb_state("speaking")
                 done_aloud = agent.spoken.strip()
                 if not done_aloud:
-                    speaker.say(answer)
+                    speaker.say(answer, hindi=reply_hindi)
                 elif answer.strip() != done_aloud:
                     # The streamed part was cut short (a guard stopped it) or
                     # the answer changed: say what has not been said.
                     rest = answer.strip()[len(done_aloud):] if answer.strip().startswith(done_aloud) else answer
                     if rest.strip():
-                        speaker.say(rest.strip())
+                        speaker.say(rest.strip(), hindi=reply_hindi)
                 if cfg.get("voice.log_timings", True):
                     first = next((t for t in speaker.started[n_started:]), None)
                     if first is None:
@@ -1762,7 +1949,7 @@ def _voice_loop() -> None:
                     print("   [time: " + " · ".join(parts) + (" · streamed" if done_aloud else "") + "]")
                     t_stop = None
                 while speaker.busy():
-                    got = _barge_in(speaker.current, done=lambda: not speaker.busy())
+                    got = _barge_in(f"{answer} {speaker.current}", done=lambda: not speaker.busy())
                     if got is not None:
                         cut = got
                         break
@@ -1787,6 +1974,9 @@ def _voice_loop() -> None:
                     queued = cut
                 else:
                     live.note("interrupted - stopped")
+                    from .. import alarm
+                    if alarm.ringing():
+                        alarm.stop()
                     print("athena > (stopped)")
                 time.sleep(0.2)
                 listener.drain()

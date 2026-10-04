@@ -59,7 +59,8 @@ def run() -> None:
                 break
             time.sleep(0.5)
 
-    url = f"http://127.0.0.1:{port}/?t={get_token()}"
+    # Opens on the Command Centre (the phone keeps the voice stage as home).
+    url = f"http://127.0.0.1:{port}/?t={get_token()}&home=dash"
     exe = _browser()
     if not exe:
         # No Chromium: fall back to the old window rather than nothing.
@@ -71,5 +72,5 @@ def run() -> None:
     # launches and never opens as a tab inside your everyday browser session.
     profile = DATA / "hud-profile"
     subprocess.Popen([exe, f"--app={url}", f"--user-data-dir={profile}",
-                      "--window-size=1440,920", "--no-first-run",
+                      "--window-size=1440,920", "--start-fullscreen", "--no-first-run",   # F11 leaves full screen
                       "--no-default-browser-check", "--disable-features=Translate"])

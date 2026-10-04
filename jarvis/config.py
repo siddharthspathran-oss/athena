@@ -12,11 +12,19 @@ DATA = ROOT / "data"
 DATA.mkdir(exist_ok=True)
 
 
+LOCAL = DATA / "config.local.yaml"     # personal values (name, addresses) - data/ never goes to git
+
+
+def _merge(base: dict, over: dict) -> dict:
+    for k, v in over.items():
+        base[k] = _merge(base.get(k) or {}, v) if isinstance(v, dict) and isinstance(base.get(k), dict) else v
+    return base
+
+
 class Config:
     def __init__(self, path: Path):
         self._path = path
-        with open(path, "r", encoding="utf-8") as f:
-            self._d: dict[str, Any] = yaml.safe_load(f) or {}
+        self.reload()
 
     def get(self, dotted: str, default: Any = None) -> Any:
         """cfg.get('llm.model') -> 'qwen2.5:7b'"""
@@ -29,7 +37,10 @@ class Config:
 
     def reload(self) -> None:
         with open(self._path, "r", encoding="utf-8") as f:
-            self._d = yaml.safe_load(f) or {}
+            self._d: dict[str, Any] = yaml.safe_load(f) or {}
+        if LOCAL.exists():
+            with open(LOCAL, "r", encoding="utf-8") as f:
+                _merge(self._d, yaml.safe_load(f) or {})
 
 
 cfg = Config(ROOT / "config.yaml")

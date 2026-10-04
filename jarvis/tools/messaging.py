@@ -225,9 +225,9 @@ def parse_request(utterance: str) -> tuple[str, str] | None:
     #
     # "message me" and "send me a whatsapp" still work: those name the channel,
     # so they really are asking for a message.
-    if re.match(r"^\W*(?:(?:athena|jarvis)\W+)?(?:please\s+)?tell\s+(?:me|myself)\b", low) \
+    if re.match(r"^\W*(?:(?:athena|jarvis)\W+)?(?:(?:can|could|will)\s+you\s+)?(?:please\s+)?(?:tell|send|give)\s+(?:me|myself)\b", low) \
             and not re.search(r"\b(whats ?app|message|msg|text)\b", low):
-        return None
+        return None     # "send me a joke", "send me the lab manual" are asks, not messages
 
     wants_message = bool(re.search(
         r"\b(whats ?app|message|msg|text|tell|send|say|saying)\b", low))
@@ -249,7 +249,8 @@ def parse_request(utterance: str) -> tuple[str, str] | None:
         return None
 
     body = ""
-    for pat in (r"\bsay(?:ing|s)?\s+(?:that\s+)?(.+)$",
+    for pat in (r"\bsend\s+(?:a|an)\s+(.+?)\s+(?:message|msg|text)\b",     # "send a hi message to me"
+                r"\bsay(?:ing|s)?\s+(?:that\s+)?(.+)$",
                 r"\bthat\s+says?\s+(.+)$",
                 r"\bmessage\s+(?:to\s+\S+\s+)?(.+)$",
                 r"\btell(?:ing)?\s+\S+\s+(.+)$",
@@ -268,10 +269,14 @@ def parse_request(utterance: str) -> tuple[str, str] | None:
     body = re.sub(r"\bon\s+whats ?app\b", " ", body, flags=re.I)
     body = re.sub(r"\bover\s+whats ?app\b", " ", body, flags=re.I)
     body = re.sub(r"\bplease\b", " ", body, flags=re.I)
+    # "message maa I am coming home" sent "maa I am coming home" - the name leads the body
+    body = re.sub(r"^\s*(?:to\s+)?" + re.escape(hit) + r"\b[\s,:-]*", "", body, flags=re.I)
     body = re.sub(r"\s+", " ", body).strip(" .,!?:-\"'")
 
     if not body or body.lower() == hit:
         return None
+    if body.lower() in ("high", "hai", "hay"):     # Whisper's spelling of a spoken "hi"
+        body = "hi"
 
     # Answer with the name the contact book actually uses, so the step the
     # user sees says "maa" rather than whichever word they happened to say.

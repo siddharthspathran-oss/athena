@@ -122,8 +122,14 @@ class Kokoro(Engine):
         self.voice = str(cfg.get("voice.kokoro_voice", "af_heart"))
         self.speed = float(cfg.get("voice.tts_speed", 1.05))
 
-    def synth(self, text: str) -> np.ndarray:
-        audio, sr = self.k.create(text, voice=self.voice, speed=self.speed, lang="en-us")
+    speaks_hindi = True
+
+    def synth(self, text: str, hindi: bool = False) -> np.ndarray:
+        # bf_/bm_ voices are British: British pronunciation too, not just the accent.
+        voice, lang = self.voice, "en-gb" if self.voice[:1] == "b" else "en-us"
+        if hindi:
+            voice, lang = str(cfg.get("language.hindi_voice", "hf_alpha")), "hi"
+        audio, sr = self.k.create(text, voice=voice, speed=self.speed, lang=lang)
         self.sample_rate = sr
         return np.asarray(audio, dtype=np.float32)
 
@@ -148,7 +154,10 @@ class Piper(Engine):
         speed = float(cfg.get("voice.tts_speed", 1.05))
         try:
             from piper import SynthesisConfig
-            self.syn = SynthesisConfig(length_scale=1.0 / max(0.5, speed))
+            # noise_w_scale: how much word lengths vary. Above the voice's
+            # 0.8 the rhythm is less even - more like a person, less a metronome.
+            self.syn = SynthesisConfig(length_scale=1.0 / max(0.5, speed),
+                                       noise_w_scale=float(cfg.get("voice.rhythm", 0.95)))
         except Exception:
             self.syn = None
 
@@ -156,7 +165,12 @@ class Piper(Engine):
         chunks = list(self.v.synthesize(text, self.syn) if self.syn else self.v.synthesize(text))
         if not chunks:
             return np.zeros(0, dtype=np.float32)
-        return np.concatenate([c.audio_float_array for c in chunks]).astype(np.float32)
+        # Piper hands back one chunk per sentence with no gap between them.
+        gap = np.zeros(int(float(cfg.get("voice.sentence_pause", 0.32)) * self.sample_rate), dtype=np.float32)
+        parts = []
+        for c in chunks:
+            parts += [c.audio_float_array.astype(np.float32), gap]
+        return np.concatenate(parts[:-1])
 
 
 def piper_installed() -> bool:
@@ -200,8 +214,13 @@ def load(log=print) -> Engine | None:
                     continue
                 engine = Piper()
             rtf = _timed(engine)
+            if rtf > float(cfg.get("voice.max_realtime_factor", MAX_REALTIME_FACTOR)):
+                # At start-up Whisper is warming up on the same GPU; one slow
+                # reading passed Kokoro over for Piper (3 Oct 2026). Time again.
+                time.sleep(3)
+                rtf = min(rtf, _timed(engine), _timed(engine))
             where = "GPU" if getattr(engine, "device", "cpu") == "cuda" else "CPU"
-            if want == "auto" and rtf > MAX_REALTIME_FACTOR:
+            if want == "auto" and rtf > float(cfg.get("voice.max_realtime_factor", MAX_REALTIME_FACTOR)):
                 tried.append(f"{name}: too slow here ({rtf:.2f}s per second of speech)")
                 continue
             log(f"[voice: {name} on the {where}, {rtf:.2f}s per second of speech]")

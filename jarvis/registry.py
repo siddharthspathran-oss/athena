@@ -118,7 +118,7 @@ class Tool:
             from .config import cfg
             limit = float(cfg.get("tools.timeout_seconds", 45) or 0)
         if not limit:
-            return self._call(kwargs)
+            return self._noted(kwargs, self._call(kwargs))
         # A tool that hangs - a window that never appears, a site that never
         # answers - used to hold the whole request, and every command behind
         # it, with nothing said. It runs on its own thread so the caller can
@@ -133,7 +133,16 @@ class Tool:
             print(f"[tool {self.name} still running after {limit:g}s - no longer waiting]")
             return (f"ERROR: {self.name} did not finish within {limit:g} seconds. It may "
                     f"still complete in the background - tell the user, and do not call it again.")
-        return box.get("r", "Done.")
+        return self._noted(kwargs, box.get("r", "Done."))
+
+    def _noted(self, kwargs: dict, result: str) -> str:
+        """What you do, for habit learning (habits.py). Never in the way."""
+        try:
+            from . import habits
+            habits.record(self.name, kwargs, result)
+        except Exception:
+            pass
+        return result
 
 
 REGISTRY: dict[str, Tool] = {}
@@ -283,22 +292,34 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
         r"read|contents?|list|show|where|explorer|phone|mobile)" + _W, re.I),
      ["find_document", "send_to_phone", "open_from_phone", "list_folder", "read_file", "write_file", "move_file", "delete_file",
       "organize_folder", "folder_size", "reveal_path"]),
+    ("phone_control", re.compile(
+        r"\b(?:phone|mobile|galaxy|samsung)" + _W, re.I),
+     ["show_phone", "phone_open_app", "find_my_phone", "phone_status", "lock_phone", "phone_screenshot",
+      "phone_media"]),
     ("media", re.compile(
         r"\b(?:songs?|tracks?|music|spotify|play|playlist|album|artist|pause|skip|"
         r"volume|loud|quiet|mute|listen)" + _W, re.I),
      ["play_track", "play_song", "play_my_taste", "play_my_playlist", "get_volume"]),
+    ("automation", re.compile(
+        r"\b(?:automat|rules?\b|whenever|every\s*time|each\s+time|pause|resume|on\s+(?:your|its)\s+own|health|check\s+yourself|retrain|"
+        r"standing|keep\s+(?:my|an?\s+eye))" + _W, re.I),
+     ["add_rule", "list_rules", "remove_rule", "pause_automation", "resume_automation", "what_did_you_do",
+      "health_check", "retrain_athena", "add_watch"]),
     ("schedule", re.compile(
-        r"\b(?:remind|alarm|timer|tasks?|to-?dos?|deadline|assignment|due|schedul|calendar|"
-        r"timetable|class|lecture|meeting|brief|today|tomorrow|tonight|week|agenda|"
+        r"\b(?:remind|alarm|timer|tasks?|to[- ]?dos?|deadline|assignment|due|schedul|calendar|"
+        r"timetable|class|lecture|meeting|teams|brief|today|tomorrow|tonight|week|agenda|exam|revis|primer|prepare|attend|bunk|skip|upes|portal|lms|due|alarm|snooze|"
         r"time|date|day|free|busy|cancel)" + _W, re.I),
      ["list_reminders", "cancel_reminder", "add_task", "complete_task", "list_tasks",
       "check_deadlines", "daily_brief", "get_datetime", "show_timetable", "set_timetable",
-      "add_calendar_feed", "list_calendar_feeds", "connect_google"]),
+      "add_calendar_feed", "list_calendar_feeds", "connect_google",
+      "teams_meetings", "join_teams_meeting", "plan_my_assignments", "prepare_for_tomorrow", "exam_plan",
+      "my_attendance", "can_i_skip", "upes_classes", "open_upes_login", "lms_deadlines", "open_lms",
+      "stop_alarm", "snooze_alarm"]),
     ("messaging", re.compile(
         r"\b(?:whatsapp|messag|text|msg|call|ring|dial|phone|mobile|contacts?|e-?mail|mail|"
         r"inbox|send|sent|reply|number|tell|hang)" + _W, re.I),
      ["whatsapp_message", "whatsapp_call", "compose_email", "list_contacts", "add_contact",
-      "remove_contact", "call_me", "call_number", "end_call"]),
+      "remove_contact", "call_me", "call_number", "end_call", "inbox_summary", "connect_gmail_drafts"]),
     ("apps", re.compile(
         r"\b(?:windows?|minimi[sz]|maximi[sz]|focus|switch|resiz|snap|running|apps?|"
         r"programs?|installed|type|typing|click|button|field|press|clipboard|paste|"

@@ -10,3 +10,6 @@ graphify-out/
 .venv/
 venv/
 *.log
+
+# Generated voice samples (say your name, your deadlines)
+voice_samples/

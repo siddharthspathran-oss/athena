@@ -88,7 +88,7 @@ def local_ips() -> list[str]:
     return found
 
 
-PAGE = """<!doctype html>
+PAGE = r"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <!-- maximum-scale stops Android zooming the whole app when a field is
@@ -688,6 +688,35 @@ def _gather_overview() -> dict:
             rows.append({"what": e["what"], "at": "all day" if e["all_day"] else s.strftime("%H:%M"),
                          "until": end.strftime("%H:%M"), "where": e.get("where", ""),
                          "state": state, "mins": int((s - now).total_seconds() // 60)})
+        # Teams classes, as read by tools/teams.py this morning (cancelled ones left out).
+        try:
+            from ..tools import teams
+            seen = {r["what"].lower() for r in rows}
+            for m in teams._meetings_today():
+                if m["canceled"] or m["title"].lower() in seen:
+                    continue
+                s = dt.datetime.combine(dt.date.today(), dt.time.fromisoformat(m["start"]))
+                e = dt.datetime.combine(dt.date.today(), dt.time.fromisoformat(m["end"]))
+                rows.append({"what": m["title"], "at": m["start"], "until": m["end"], "where": "Teams",
+                             "state": "now" if s <= now < e else "done" if e <= now else "next",
+                             "mins": int((s - now).total_seconds() // 60)})
+        except Exception:
+            pass
+        # UPES timetable (upes.py), from the last portal read - with rooms.
+        try:
+            from .. import upes
+            seen = {r["what"].lower() for r in rows}
+            for c in upes.classes(cached_only=True):
+                if c["cancelled"] or c["course"].lower() in seen:
+                    continue
+                s = dt.datetime.combine(dt.date.today(), dt.time.fromisoformat(c["start"]))
+                e = dt.datetime.combine(dt.date.today(), dt.time.fromisoformat(c["end"]))
+                rows.append({"what": c["course"], "at": c["start"], "until": c["end"], "where": c["room"],
+                             "state": "now" if s <= now < e else "done" if e <= now else "next",
+                             "mins": int((s - now).total_seconds() // 60)})
+        except Exception:
+            pass
+        rows.sort(key=lambda r: r["at"])
         out["schedule"], out["unread"] = rows, len(mail)
         # Senders only - brief gives "subject - from who"; the subject stays out.
         out["mail_from"] = [m.rsplit(" - from ", 1)[-1] for m in mail if " - from " in m][:4]
@@ -767,8 +796,31 @@ def _gather_overview() -> dict:
 
 
 def _overview() -> dict:
-    """The cached overview, refreshed in the background when stale."""
-    fresh = time.time() - _overview_cache["t"] < 180
+    """The cached overview, refreshed in the background when stale. Automation
+    activity is read fresh - it is a small local file."""
+    data = dict(_overview_cached())
+    try:
+        from .. import rules
+        data["activity"] = rules.recent_activity(6)
+        data["auto_paused"] = rules.paused()
+    except Exception:
+        pass
+    try:                                     # live attendance (upes.py), from its last read
+        from .. import upes
+        data["attendance"] = upes.attendance(cached_only=True)
+        from ..store import load_json as _lj
+        data["upes_read"] = _lj(upes.CACHE, {}).get("t", 0)
+        # Signed out is normal (MyUPES ends sign-ins ~25 min in); only stale data is worth showing.
+        data["upes_signed_out"] = ((upes.DATA / "upes_signed_out.json").exists()
+                                   and time.time() - data["upes_read"] > 20 * 3600)
+    except Exception:
+        pass
+    return data
+
+
+def _overview_cached() -> dict:
+    from .views import _sources_changed
+    fresh = time.time() - _overview_cache["t"] < 180 and _overview_cache["t"] > _sources_changed()
     if not fresh and _overview_lock.acquire(blocking=False):
         def work():
             try:
@@ -1318,6 +1370,14 @@ class Handler(BaseHTTPRequestHandler):
                     out = views.run_routine(body.get("name", ""))
                 elif page == "tasks":
                     out = views.task_action(body)
+                elif page == "alarm":
+                    from .. import alarm
+                    out = {"said": alarm.snooze(int(body.get("minutes", 10))) if body.get("action") == "snooze"
+                           else alarm.stop()}
+                elif page == "automation":
+                    from .. import rules
+                    out = {"said": rules.pause_automation() if body.get("pause") else rules.resume_automation(),
+                           "paused": rules.paused()}
                 elif page == "notify":
                     from .. import phone_notify
                     out = phone_notify.set_muted(body.get("muted", True))

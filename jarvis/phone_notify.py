@@ -197,6 +197,11 @@ def start(say, busy=lambda: False) -> None:
                 last = max(last, arrival)
                 if len(texts) < 2 or not is_message(app, texts):
                     continue
+                try:                        # automations: "when maa messages me ..."
+                    from . import rules
+                    rules.on_message(split(texts)[0])
+                except Exception:
+                    pass
                 line = worth_saying(*split(texts), contacts)
                 if not line:
                     continue

@@ -343,6 +343,19 @@ def set_timetable(entries: str) -> str:
 
 
 def _timetable_events(day: dt.date) -> list[dict]:
+    # The UPES semester timetable when Athena has read it: it knows about
+    # mid-sems, holidays and cancelled classes, which a fixed weekly table
+    # shows as ordinary class days (mid-sems 5-10 Oct 2026). The weekly
+    # table is only for days the semester timetable does not cover.
+    try:
+        from .. import upes
+        if upes.covers(day):
+            return [{"what": c["course"], "where": c["room"], "who": [], "all_day": False, "source": "timetable",
+                     "start": dt.datetime.combine(day, dt.time.fromisoformat(c["start"])),
+                     "end": dt.datetime.combine(day, dt.time.fromisoformat(c["end"]))}
+                    for c in upes.classes(day, cached_only=True) if not c["cancelled"]]
+    except Exception:
+        pass
     table = load_json(TIMETABLE_FILE, [])
     if not table:
         return []
@@ -509,5 +522,14 @@ def daily_brief(day: str = "today", full: bool = False) -> str:
     if mail:
         lines.append(f"{len(mail)} unread, addressed to you:")
         lines += [f"  {m}" for m in mail]
+
+    if label == "today":                # last night's self-check, if it found anything
+        try:
+            from .. import health
+            note = health.morning_line()
+            if note:
+                lines.append(note)
+        except Exception:
+            pass
 
     return "\n".join(lines)

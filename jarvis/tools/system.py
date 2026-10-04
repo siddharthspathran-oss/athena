@@ -57,6 +57,10 @@ APP_ALIASES = {
     "cloud app": "claude",
     "plague": "claude",
     "clod": "claude",
+    # "close Fortnite" came back as "40 point" and "fortified" (3 Oct 2026).
+    "40 point": "fortnite", "forty point": "fortnite", "fortified": "fortnite",
+    "fort night": "fortnite", "fortnight": "fortnite", "for tonight": "fortnite",
+    "4 night": "fortnite", "four night": "fortnite",
     "claud": "claude",
     "clawed": "claude",
     "clode": "claude",
@@ -357,6 +361,35 @@ def list_installed_apps(filter_text: str = "") -> str:
     return "\n".join(shown) + extra
 
 
+def _squash(text: str) -> str:
+    """Letters only, numbers spelled out: "40 point" -> "fortypoint"."""
+    words = {"0": "zero", "1": "one", "2": "two", "3": "three", "4": "four", "5": "five",
+             "6": "six", "7": "seven", "8": "eight", "9": "nine", "10": "ten", "20": "twenty",
+             "30": "thirty", "40": "forty", "50": "fifty"}
+    text = re.sub(r"\d+", lambda m: words.get(m.group(), m.group()), text.lower())
+    return re.sub(r"[^a-z]", "", text)
+
+
+def _sounds_like_running(spoken: str) -> str | None:
+    """The one open app whose name sounds like what was said, or None."""
+    from difflib import SequenceMatcher
+    said = _squash(spoken)
+    if len(said) < 4:
+        return None
+    names = set()
+    for _hwnd, title, pid in winapi.windows_with_pids():
+        try:
+            names.add(psutil.Process(pid).name().lower().removesuffix(".exe").split("-")[0])
+        except Exception:
+            pass
+        if title:
+            names.add(title.lower().split(" - ")[0][:40])
+    scored = sorted(((SequenceMatcher(None, said, _squash(n)).ratio(), n) for n in names if len(_squash(n)) >= 4),
+                    reverse=True)
+    good = [(r, n) for r, n in scored if r >= 0.62 and _squash(n)[:1] == said[:1]]
+    return good[0][1] if len(good) == 1 else None
+
+
 @tool(tags=TAG, destructive=True)
 def close_app(name: str) -> str:
     """Close a running application by name, for example chrome, whatsapp or notepad.
@@ -366,10 +399,19 @@ def close_app(name: str) -> str:
 
     name: the application to close, in the user's own words
     """
+    return _close(name, guess_allowed=True)
+
+
+def _close(name: str, guess_allowed: bool) -> str:
     spoken = name.strip().lower()
-    key = _user_aliases().get(spoken) or APP_ALIASES.get(spoken) or spoken
-    key = key.lower()
-    key = key.removesuffix(".exe")
+    key = (_user_aliases().get(spoken) or APP_ALIASES.get(spoken) or spoken).lower().removesuffix(".exe")
+    # An alias names the app the way the Start menu does ("opera" -> "opera gx
+    # browser"); the process is just "opera.exe". Closing searched for the
+    # whole Start-menu name and reported Opera as not running (3 Oct 2026).
+    _filler = {"browser", "app", "application", "the", "my", "window", "game"}
+    keys = {k for k in {spoken, key, *(w for w in (spoken.split()[:1] + key.split()[:1])
+                                      if len(w) >= 4 and w not in _filler)} if k}
+    flat = {_squash(k) for k in keys}
 
     # Process names rarely match what people say: WhatsApp runs as
     # "WhatsApp.Root", Chrome spawns a dozen children. Match loosely, and
@@ -379,14 +421,22 @@ def close_app(name: str) -> str:
         pname = (p.info.get("name") or "").lower().removesuffix(".exe")
         if not pname:
             continue
-        if pname == key or pname.startswith(key) or key in pname:
+        if any(pname == k or pname.startswith(k) or k in pname for k in keys) or                 (len(pname) >= 4 and any(f.startswith(_squash(pname)) for f in flat)):    # "operagx" -> opera
             targets[p.info["pid"]] = p.info["name"]
 
     for hwnd, title, pid in winapi.windows_with_pids():
-        if key in title.lower():
+        if any(k in title.lower() for k in keys):
             targets.setdefault(pid, title)
 
     if not targets:
+        # Speech bends game and app names into ordinary words. Before giving
+        # up, compare by sound with what actually has a window open - and only
+        # act on a single clear match, since closing the wrong thing is worse
+        # than closing nothing. Once: a guess that still matches nothing used
+        # to call back into itself forever (RecursionError, 3 Oct 2026).
+        guess = _sounds_like_running(spoken) if guess_allowed else None
+        if guess:
+            return _close(guess, guess_allowed=False)
         return f"Nothing called {name} appears to be running."
 
     # Ask windows to close politely first so the app can save its state.
@@ -497,7 +547,7 @@ def music(action: str, song: str = "", position: int = 0) -> str:
 
     action: play, pause, next, previous, mute, song (play a named song), track (play song number `position` in the list), surprise (pick something the user likes) or playlist (their saved playlist)
     song: the song to play, optionally "by" the artist - for action song, or a title for action track
-    position: which song in Spotify's list, counting from 1 - for action track
+    position: which song in Spotify's list, counting from 1, or -1 for the last song - for action track
     """
     # One tool instead of five (music, play_song, play_track, play_my_taste,
     # play_my_playlist): the model kept picking the media key for a named
@@ -861,7 +911,7 @@ def play_track(position: int = 0, name: str = "") -> str:
     called archangel". The media keys cannot do this - they only skip - so
     asking for the first song with those plays the second.
 
-    position: which song in the list, counting from 1
+    position: which song in the list, counting from 1; -1 for the last song
     name: part of the song title, if the position is not known
     """
     hwnd = _spotify_hwnd()
@@ -904,6 +954,23 @@ def play_track(position: int = 0, name: str = "") -> str:
             if not fresh or fresh == tracks:
                 break
             tracks = fresh
+
+    if position < 0 and not name.strip():
+        # "the last song": scroll down until the list stops moving, then take
+        # the highest number on screen. Asked three times on 3 Oct 2026, the
+        # model guessed track 4, then found the song but never played it.
+        for _ in range(60):
+            any_rect = next(iter(tracks.values()))[1]
+            left, top, right, bottom = winapi.window_rect(hwnd)
+            winapi.scroll(any_rect[0] + 60, (top + bottom) // 2, -5)
+            time.sleep(0.35)
+            uia.wake(hwnd, settle=0.2)
+            fresh = _visible_tracks(hwnd)
+            if not fresh or max(fresh) == max(tracks):
+                tracks = fresh or tracks
+                break
+            tracks = fresh
+        position = max(tracks)
 
     if name.strip():
         want = name.strip().lower()

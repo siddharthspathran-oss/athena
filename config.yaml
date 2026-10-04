@@ -3,10 +3,15 @@
 # ============================================
 
 llm:
-  # Ollama model. qwen2.5:7b is the best tool-caller that fits 8GB VRAM.
+  # Ollama model. athena:3b is Qwen2.5-3B fine-tuned on Athena's own tools
+  # (3 Oct 2026): 26/27 commands and 121/147 unseen requests against the 7B's
+  # 25/27 and 114/147, in 2.1 GB of VRAM instead of 4.6. It is sent the
+  # training-format prompt (llm.raw_models, qwen_prompt.py). To go back:
+  # model: "qwen2.5:7b".
   # This one answers everything spoken or typed; class work goes to
   # study.model instead, so a slow careful model there costs nothing here.
-  model: "qwen2.5:7b"
+  model: "athena:3b"
+  raw_models: ["athena"]
   host: "http://127.0.0.1:11434"
   temperature: 0.3
   # Max agent steps before giving up on a single request
@@ -41,6 +46,8 @@ assistant:
   name: "Athena"
   # Shown in the top-right corner of the HUD.
   user_name: "Operator"
+  # What Athena calls you out loud (welcome-backs, now and then in replies).
+  call_me: ""                 # set in data/config.local.yaml (kept out of git)
   # Spoken/printed greeting
   greeting: "Ready."
 
@@ -100,6 +107,9 @@ voice:
   # small.en: measured 26 Sep 2026 on this GPU at ~320 ms a command with word
   # timings on, against ~1.9 s for base.en (base.en kept inventing words after
   # you stopped, and every invented word costs decode time). More accurate too.
+  # small.en: English only. "large-v3-turbo" hears Hindi too (language: below)
+  # but takes ~0.5 GB more VRAM and ~0.55 s a command - tried and turned off
+  # on 3 Oct 2026 to keep the GPU lighter.
   whisper_model: "small.en"
   # int8_float16 = int8 weights on the GPU: about half float16's VRAM, same
   # speed and practically the same accuracy. "float16" to go back.
@@ -107,6 +117,8 @@ voice:
   # auto = try the GPU, fall back to CPU if CUDA libraries are missing.
   # GPU Whisper additionally needs cuDNN, which Ollama does not bundle.
   device: "auto"
+  # Names Whisper should expect that are not Start-menu apps or contacts.
+  extra_words: ["Fortnite", "Valorant", "Minecraft", "Blender", "RAGAZZA", "UPES"]
   wake_word: "athena"
   # After it answers, keep listening this long so a follow-up command does not
   # need the wake word again ("now close Spotify").
@@ -144,12 +156,21 @@ voice:
   reply_seconds: 10
 
   # --- natural voice (jarvis/tts.py); which one speaks is `engine` below ---
-  tts_speed: 1.05
-  kokoro_voice: "af_heart"      # af_bella, af_nicole, bf_emma, am_adam ...
+  # 0.95 = a touch slower than the voice's own pace, with pauses between
+  # sentences (sentence_pause) and a less even rhythm (rhythm) - asked for
+  # "speak like a human" on 3 Oct 2026. Was 1.05.
+  tts_speed: 0.95
+  sentence_pause: 0.32
+  rhythm: 0.95
+  kokoro_voice: "bf_emma"      # British (3 Oct 2026; was af_heart). Others: af_bella, af_nicole, am_adam
   # Kokoro takes the GPU only once the chat model is fully on it and this
   # much VRAM is still free - never at the chat model's expense.
   kokoro_min_free_gb: 1.6
   piper_voice: "en_US-hfc_female-medium"
+  # Slowest voice auto will use, in seconds of work per second of speech.
+  # Kokoro on this GPU measures 0.12-0.21 (3 Oct 2026): about 0.4 s more
+  # before the first word than Piper, for a far more human voice. 0.2 = Piper.
+  max_realtime_factor: 0.35
 
   # --- hearing ---
   # Silero speech detector (inside faster-whisper): a sentence ends when your
@@ -166,6 +187,15 @@ voice:
   # Needs: pip install openwakeword. Empty = Whisper listens for "Athena".
   wake_model: ""
   wake_threshold: 0.5
+  # Silent test of the trained detector (data/athena_wake.onnx) next to the
+  # live wake word: times only, to data/wake_shadow.log. false when done.
+  wake_shadow: true
+  # Far-field (4 Oct 2026, mic effects off): the listening threshold is the
+  # room's own level times gate_ratio; 2.5 (threshold ~0.030) caught all 8 test sentences up to
+  # across the room with ~5% of room noise over it. A real "Athena, play the
+  # next song" from 2 m scored 0.04, so the command floor is 0.03 (was 0.1).
+  gate_ratio: 2.5
+  wake_floor_prob: 0.03
   # Write everything it transcribes to data/voice.log, including speech
   # that was not addressed to Athena. Off by default: anything said near
   # this machine should not land in a file. Turn on only to debug.
@@ -512,6 +542,18 @@ phone_files:
   share_minutes: 15     # how long a download link works
   notify: true          # ntfy push "X is ready" (the name only, never a link)
 
+teams:
+  # Classes from the Microsoft Teams calendar (read from the Teams app).
+  enabled: true
+  sync_at: "07:30"        # each morning: today's meetings -> tasks + reminders
+  remind_minutes: 5
+  # Joining at start time, mic and camera off:
+  #   at_pc  - only if the keyboard or mouse was used in the last 5 minutes;
+  #            otherwise a push to your phone instead
+  #   always - join even when you are away from the PC
+  #   off    - never join; reminders only
+  auto_join: "at_pc"
+
 phone_notify:
   # Read out phone messages that reach the PC through Phone Link / WhatsApp.
   # "all" = every personal message; "contacts" = only saved contacts and
@@ -527,3 +569,42 @@ phone_notify:
 # saved with `python run.py store-key`. Change the url once the site is live.
 store:
   url: "http://localhost:3000"
+
+# Away and back (jarvis/presence.py): caught up when you return, music paused
+# when the camera sees you've left, "sorry to interrupt" when she cuts in.
+presence:
+  enabled: true
+  # One webcam frame about every 30 s, and only while the keyboard is idle -
+  # never saved, never sent anywhere. false = idle time alone decides.
+  camera: true
+  camera_index: 0
+  away_after_minutes: 3       # idle this long before she looks for you
+  greet_after_minutes: 10     # away at least this long for a welcome-back
+  greet: true
+  pause_music: true
+
+# Hindi (jarvis/hindi.py): speak to Athena in Hindi or Hinglish and she
+# answers in Hindi. Needs a multilingual Whisper (voice.whisper_model without
+# ".en"). Only the words of a command meant for her, and her reply, go to the
+# translator - never audio.
+language:
+  hindi: false                  # also needs a multilingual whisper_model
+  # match = answer in the language you spoke; english = always English.
+  # "...in Hindi" at the end of an English question also gets a Hindi answer.
+  reply: "match"
+  translate_model: "groq:openai/gpt-oss-120b"
+  hindi_voice: "hf_alpha"       # hf_beta (female), hm_omega / hm_psi (male)
+
+# The phone, controlled with adb (jarvis/tools/android.py). Away from home it
+# is reached through Tailscale at this address on a fixed port - needs the
+# phone on some Wi-Fi (Android turns Wireless debugging off on mobile data).
+phone:
+  tailscale_ip: ""    # the phone's Tailscale address - set in data/config.local.yaml
+  adb_port: 5555
+
+# Reminders and due tasks ring until stopped (jarvis/alarm.py). The sound
+# must be a WAV (Windows' player); data/sounds/aria_math.wav is Aria Math by
+# C418, converted from the user's own copy on 4 Oct 2026.
+alarm:
+  sound: "C:/claude code/jarvis/data/sounds/aria_math.wav"
+  ring_seconds: 20        # music between the spoken "Reminder: ..." lines

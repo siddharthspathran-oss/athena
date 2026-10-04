@@ -1,0 +1,283 @@
+"""Is anyone at the PC - and what Athena says about it.
+
+  - Away and back: no keyboard or mouse for a while and (with the camera on)
+    no face in front of the webcam means you've gone. Music she paused for
+    you is resumed and you're caught up when you're back: the next class,
+    what's overdue, the battery, who messaged.
+  - Speaking up on her own goes through interject(): she waits for a gap
+    (not while you're talking or she is) and says "sorry to interrupt" when
+    you were mid-conversation.
+  - Messages that would be read out to an empty room are held for the
+    welcome-back instead.
+
+The camera is only opened for a single frame while the keyboard is idle -
+about one look every 30 seconds - and the frame never leaves this process or
+touches the disk. presence.camera: false in config.yaml turns it off; idle
+time alone then decides, and music is never paused on a guess.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import re
+import threading
+import time
+
+from .config import cfg
+
+_say = None
+_busy = lambda: False          # noqa: E731
+_state = {"here": True, "away_since": 0.0, "misses": 0, "paused_music": False,
+          "greeted": 0.0, "held": [], "last_look": 0.0, "talk": 0.0}
+_lock = threading.Lock()
+
+
+def set_speaker(say, busy) -> None:
+    global _say, _busy
+    _say, _busy = say, busy
+
+
+def talked() -> None:
+    """The voice loop calls this on every exchange - for 'sorry to interrupt'."""
+    _state["talk"] = time.time()
+
+
+def away() -> bool:
+    return not _state["here"]
+
+
+# ---------- speaking up ----------
+
+def interject(text: str, wait: float = 30) -> None:
+    """Say something nobody asked for, at a natural moment."""
+    if _say is None:
+        return
+    from . import live
+    mid = time.time() - _state["talk"] < 25 or _busy()
+    end = time.time() + wait
+    while time.time() < end and (_busy() or live._state.get("state") in ("listening", "thinking")):
+        time.sleep(0.3)
+    if mid:                                      # "DSD starts..." keeps its capitals
+        text = "Sorry to interrupt - " + (text[0].lower() + text[1:] if text[1:2].islower() else text)
+    _say(text)
+
+
+def say_or_hold(line: str, say) -> None:
+    """A message read out - or kept for when you're back if nobody's here."""
+    if away():
+        with _lock:
+            _state["held"].append(line)
+        return
+    say(line)
+
+
+# ---------- seeing ----------
+
+_cascade = None
+
+
+def face_seen() -> bool | None:
+    """One frame from the webcam: True/False, or None if there's no camera
+    (or another app such as Teams is using it)."""
+    global _cascade
+    try:
+        import cv2
+    except ImportError:
+        return None
+    cap = cv2.VideoCapture(int(cfg.get("presence.camera_index", 0)), cv2.CAP_DSHOW)
+    try:
+        if not cap.isOpened():
+            return None
+        frame = None
+        for _ in range(5):                       # the first frames are dark while exposure settles
+            ok, f = cap.read()
+            if ok:
+                frame = f
+        if frame is None:
+            return None
+    finally:
+        cap.release()
+    if _cascade is None:
+        _cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    gray = cv2.equalizeHist(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+    return len(_cascade.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))) > 0
+
+
+def _idle() -> float:
+    from .tools.teams import _idle_seconds
+    return _idle_seconds()
+
+
+# ---------- coming back ----------
+
+def _short(task: str) -> str:
+    """'Voice in Action – Practice & Peer Feedback Forum (Leading ...)' -> 'Voice in Action'."""
+    t = re.split(r"\s+[–—-]\s+|\s*\(", task)[0].strip()
+    return t if len(t) <= 40 else " ".join(t.split()[:5])
+
+
+def _and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def welcome(minutes_away: float) -> str:
+    now = dt.datetime.now()
+    name = str(cfg.get("assistant.call_me", "") or "").strip()
+    part = "morning" if now.hour < 12 else "afternoon" if now.hour < 17 else "evening"
+    first_today = dt.date.fromtimestamp(_state["greeted"] or 0) != now.date()
+    n = f", {name}" if name else ""
+    if minutes_away >= 120 and 16 <= now.hour < 23:      # back after a day out
+        hello = f"Welcome back{n}. How was your day?"
+    elif first_today or minutes_away > 180:
+        hello = f"Good {part}{n}."
+    else:
+        import random
+        hello = random.choice([f"Welcome back{n}.", f"There you are{n}.", f"Hey{n}, welcome back."])
+    items: list[str] = []
+    try:                                         # the next class, from the cached timetable and Teams
+        from . import upes
+        from .tools import teams
+        hhmm = now.strftime("%H:%M")
+        nxt = [(c["start"], f"{c['course'].split(',')[0]} at {_spoken_time(c['start'])}"
+                + (f" in {c['room']}" if c.get("room") else ""))
+               for c in upes.classes(now.date(), cached_only=True) if not c["cancelled"] and c["start"] > hhmm]
+        nxt += [(m["start"], f"{m['title']} on Teams at {_spoken_time(m['start'])}")
+                for m in teams._meetings_today() if not m["canceled"] and m["start"] > hhmm]
+        if nxt:
+            items.append(min(nxt)[1])
+    except Exception:
+        pass
+    try:
+        from .tools import todo
+        today = now.date().isoformat()
+        late = [_short(t["text"]) for t in todo.load() if not t["done"] and t.get("due") and t["due"][:10] < today]
+        due = [_short(t["text"]) for t in todo.load() if not t["done"] and (t.get("due") or "")[:10] == today]
+        if late:
+            items.append(f"{_and(late[:2])} {'is' if len(late) == 1 else 'are'} still overdue")
+        elif due:
+            items.append(f"{_and(due[:2])} {'is' if len(due) == 1 else 'are'} due today")
+    except Exception:
+        pass
+    try:
+        import psutil
+        b = psutil.sensors_battery()
+        if b and not b.power_plugged and b.percent <= 30:
+            items.append(f"you're on {int(b.percent)} percent")
+    except Exception:
+        pass
+    with _lock:
+        held, _state["held"] = _state["held"], []
+    who = []
+    for line in held:
+        m = re.search(r"message from (.+?)\.?$", line)
+        if m and m.group(1) not in who:
+            who.append(m.group(1))
+    if who:
+        items.append(f"{_and(who[:3])} messaged you")
+    if not items:
+        return hello
+    return hello + " " + _and(items)[0].upper() + _and(items)[1:] + "."
+
+
+def _spoken_time(hhmm: str) -> str:
+    h, m = map(int, hhmm.split(":"))
+    return f"{(h - 1) % 12 + 1}" + (f":{m:02d}" if m else "")
+
+
+def greet(reason: str = "", minutes_away: float = 30) -> None:
+    """Called when you're back (or the laptop opens). At most once in 20 minutes."""
+    from .config import DATA
+    from .store import load_json, save_json
+    _state["greeted"] = max(_state["greeted"], load_json(DATA / "presence.json", {}).get("greeted", 0))
+    if not cfg.get("presence.greet", True) or time.time() - _state["greeted"] < 1200:
+        return                                   # (kept on disk: every restart greeted again)
+    try:
+        from . import gaming
+        if gaming.on():
+            return
+    except Exception:
+        pass
+    text = welcome(minutes_away)
+    _state["greeted"] = time.time()
+    save_json(DATA / "presence.json", {"greeted": _state["greeted"]})
+    interject(text)
+
+
+def _back(minutes: float) -> None:
+    from . import live, winapi
+    live.note(f"you're back (away {minutes:.0f} min)")
+    if _state["paused_music"]:
+        _state["paused_music"] = False
+        try:
+            winapi.media_key("playpause")
+        except Exception:
+            pass
+    if minutes >= float(cfg.get("presence.greet_after_minutes", 10)):
+        greet("back", minutes)
+
+
+def _gone(since: float, saw: bool) -> None:
+    from . import live, winapi
+    live.note("you've stepped away")
+    # Only on the camera's word: with idle time alone, a film you're watching
+    # from the bed would be paused.
+    if saw and cfg.get("presence.pause_music", True):
+        try:
+            from .tools.system import _media_status
+            if _media_status() == "playing" and winapi.media_key("playpause"):
+                _state["paused_music"] = True
+        except Exception:
+            pass
+
+
+def _tick() -> None:
+    idle = _idle()
+    camera = bool(cfg.get("presence.camera", True))
+    away_after = float(cfg.get("presence.away_after_minutes", 3)) * 60
+    if _state["here"]:
+        if idle < away_after:
+            return
+        if camera and time.time() - _state["last_look"] >= 30:
+            _state["last_look"] = time.time()
+            seen = face_seen()
+            if seen is None:                     # no camera / in use: fall back to idle time
+                if idle >= 3 * away_after:
+                    _state.update(here=False, away_since=time.time() - idle, misses=0)
+                    _gone(_state["away_since"], saw=False)
+                return
+            _state["misses"] = 0 if seen else _state["misses"] + 1
+            if _state["misses"] >= 2:            # two looks, a minute apart: not just glancing away
+                _state.update(here=False, away_since=time.time() - idle, misses=0)
+                _gone(_state["away_since"], saw=True)
+        elif not camera and idle >= 3 * away_after:
+            _state.update(here=False, away_since=time.time() - idle)
+            _gone(_state["away_since"], saw=False)
+        return
+    back = idle < 15
+    if not back and camera and time.time() - _state["last_look"] >= 30:
+        _state["last_look"] = time.time()
+        back = face_seen() is True
+    if back:
+        _state["here"] = True
+        _back((time.time() - _state["away_since"]) / 60)
+
+
+def start() -> None:
+    if not cfg.get("presence.enabled", True):
+        return
+
+    def loop():
+        while True:
+            try:
+                _tick()
+            except Exception:
+                pass
+            time.sleep(10)
+    threading.Thread(target=loop, daemon=True, name="athena-presence").start()
+
+
+if __name__ == "__main__":
+    assert _short("Voice in Action – Practice & Peer Feedback Forum (Leading Conversations)") == "Voice in Action"
+    assert _and(["a", "b", "c"]) == "a, b and c"
+    assert _spoken_time("14:00") == "2" and _spoken_time("09:30") == "9:30"
+    print(welcome(30))
+    print("face:", face_seen())

@@ -195,7 +195,58 @@ class LLM:
 
     # ---------- generation ----------
 
-    def chat(self, messages: list[dict], tools: list[dict] | None = None,
+    def _raw(self) -> bool:
+        """Models fine-tuned on the Hugging Face template get that exact prompt
+        through /api/generate (qwen_prompt.py says why)."""
+        return any(str(self.model).startswith(p) for p in (cfg.get("llm.raw_models", ["athena"]) or []))
+
+    def _generate(self, messages, tools, options, stream=False):
+        from . import qwen_prompt
+        opts = dict(options, stop=["<|im_end|>", "<|endoftext|>"])
+        return self.client.generate(model=self.model, prompt=qwen_prompt.render(messages, tools), raw=True,
+                                    stream=stream, keep_alive=cfg.get("llm.keep_alive", "30m"), options=opts)
+
+    @staticmethod
+    def _as_message(text: str):
+        from types import SimpleNamespace
+        from . import qwen_prompt
+        prose, calls = qwen_prompt.parse(text)
+        return SimpleNamespace(role="assistant", content=prose, tool_calls=[
+            SimpleNamespace(function=SimpleNamespace(name=c["function"]["name"], arguments=c["function"]["arguments"]))
+            for c in calls] or None)
+
+    # Ollama going away mid-request - an auto-update restarting it, or heal_gpu
+    # restarting it off the CPU - came back to the user as a blank reply
+    # (3 Oct 2026). Wait for the server and ask once more.
+    _DROPPED = ("ConnectError", "ReadError", "RemoteProtocolError", "ConnectionResetError", "ConnectTimeout")
+
+    def _retry(self, call):
+        try:
+            return call()
+        except Exception as e:
+            if type(e).__name__ not in self._DROPPED:
+                raise
+            self.ensure_server(wait_seconds=60)
+            return call()
+
+    def chat(self, *args, **kwargs) -> Any:
+        return self._retry(lambda: self._chat(*args, **kwargs))
+
+    def chat_stream(self, messages, tools, on_sentence, stop=lambda: False, max_tokens=None) -> Any:
+        said = []                       # retry only if nothing has been spoken yet
+
+        def speak(s):
+            said.append(s)
+            on_sentence(s)
+        try:
+            return self._chat_stream(messages, tools, speak, stop, max_tokens)
+        except Exception as e:
+            if type(e).__name__ not in self._DROPPED or said:
+                raise
+            self.ensure_server(wait_seconds=60)
+            return self._chat_stream(messages, tools, speak, stop, max_tokens)
+
+    def _chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None,
              context: int | None = None,
              think: bool | None = None,
@@ -227,6 +278,9 @@ class LLM:
         # for minutes. Study passes its own, larger limit.
         options["num_predict"] = int(max_tokens or cfg.get("llm.max_tokens", 600))
 
+        if self._raw():
+            return self._as_message(self._generate(messages, tools, options).response or "")
+
         extra: dict[str, Any] = {}
         if think is not None:
             extra["think"] = think
@@ -254,7 +308,7 @@ class LLM:
             )
         return resp.message
 
-    def chat_stream(self, messages: list[dict], tools: list[dict] | None,
+    def _chat_stream(self, messages: list[dict], tools: list[dict] | None,
                     on_sentence, stop=lambda: False,
                     max_tokens: int | None = None) -> Any:
         """chat(), streamed: each finished sentence of the reply goes to
@@ -268,20 +322,26 @@ class LLM:
         from types import SimpleNamespace
         content, calls, buf = [], [], ""
         quiet = False
-        for chunk in self.client.chat(
+        options = {"temperature": cfg.get("llm.temperature", 0.3),
+                   "num_ctx": cfg.get("llm.context_window", 8192),
+                   "num_predict": int(max_tokens or cfg.get("llm.max_tokens", 600))}
+        raw = self._raw()
+        source = (self._generate(messages, tools, options, stream=True) if raw else self.client.chat(
             model=self.model, messages=messages, tools=tools or None, stream=True,
-            keep_alive=cfg.get("llm.keep_alive", "30m"),
-            options={"temperature": cfg.get("llm.temperature", 0.3),
-                     "num_ctx": cfg.get("llm.context_window", 8192),
-                     "num_predict": int(max_tokens or cfg.get("llm.max_tokens", 600))},
-        ):
+            keep_alive=cfg.get("llm.keep_alive", "30m"), options=options))
+        for chunk in source:
             if stop():
                 break                       # interrupted: stop generating now
-            m = chunk.message
-            if getattr(m, "tool_calls", None):
-                calls += list(m.tool_calls)
-                quiet = True
-            piece = m.content or ""
+            if raw:
+                piece = chunk.response or ""
+                if "<tool_call>" in "".join(content[-3:]) + piece or (buf + piece).lstrip().startswith("<"):
+                    quiet = True            # a tool call is being written: never spoken
+            else:
+                m = chunk.message
+                if getattr(m, "tool_calls", None):
+                    calls += list(m.tool_calls)
+                    quiet = True
+                piece = m.content or ""
             if not piece:
                 continue
             content.append(piece)
@@ -301,6 +361,8 @@ class LLM:
                 buf = buf[end:]
         if buf.strip() and not quiet and not stop():
             on_sentence(buf.strip())
+        if raw:
+            return self._as_message("".join(content))
         return SimpleNamespace(content="".join(content), tool_calls=calls or None)
 
     def stream(self, messages: list[dict]) -> Iterator[str]:

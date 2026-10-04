@@ -599,6 +599,27 @@ body.dash:not(.pageview) #hxTop{display:grid;grid-template-columns:1fr auto 1fr}
 .nmute{font:600 9px var(--mono);letter-spacing:1.5px;padding:6px 9px;min-height:28px;border:1px solid rgba(98,245,192,.4);background:rgba(98,245,192,.06);color:#62f5c0;
   clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px)}
 .nmute.off{border-color:rgba(255,110,140,.45);background:rgba(255,110,140,.08);color:#ff8aa5}
+.nxa{font:11px var(--mono);margin-top:6px;letter-spacing:.5px}
+.trk .pct{font:10px var(--mono);font-style:normal;margin-left:8px;padding:1px 6px;border:1px solid currentColor;border-radius:3px}
+.atth{margin:16px 0 8px}
+.att{display:grid;grid-template-columns:minmax(0,1fr) 70px 38px;gap:8px;align-items:center;font-size:12px;padding:2px 0}
+.att span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#d6d0ee}
+.att u{height:4px;background:rgba(190,170,255,.12);text-decoration:none;display:block;position:relative}
+.att u i{display:block;height:100%}.att u::after{content:"";position:absolute;left:75%;top:-2px;bottom:-2px;width:1px;background:#7d769c}
+.att b{font:11px var(--mono);text-align:right;font-weight:400}
+#alarmBox{position:fixed;inset:0;z-index:60;display:grid;place-items:center;background:rgba(20,4,12,.82);backdrop-filter:blur(6px);
+  animation:alarmPulse 1s ease-in-out infinite alternate}
+#alarmBox[hidden]{display:none}
+@keyframes alarmPulse{from{box-shadow:inset 0 0 0 0 rgba(255,80,130,.0)}to{box-shadow:inset 0 0 160px 20px rgba(255,80,130,.45)}}
+.alarmIn{text-align:center;padding:28px;max-width:min(640px,92vw)}
+.alarmT{font:700 14px var(--mono);letter-spacing:8px;color:#ff7aa5}
+#alarmText{font:800 clamp(26px,4vw,44px)/1.15 var(--head);color:#fff;margin:14px 0 26px}
+.alarmBtns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.alarmBtns button{min-height:56px;padding:0 30px;border-radius:999px;font:700 16px var(--head);letter-spacing:3px;border:0}
+#alarmStop{background:#ff6b8a;color:#1a0610}#alarmSnooze{background:none;border:1px solid #ffb3c6 !important;color:#ffd1dd}
+@media (prefers-reduced-motion:reduce){#alarmBox{animation:none}}
+.act{display:grid;grid-template-columns:42px minmax(0,1fr);gap:8px;font-size:12.5px;padding:3px 0;color:#d6d0ee}
+.act time{font:10px var(--mono);color:#7d769c;padding-top:2px}.act span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .msg{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:center;padding:4px 0}
 .msg i{width:28px;height:28px;display:grid;place-items:center;font:700 12px 'Chakra Petch',var(--head);font-style:normal;
   clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:currentColor}
@@ -650,7 +671,7 @@ body.dash:not(.pageview) #dial{display:block;position:absolute;left:50%;top:50%;
 #dial b{position:absolute;left:50%;top:24px;transform:translateX(-50%);font:10px var(--mono);letter-spacing:4px;color:var(--facec,#c4a8ff);white-space:nowrap}
 body.dash:not(.pageview) .core .orbwrap{flex:1 1 auto !important;min-height:300px}
 body.dash:not(.pageview) .orbwrap.hasface #faceOrb{inset:16% 0 !important;height:68% !important}
-body.dash:not(.pageview) .core #say,body.dash:not(.pageview) #faceCaps,body.dash:not(.pageview) .orbwrap .title,
+body.dash:not(.pageview) .core #say,body.dash:not(.pageview) #faceCaps,body.dash:not(.pageview) .orbwrap .title{display:none !important}
 
 body.dash:not(.pageview) #tx{display:grid;gap:5px;text-align:center;padding:4px 6px 2px;width:100%;max-width:640px;margin:0 auto}
 body.dash:not(.pageview) #tx p{grid-template-columns:none;display:block}
@@ -735,9 +756,10 @@ body.dash:not(.pageview) #f input::placeholder{font-family:var(--mono);letter-sp
   </div>
   <div class="hx hxcol" id="hxL">
     <section class="hp hot"><div class="hh">Next up<span id="nxSrc">TODAY</span></div>
-      <div class="nxw" id="nxWhat">Nothing scheduled</div><div class="nxs" id="nxWhere"></div>
+      <div class="nxw" id="nxWhat">Nothing scheduled</div><div class="nxs" id="nxWhere"></div><div class="nxa" id="nxAtt"></div>
       <div class="nxc" id="nxC" hidden><b id="nxIn">--</b><span>TO GO</span></div></section>
-    <section class="hp grow"><div class="hh">Today<span id="tdLeft"></span></div><div class="trk" id="track"><div class="hempty">Loading…</div></div></section>
+    <section class="hp grow"><div class="hh">Today<span id="tdLeft"></span></div><div class="trk" id="track"><div class="hempty">Loading…</div></div>
+      <div class="hh atth">Attendance<span id="attNote">LIVE · UPES</span></div><div id="atts"></div></section>
     <section class="hp"><div class="hh">Messages<button class="nmute" id="nMute" title="Athena reading out WhatsApp and text messages">READ-OUT --</button></div><div id="msgs"><div class="hempty">Loading…</div></div></section>
   </div>
   <div class="hx hxcol" id="hxR">
@@ -757,6 +779,8 @@ body.dash:not(.pageview) #f input::placeholder{font-family:var(--mono);letter-sp
         <button data-m="next" aria-label="Next"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
         <u><i id="npBar"></i></u></div></section>
     <section class="hp grow"><div class="hh">Deadlines<span>COUNTDOWN</span></div><div id="dues"><div class="hempty">Loading…</div></div></section>
+    <section class="hp"><div class="hh">On her own<button class="nmute" id="autoBtn" title="Pause or resume everything Athena does by herself">AUTO --</button></div>
+      <div id="acts"><div class="hempty">Nothing yet.</div></div></section>
   </div>
 
   <section class="card" style="grid-column:1;grid-row:1">
@@ -868,6 +892,8 @@ body.dash:not(.pageview) #f input::placeholder{font-family:var(--mono);letter-sp
 </footer>
 
 <!-- ======================= overlays ======================= -->
+<div id="alarmBox" hidden><div class="alarmIn"><div class="alarmT">ALARM</div><div id="alarmText"></div>
+  <div class="alarmBtns"><button id="alarmStop">STOP</button><button id="alarmSnooze">SNOOZE 10 MIN</button></div></div></div>
 <div class="veil" id="histVeil"><nav class="drawer" id="drawer">
   <button class="new" id="newChat">+ NEW CONVERSATION</button>
   <h3>RECENT</h3><div id="chatlist"></div></nav></div>
@@ -1049,7 +1075,7 @@ $('focusBtn').onclick=()=>ask('study mode');
 const esc2=s=>esc(String(s==null?'':s));
 let pageName='',pageTimer=null;
 setView('stage');            // the stage is the home screen
-const TITLES={calendar:['CALENDAR','Next 7 days · Google Calendar + UPES timetable'],memory:['MEMORY','What Athena knows about you'],
+const TITLES={calendar:['CALENDAR','Next 7 days · UPES timetable + Google Calendar · live'],memory:['MEMORY','What Athena knows about you'],
   workflows:['WORKFLOWS','Routines and what is playing'],system:['SYSTEM REPORT','Live health of this PC'],
   tasks:['TASKS','What to do today, and what is left'],phone:['CALLS & BOOKINGS','Call through your phone, look places up, book online'],skills:['TOOLS & SKILLS','Everything Athena can do'],store:['RAGAZZA','Your store · orders, money and stock'],brain:['BRAIN','What Athena knows, and how she is built - drag, zoom, hover'],
   models:['MODELS','The language models Athena can use, and which are ready']};
@@ -1062,7 +1088,7 @@ function openPage(name,btn){parkPanels();pageName=name;closeVeils();document.bod
   $('pgTitle').textContent=TITLES[name][0];$('pgNote').textContent=TITLES[name][1];clearInterval(pageTimer);
   if(name==='models'){$('pgBody').innerHTML='';$('pgBody').appendChild($('llmCard'));return}
   $('pgBody').innerHTML='<div class="muted">Loading…</div>';renderPage();
-  pageTimer=setInterval(()=>{if(['workflows','system','phone','store'].includes(pageName))renderPage(true)},name==='workflows'?2000:name==='store'?30000:5000)}
+  pageTimer=setInterval(()=>{if(['workflows','system','phone','store','calendar'].includes(pageName))renderPage(true)},name==='workflows'?2000:name==='store'||name==='calendar'?30000:5000)}
 function closePage(){pageName='';clearInterval(pageTimer);parkPanels();document.body.classList.remove('pageview');
   document.querySelectorAll('aside nav button').forEach(x=>x.classList.toggle('on',x.dataset.view===lastView))}
 $('pgBack').onclick=closePage;
@@ -1457,15 +1483,33 @@ function holo(o){
   const now=new Date(),past=at=>{const [h,m]=at.split(':').map(Number);return h*60+m<now.getHours()*60+now.getMinutes()};
   const items=[...(o.schedule||[]).filter(e=>e.at!=='all day').map(e=>({what:e.what,where:e.where||'',at:e.at,state:e.state})),
     ...(o.reminders||[]).map(r=>({what:r.what,where:'Reminder',at:r.at,state:past(r.at)?'done':'next'}))].sort((a,b)=>a.at<b.at?-1:a.at>b.at?1:0);
+  const att=o.attendance||[];
+  const attOf=n=>{n=(n||'').toLowerCase();return att.find(a=>{const c=a.course.toLowerCase();return c&&(n.includes(c)||c.includes(n))})};
+  const attCol=a=>a.percent<a.threshold?'#ff6b8a':a.percent<a.threshold+5?'#ffb35c':'#62f5c0';
   const next=items.find(e=>e.state==='next'),busyNow=items.find(e=>e.state==='now');
   $('nxWhat').textContent=next?next.what:busyNow?busyNow.what:(o.tomorrow?'Tomorrow: '+o.tomorrow.what:'Nothing scheduled');
   $('nxWhere').textContent=next?((next.where?next.where.toUpperCase()+' · ':'')+next.at):busyNow?'HAPPENING NOW':(o.tomorrow?o.tomorrow.at:'');
   nxAt=null;if(next){const [h,m]=next.at.split(':').map(Number);nxAt=new Date();nxAt.setHours(h,m,0,0)}
   $('nxC').hidden=!next;tickNext();
+  const na=attOf((next||busyNow||{}).what);const nx=$('nxAtt');
+  if(na){nx.style.color=attCol(na);nx.textContent='ATTENDANCE '+na.percent.toFixed(0)+'% · '+(na.need?"DON'T SKIP — "+na.need+' SHORT':'CAN SKIP '+na.can_skip)}else nx.textContent='';
   const t=$('track');t.innerHTML='';
   if(!items.length)t.innerHTML='<div class="hempty">Nothing on today.</div>';
   items.forEach(e=>{const d=document.createElement('div');d.className=e.state;d.innerHTML='<i></i><time></time><b></b>';
-    d.querySelector('time').textContent=e.at+(e.state==='now'?' · NOW':'');d.querySelector('b').textContent=e.what;t.appendChild(d)});
+    d.querySelector('time').textContent=e.at+(e.state==='now'?' · NOW':'');d.querySelector('b').textContent=e.what;
+    const a=attOf(e.what);if(a){const p=document.createElement('em');p.className='pct';p.style.color=attCol(a);p.textContent=a.percent.toFixed(0)+'%';d.querySelector('b').appendChild(p)}
+    t.appendChild(d)});
+  const as=$('atts');as.innerHTML='';
+  if(!att.length)as.innerHTML='<div class="hempty">Say "open the UPES login" to connect.</div>';
+  att.forEach(a=>{const d=document.createElement('div');d.className='att';const c=attCol(a);
+    d.innerHTML='<span></span><u><i></i></u><b></b>';d.querySelector('span').textContent=a.course;
+    const i=d.querySelector('i');i.style.width=Math.min(100,a.percent)+'%';i.style.background=c;
+    const b=d.querySelector('b');b.textContent=a.percent.toFixed(0)+'%';b.style.color=c;
+    d.title=a.need?('needs '+a.need+' more to reach 75%'):('can skip '+a.can_skip);as.appendChild(d)});
+  const age=o.upes_read?Math.round((Date.now()/1000-o.upes_read)/60):0;
+  $('attNote').textContent=o.upes_signed_out?'A DAY OLD · SAY "OPEN UPES"':
+    att.filter(a=>a.need).length?att.filter(a=>a.need).length+' BELOW 75%':(age>45?'READ '+(age<120?age+' MIN':Math.round(age/60)+' H')+' AGO':'LIVE · UPES');
+  $('attNote').style.color=o.upes_signed_out?'#ff8aa5':'';
   $('tdLeft').textContent=items.length?items.filter(e=>e.state!=='done').length+' LEFT':'';
   // who wrote - never what; the backend sends no message text
   const COL={WhatsApp:'#62f5c0',SMS:'#b9a2ff',Gmail:'#ff7ad1'};
@@ -1477,6 +1521,12 @@ function holo(o){
     d.querySelector('span').textContent=((m.who||'').match(/[\p{L}\d]/u)||['·'])[0].toUpperCase();
     d.querySelector('b').textContent=m.who;d.querySelector('small').textContent=m.app.toUpperCase();
     d.querySelector('em').textContent=m.n+(m.app==='Gmail'?' UNREAD':m.n>1?' MSGS':' MSG');box.appendChild(d)});
+  const ac=$('acts');ac.innerHTML='';const al=o.activity||[];
+  if(!al.length)ac.innerHTML='<div class="hempty">Nothing yet.</div>';
+  al.slice(0,5).forEach(a=>{const d=document.createElement('div');d.className='act';d.innerHTML='<time></time><span></span>';
+    d.querySelector('time').textContent=new Date(a.t*1000).toTimeString().slice(0,5);d.querySelector('span').textContent=a.what;
+    d.title=a.what;ac.appendChild(d)});
+  const ab=$('autoBtn');ab.textContent=o.auto_paused?'AUTO PAUSED':'AUTO ON';ab.classList.toggle('off',!!o.auto_paused);ab.dataset.p=o.auto_paused?'1':'';
   const du=$('dues');du.innerHTML='';const dl=o.deadlines||[];
   if(!dl.length)du.innerHTML='<div class="hempty">Nothing due. Say "check my deadlines".</div>';
   dl.forEach(x=>{const col=x.days<=1?'#ff7ad1':x.days<=4?'#ffb35c':'#b9a2ff';
@@ -1505,6 +1555,14 @@ function showMute(m){const b=$('nMute');b.textContent=m?'READ-OUT OFF':'READ-OUT
 async function loadMute(){try{showMute((await api('/view/notify')).muted)}catch(e){}}
 $('nMute').onclick=async()=>{const want=!$('nMute').dataset.m;try{showMute((await api('/view/notify',{method:'POST',body:JSON.stringify({muted:want})})).muted)}catch(e){}};
 loadMute();
+// Alarm (alarm.py): a full-screen STOP while it rings, on the PC and the phone.
+async function pollAlarm(){if(document.hidden)return;try{const r=(await api('/view/alarm')).ringing;const b=$('alarmBox');
+  b.hidden=!r;if(r)$('alarmText').textContent=r.text}catch(e){}}
+setInterval(pollAlarm,2000);pollAlarm();
+$('alarmStop').onclick=async()=>{try{await api('/view/alarm',{method:'POST',body:JSON.stringify({action:'stop'})})}catch(e){}$('alarmBox').hidden=true};
+$('alarmSnooze').onclick=async()=>{try{await api('/view/alarm',{method:'POST',body:JSON.stringify({action:'snooze',minutes:10})})}catch(e){}$('alarmBox').hidden=true};
+$('autoBtn').onclick=async()=>{const pause=!$('autoBtn').dataset.p;try{const j=await api('/view/automation',{method:'POST',body:JSON.stringify({pause})});
+  const ab=$('autoBtn');ab.textContent=j.paused?'AUTO PAUSED':'AUTO ON';ab.classList.toggle('off',!!j.paused);ab.dataset.p=j.paused?'1':''}catch(e){}};
 
 // ---------- clock ----------
 function tick(){const d=new Date();$('clock').textContent=d.toTimeString().slice(0,8);$('stClock').textContent=d.toTimeString().slice(0,5);
@@ -1532,10 +1590,10 @@ async function loadChats(){const l=$('chatlist');
       r.append(t,w,d);l.appendChild(r)});
     if(!(j.chats||[]).length)l.textContent='Nothing saved yet.'}
   catch(e){l.textContent='Cannot reach the PC.'}}
-async function openChat(id){
+async function openChat(id,show=true){
   try{const j=await api('/chats/'+id);say.innerHTML='';document.body.classList.remove('chatting');
     (j.messages||[]).forEach(m=>m.role==='user'?line(m.text,'me'):answer(m.text));
-    closeVeils();if(id!=='new')setView('chat')}   // the list is hidden on the stage and Command Centre
+    closeVeils();if(id!=='new'&&show)setView('chat')}   // the list is hidden on the stage and Command Centre
   catch(e){answer('Could not open that conversation.',true)}}
 const openHist=()=>{$('histVeil').classList.add('open');loadChats()};
 $('histBtn').onclick=openHist;$('histBtn2').onclick=openHist;
@@ -1565,9 +1623,9 @@ $('model').onchange=async()=>{$('modelSaid').textContent='testing…';
 // ---------- start ----------
 (async()=>{
   if(!token()){answer('Open this page from the link Athena prints on the PC - it carries your access token.',true);return}
-  setView('stage');
+  setView(p.get('home')==='dash'?'dash':'stage');   // the PC window opens on the Command Centre
   await primeLive();
-  openChat('current');
+  openChat('current',false);    // load it, but stay on the home screen
   pollStatus();setInterval(pollStatus,2500);
   pollLive();setInterval(pollLive,300);
   pollOverview();setInterval(pollOverview,20000);

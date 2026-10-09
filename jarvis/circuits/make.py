@@ -267,7 +267,7 @@ def sallen_key(name, low=True):
         # unity-gain: output to the inverting input
         d += elm.Line().at(op.in1).left(0.5)
         d += elm.Line().up(1.0)
-        d += (t := elm.Line().tox(op.out[0] + 0.6))
+        d += elm.Line().tox(op.out[0] + 0.6)
         d += elm.Line().toy(op.out); d += elm.Dot()
         d += elm.Line().at(op.out).right(1.2); d += elm.Dot(open=True).label("Vout", "right")
         # the feedback element from the middle node to the output

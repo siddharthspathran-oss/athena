@@ -270,7 +270,6 @@ def as_of(t: float) -> str:
 
 
 def attendance(force: bool = False, cached_only: bool = False) -> list[dict]:
-    from .store import load_json
     rows = []
     for a in (_cached() if cached_only else fetch(force) if force else _saved()).get("attendance") or []:
         total, present = int(a.get("TotalSessions") or 0), int(a.get("PresentCount") or 0)
@@ -295,7 +294,6 @@ def classes(day=None, cached_only: bool = False) -> list[dict]:
     """The day's classes from the semester timetable (SlotDate is "2026-Oct-03").
     cached_only: never open the portal (the HUD must not wait on it)."""
     import datetime as dt
-    from .store import load_json
     day = day or dt.date.today()
     out = []
     for s in (_cached() if cached_only else _saved()).get("timetable") or []:
@@ -314,7 +312,6 @@ def classes(day=None, cached_only: bool = False) -> list[dict]:
 
 def _slot_dates() -> list:
     import datetime as dt
-    from .store import load_json
     out = []
     for s in _cached().get("timetable") or []:
         try:
@@ -474,6 +471,60 @@ def lms_sync_tasks() -> int:
     return added
 
 
+FILES_SEEN = DATA / "lms_files.json"
+
+
+def lms_download_files() -> list[str]:
+    """Course files posted on LMS (slides, notes, course plans) into
+    Documents/LMS/<course>/ - only ones not fetched before - and into document
+    search, so "search my documents for Laplace" reaches the lecture slides
+    (9 Oct 2026). Read with your own LMS session; nothing is uploaded."""
+    import urllib.parse
+    from playwright.sync_api import sync_playwright
+    from .config import cfg, expand
+    from .store import load_json, save_json
+    folder = expand(cfg.get("lms.files_dir", "~/OneDrive/Documents/LMS"))
+    seen: dict[str, str] = load_json(FILES_SEEN, {})
+    new: list[str] = []
+    safe = lambda s: " ".join(re.sub(r'[\\/:*?"<>|]+', " ", s).split())[:80]      # noqa: E731
+    with sync_playwright() as p:
+        ctx, live = _browser(p)
+        page = ctx.new_page()
+        try:
+            _lms_ready(page)
+            _keep_session(ctx)
+            for course, cid in lms_fetch().get("course_ids", {}).items():
+                _goto(page, LMS + f"/course/view.php?id={cid}")
+                hrefs = set(page.eval_on_selector_all("a[href*='/mod/resource/view.php']",
+                                                      "els => els.map(e => e.href.split('#')[0])"))
+                for href in sorted(hrefs - set(seen)):
+                    r = ctx.request.get(href + "&redirect=1", timeout=120000)
+                    kind = r.headers.get("content-type", "")
+                    if not r.ok or "text/html" in kind:
+                        seen[href] = "not a file"        # a page, not a download
+                        continue
+                    body = r.body()
+                    if len(body) > 50 * 1024 * 1024:
+                        seen[href] = "too big"
+                        continue
+                    name = safe(urllib.parse.unquote(r.url.split("?")[0].rsplit("/", 1)[-1])) or f"file {len(seen)}"
+                    d = folder / safe(course)
+                    d.mkdir(parents=True, exist_ok=True)
+                    (d / name).write_bytes(body)
+                    seen[href] = str(d / name)
+                    new.append(f"{name} ({course})")
+                    save_json(FILES_SEEN, seen)          # each one kept, should a later one fail
+        finally:
+            page.close()
+            if not live:
+                ctx.close()
+    save_json(FILES_SEEN, seen)
+    if new:
+        from .tools.knowledge import index_documents
+        index_documents(str(folder))
+    return new
+
+
 # ---------- what you can ask ----------
 from .registry import tool  # noqa: E402
 
@@ -566,6 +617,20 @@ def upes_classes(day: str = "today") -> str:
     if not cs:
         return f"No classes {day}."
     return f"{day.capitalize()}: " + "; ".join(f"{c['start']} {c['course']} in {c['room']}" for c in cs) + "."
+
+
+@tool(tags=["study"], timeout=600)
+def lms_files() -> str:
+    """Fetch new course files (slides, notes, practice sets) from UPES LMS into
+    Documents/LMS and make them searchable. Use for "get my LMS files",
+    "any new course material?", "download my course files"."""
+    try:
+        got = lms_download_files()
+    except Exception as e:
+        return _signin_help(e)
+    if not got:
+        return "No new course files on LMS. Everything is in Documents\\LMS."
+    return f"{len(got)} new on LMS, saved in Documents\\LMS and searchable: " + "; ".join(got[:8]) + "."
 
 
 @tool(tags=["study"], timeout=180)
@@ -732,6 +797,15 @@ def start() -> None:
                     lms_sync_tasks()
                 except Exception:
                     pass
+            if time.time() - load_json(FILES_SEEN, {}).get("_t", 0) > 86400:    # new course files, daily
+                try:
+                    got = lms_download_files()
+                    save_json(FILES_SEEN, {**load_json(FILES_SEEN, {}), "_t": time.time()})
+                    if got:
+                        from . import rules
+                        rules.log("new LMS files: " + ", ".join(got[:5]), "lms")
+                except Exception:
+                    pass
             time.sleep(900)
     threading.Thread(target=loop, daemon=True, name="athena-upes").start()
 
@@ -751,7 +825,6 @@ def wait_signed_in(minutes: int = 20) -> bool:
 
 
 if __name__ == "__main__":
-    import re
     cmd = (sys.argv[1:] or ["signin"])[0]
     if cmd == "signin":
         signin_and_discover()

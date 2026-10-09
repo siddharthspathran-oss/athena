@@ -74,6 +74,14 @@ def state(name: str) -> None:
         _write()
 
 
+def set_value(key: str, value) -> None:
+    """A small value for the HUD, e.g. core_scale from the hand gestures."""
+    with _lock:
+        if _state.get(key) != value:
+            _state[key] = value
+            _write()
+
+
 def note(line: str) -> None:
     with _lock:
         _note(line)

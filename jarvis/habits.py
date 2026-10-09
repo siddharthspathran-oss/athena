@@ -113,7 +113,6 @@ def start(speak) -> None:
 
 
 if __name__ == "__main__":
-    import os
     import tempfile
     from pathlib import Path
     tmp = Path(tempfile.mkdtemp()) / "h.jsonl"

@@ -260,9 +260,6 @@ def _spans(markdown: str) -> list[tuple[int, int, str, bool]]:
     return out
 
 
-def _segments(markdown: str) -> list[str]:
-    """Every maths span in the answer, contents only."""
-    return [body for _s, _e, body, _d in _spans(markdown)]
 
 
 # Where one statement ends and the next begins inside a single maths span:

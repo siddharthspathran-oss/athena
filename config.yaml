@@ -72,6 +72,17 @@ safety:
   # and protected_paths below, are the only limits left on what a spoken
   # command can reach.
   confirm_destructive: false
+  # Risk tiers (9 Oct 2026), on top of the switch above - see Agent._needs_confirm:
+  #   critical: these tools ask every time, however they were asked for
+  ask_first:
+    - run_powershell
+    - delete_file
+  #   high: after Athena has read a web page, an email, a file or another
+  #   app's screen, actions that reach outside (messages, calls, files,
+  #   commands, new rules or memories) ask first for this many minutes -
+  #   that text may hide instructions aimed at her. Messages and calls to
+  #   someone not in your contacts always ask.
+  untrusted_minutes: 10
   # Tools with these tags ask first even though confirm_destructive is off.
   # "store" = changes to the RAGAZZA website (stock, prices, orders).
   always_confirm_tags:
@@ -97,11 +108,18 @@ knowledge:
   # Folders indexed for "ask my documents" (RAG). Add your own.
   sources:
     - "~/Documents"
+    - "~/OneDrive/Documents"          # your real Documents (OneDrive); includes the Athena Vault
   # File types to index
-  extensions: [".txt", ".md", ".pdf", ".docx"]
+  extensions: [".txt", ".md", ".pdf", ".docx", ".pptx"]
   chunk_size: 1000
   chunk_overlap: 150
   top_k: 5
+
+obsidian:
+  # Your Obsidian vault: study answers go to Study/, the evening summary to
+  # Daily/, and notes you write there are searchable ("search my notes for ...").
+  vault: "~/OneDrive/Documents/Athena Vault"
+  index_minutes: 15          # how often edited notes are read again
 
 voice:
   # small.en: measured 26 Sep 2026 on this GPU at ~320 ms a command with word
@@ -150,7 +168,10 @@ voice:
   # auto = GPU when ~2.6 GB of VRAM is free, else CPU (slower, but it never
   # pushes the everyday model off the card).
   clone_device: "auto"
-  follow_up_seconds: 7
+  # After an answer she keeps listening this long without "Athena", for up
+  # to follow_ups turns in a row; saying her name again refills it.
+  follow_up_seconds: 8
+  follow_ups: 3
   # After Athena asks something ("Which one?", "Want me to open it?"), how
   # long she listens for the answer without the wake word.
   reply_seconds: 10
@@ -572,6 +593,12 @@ store:
 
 # Away and back (jarvis/presence.py): caught up when you return, music paused
 # when the camera sees you've left, "sorry to interrupt" when she cuts in.
+brief:
+  # The evening summary: tasks finished today, what's still open, what's due
+  # tomorrow and tomorrow's first class - said once, only if you're at the PC.
+  evening: true
+  evening_at: "21:30"      # tried until two hours later if you're away
+
 presence:
   enabled: true
   # One webcam frame about every 30 s, and only while the keyboard is idle -
@@ -582,6 +609,7 @@ presence:
   greet_after_minutes: 10     # away at least this long for a welcome-back
   greet: true
   pause_music: true
+  music_apps: ["spotify"]     # only these are paused when you leave; videos never are
 
 # Hindi (jarvis/hindi.py): speak to Athena in Hindi or Hinglish and she
 # answers in Hindi. Needs a multilingual Whisper (voice.whisper_model without
@@ -608,3 +636,39 @@ phone:
 alarm:
   sound: "C:/claude code/jarvis/data/sounds/aria_math.wav"
   ring_seconds: 20        # music between the spoken "Reminder: ..." lines
+
+# The PC window's orb: "core" (fiery particle sphere) or "face" (the particle face).
+hud:
+  orb: "core"
+
+modes:
+  # "coding mode", "switch to research mode", "normal mode" (jarvis/modes.py).
+  # prompt: added to the system prompt; tools: tool groups always ready
+  # (registry.TOOL_GROUPS names); say: what Athena answers on switching.
+  # Permissions are the same in every mode.
+  study:
+    prompt: "The user is studying. Explain step by step with the formula and one worked example. Look in their own notes and LMS course files first (search_documents) and say which file an answer came from."
+    tools: [knowledge, schedule]
+    say: "I'll check your notes and course files first."
+  coding:
+    prompt: "The user is programming. Code first, then at most two lines. Exact commands and file names, no filler."
+    tools: [files, shell]
+    say: "Code first, short answers."
+  research:
+    prompt: "Search the web and read the sources before answering. Give three to five points, each with where it came from, and say when sources disagree."
+    tools: [browser, knowledge]
+    say: "I'll read sources before answering."
+  system:
+    prompt: "The user is managing their PC and phone. Do it, then confirm in one short line."
+    tools: [settings, apps, phone_control]
+    say: "PC and phone controls ready."
+
+backup:
+  # Once a day (first time the PC is on after `after`), data/ is zipped into
+  # OneDrive: memory, profile, chats, rules, contacts, tasks, indexes, study
+  # answers, wake recordings. Never: tokens, keys, sign-ins, browser profiles.
+  # "Back up Athena" does it now. Restore: unzip into data/ with Athena stopped.
+  enabled: true
+  dest: "~/OneDrive/Athena Backup"
+  after: "02:00"
+  keep: 7                    # days of zips kept

@@ -15,12 +15,14 @@ study mode:
     - set_volume: 25
     - play_song: "lofi study beats"
     - add_reminder: {text: "Take a 10 minute break", when: "in 50 minutes"}
+    - set_mode: study
 
 study off:
   say: "Study mode off."
   steps:
     - music: pause
     - set_volume: 50
+    - set_mode: general
 
 morning:
   steps:

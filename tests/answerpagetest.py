@@ -15,6 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jarvis import diagram, plot, render        # noqa: E402
+from jarvis import vault                      # noqa: E402
+vault.root = lambda: None                     # test pages are not notes for the real vault
 
 fails = 0
 

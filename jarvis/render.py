@@ -290,6 +290,12 @@ def write_page(question: str, answer: str, open_it: bool = True) -> Path:
     the page as a data URI so the file stands on its own.
     """
     try:
+        from . import checkcode
+        answer = checkcode.strip(answer)      # ```check code is for checking, not for reading
+    except Exception:
+        pass
+    md = answer                              # as written, for the Obsidian note
+    try:
         answer, _drawn = plot.expand(answer)
     except Exception:
         pass        # a failed graph must not cost the whole answer
@@ -316,6 +322,11 @@ def write_page(question: str, answer: str, open_it: bool = True) -> Path:
         "</body></html>"
     )
     path.write_text(page, encoding="utf-8")
+    try:
+        from . import vault                  # the same answer as a note in Obsidian, linked to this page
+        vault.save("Study", question, md + f"\n\n[Full page with graphs]({path.as_uri()})", ["study"])
+    except Exception as e:
+        print(f"[vault: {e}]")
     if open_it and AUTO_OPEN:
         try:
             webbrowser.open(path.as_uri())

@@ -174,8 +174,6 @@ def call_number(who: str) -> str:
 
     who: a phone number, a saved contact, or a business name to look up
     """
-    import os
-
     raw = _clean_who(who)
     if not raw:
         return "Who should I call?"

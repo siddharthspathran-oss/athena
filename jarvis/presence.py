@@ -26,7 +26,7 @@ from .config import cfg
 
 _say = None
 _busy = lambda: False          # noqa: E731
-_state = {"here": True, "away_since": 0.0, "misses": 0, "paused_music": False,
+_state = {"here": True, "away_since": 0.0, "misses": 0, "paused_music": False, "face_at": 0.0,
           "greeted": 0.0, "held": [], "last_look": 0.0, "talk": 0.0}
 _lock = threading.Lock()
 
@@ -92,7 +92,7 @@ def face_seen() -> bool | None:
             ok, f = cap.read()
             if ok:
                 frame = f
-        if frame is None:
+        if frame is None or float(frame.mean()) < 3:     # black: shutter closed / camera-off key
             return None
     finally:
         cap.release()
@@ -220,45 +220,85 @@ def _gone(since: float, saw: bool) -> None:
     live.note("you've stepped away")
     # Only on the camera's word: with idle time alone, a film you're watching
     # from the bed would be paused.
+    # Music apps only (presence.music_apps): the play/pause key goes to
+    # whatever is playing, and a video is never something to pause on a guess.
     if saw and cfg.get("presence.pause_music", True):
         try:
-            from .tools.system import _media_status
-            if _media_status() == "playing" and winapi.media_key("playpause"):
+            from .tools.system import playing_apps
+            apps = playing_apps()
+            if apps and all(_music(a) for a in apps) and winapi.media_key("playpause"):
                 _state["paused_music"] = True
         except Exception:
             pass
 
 
+def _music(app: str) -> bool:
+    return any(m in app.lower() for m in cfg.get("presence.music_apps", ["spotify"]))
+
+
+def _watching() -> bool:
+    """Something other than a music app is playing - a match, a film, a
+    video in the browser. Watching means sitting still: FanCode in Opera was
+    paused every four minutes as "away" and played again a few seconds
+    later (4 Oct 2026)."""
+    if time.time() - _state.get("watch_t", 0) < 60:          # a PowerShell call: once a minute is plenty
+        return _state.get("watching", False)
+    try:
+        from .tools.system import playing_apps
+        _state["watching"] = any(not _music(a) for a in playing_apps())
+    except Exception:
+        _state["watching"] = False
+    _state["watch_t"] = time.time()
+    return _state["watching"]
+
+
 def _tick() -> None:
+    """Away = not seen for a while; back = a real sign of you returning.
+
+    "Seen" is the last key or mouse press OR the last time the camera found
+    your face. Measuring "away" from the last key press alone made an hour of
+    reading or watching count as an hour away, and the camera finding a face it
+    had briefly lost counted as coming back - so "Welcome back" came out every
+    few minutes while you never left (5 Oct 2026, "away 88 min ... 94 min").
+    """
+    now = time.time()
     idle = _idle()
+    seen_at = max(now - idle, _state.get("face_at", 0.0))
     camera = bool(cfg.get("presence.camera", True))
     away_after = float(cfg.get("presence.away_after_minutes", 3)) * 60
     if _state["here"]:
-        if idle < away_after:
+        if now - seen_at < away_after or _watching():
+            _state["misses"] = 0
             return
-        if camera and time.time() - _state["last_look"] >= 30:
-            _state["last_look"] = time.time()
+        if camera and now - _state["last_look"] >= 30:
+            _state["last_look"] = now
             seen = face_seen()
-            if seen is None:                     # no camera / in use: fall back to idle time
+            if seen is None:                     # no camera / in use: idle time alone, and only when long
                 if idle >= 3 * away_after:
-                    _state.update(here=False, away_since=time.time() - idle, misses=0)
-                    _gone(_state["away_since"], saw=False)
+                    _state.update(here=False, away_since=seen_at, misses=0)
+                    _gone(seen_at, saw=False)
                 return
-            _state["misses"] = 0 if seen else _state["misses"] + 1
-            if _state["misses"] >= 2:            # two looks, a minute apart: not just glancing away
-                _state.update(here=False, away_since=time.time() - idle, misses=0)
-                _gone(_state["away_since"], saw=True)
+            if seen:
+                _state.update(face_at=now, misses=0)
+                return
+            _state["misses"] += 1
+            if _state["misses"] >= 3:            # three looks, ~1.5 min: not a glance away
+                _state.update(here=False, away_since=seen_at, misses=0)
+                _gone(seen_at, saw=True)
         elif not camera and idle >= 3 * away_after:
-            _state.update(here=False, away_since=time.time() - idle)
-            _gone(_state["away_since"], saw=False)
+            _state.update(here=False, away_since=seen_at)
+            _gone(seen_at, saw=False)
         return
-    back = idle < 15
-    if not back and camera and time.time() - _state["last_look"] >= 30:
-        _state["last_look"] = time.time()
-        back = face_seen() is True
-    if back:
+    # Back means you did something: a key or the mouse (talking to Athena,
+    # unlocking and opening the lid are handled where they happen). The camera
+    # finding a face again is only noted - it may never have lost you.
+    if camera and now - _state["last_look"] >= 30 and idle >= 15:
+        _state["last_look"] = now
+        if face_seen() is True:
+            _state["face_at"] = now
+    if idle < 15 or now - _state["talk"] < 15:
         _state["here"] = True
-        _back((time.time() - _state["away_since"]) / 60)
+        _back((now - _state["away_since"]) / 60)
 
 
 def start() -> None:

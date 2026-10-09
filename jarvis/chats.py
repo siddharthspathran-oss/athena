@@ -92,12 +92,28 @@ def listing() -> list[dict[str, Any]]:
     return out
 
 
+TRASH = DATA / "chats_trash"     # deleted chats, kept 30 days so a wrong tap can be undone
+
+
 def delete(chat_id: str) -> bool:
+    """Into the recycle folder, not erased: one tap deletes, so Undo must work."""
     p = _path(chat_id)
-    if p.exists():
-        p.unlink()
-        return True
-    return False
+    if not p.exists():
+        return False
+    TRASH.mkdir(exist_ok=True)
+    p.replace(TRASH / p.name)
+    for old in TRASH.glob("*.json"):                       # tidy: older than 30 days
+        if time.time() - old.stat().st_mtime > 30 * 86400:
+            old.unlink(missing_ok=True)
+    return True
+
+
+def restore(chat_id: str) -> bool:
+    t = TRASH / f"{Path(chat_id).name}.json"
+    if not t.exists():
+        return False
+    t.replace(_path(chat_id))
+    return True
 
 
 def when(stamp: float) -> str:

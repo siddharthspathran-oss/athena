@@ -25,8 +25,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from pathlib import Path
+from datetime import date, timedelta
 
 from .config import DATA, cfg
 from .store import StoreError, load_json, save_json

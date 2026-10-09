@@ -154,9 +154,6 @@ def connect() -> Iterator[sqlite3.Connection]:
         con.close()
 
 
-def has_fts() -> bool:
-    with connect():
-        return bool(_ready["fts"])
 
 
 # ---------------------------------------------------------------- chunks
@@ -222,6 +219,13 @@ def clear(kind: str) -> None:
     with connect() as con:
         con.execute("DELETE FROM chunks WHERE kind=?", (kind,))
         con.execute("DELETE FROM progress WHERE kind=?", (kind,))
+    _vec_cache.pop(kind, None)
+
+
+def drop_source(kind: str, source: str) -> None:
+    """Forget one file's chunks - it changed and is about to be read again."""
+    with connect() as con:
+        con.execute("DELETE FROM chunks WHERE kind=? AND source=?", (kind, source))
     _vec_cache.pop(kind, None)
 
 

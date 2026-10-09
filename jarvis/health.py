@@ -71,7 +71,8 @@ def check(fix: bool = True) -> dict:
     # 3. Whisper on the GPU (voice.log says which it settled on).
     try:
         log = (DATA / "voice.log").read_text(encoding="utf-8", errors="replace")
-        if "running on the CPU" in log[-20000:] and "Whisper" in log:
+        log = log.rsplit("===== voice started", 1)[-1]          # this run only - the log is appended now
+        if "running on the CPU" in log and "Whisper" in log:
             report["problems"].append("speech recognition fell back to the CPU - restart voice to fix")
         else:
             report["ok"].append("speech recognition on the GPU")

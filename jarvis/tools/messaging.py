@@ -13,7 +13,6 @@ contact book you build up in data/contacts.json.
 """
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import time
@@ -49,6 +48,17 @@ _RELATIONS = {
 }
 
 
+def _aliases(contacts: dict) -> dict[str, str]:
+    """Every other name for a saved contact -> the name it is saved under:
+    the relations above, and a contact's own "aka" list in contacts.json
+    ("sleepyhead panda" for neha, 4 Oct 2026)."""
+    out = {a: c for c, names in _RELATIONS.items() if c in contacts for a in names}
+    for key, val in contacts.items():
+        for a in (val.get("aka") or []) if isinstance(val, dict) else []:
+            out[a.lower().strip()] = key
+    return out
+
+
 def _find_contact(name: str) -> tuple[str, dict] | None:
     """Resolve a spoken name to a contact, tolerating mishearing."""
     contacts = _load()
@@ -57,9 +67,9 @@ def _find_contact(name: str) -> tuple[str, dict] | None:
     want = name.strip().lower()
 
     # "email mom" should reach maa even though nothing is stored under "mom".
-    for canonical, aliases in _RELATIONS.items():
-        if want in aliases and canonical in contacts:
-            return canonical, contacts[canonical]
+    canonical = _aliases(contacts).get(want)
+    if canonical:
+        return canonical, contacts[canonical]
 
     for key, val in contacts.items():
         if key.lower() == want:
@@ -135,6 +145,28 @@ def add_contact(name: str, phone: str = "", email: str = "") -> str:
 
 
 @tool(tags=TAG)
+def contact_info(name: str) -> str:
+    """What is saved about one contact: the names they go by, and whether a
+    number and an email are saved. Use for "who is X", "what's X's other name".
+
+    name: the contact's name or one of their nicknames
+    """
+    found = _find_contact(name)
+    if found is None:
+        return f"I don't have anyone called {name} in your contacts."
+    key, v = found
+    aka: dict[str, str] = {}                 # "sleepyhead panda" and "sleepy head panda" are one name
+    for a, k in _aliases(_load()).items():
+        if k == key and a not in _RELATIONS.get(key, ()):
+            aka.setdefault(a.replace(" ", ""), a)
+    aka = list(aka.values())
+    known = [w for w, f in (("a number", "phone"), ("an email", "email")) if v.get(f)]
+    return (f"{key.capitalize()}" + (f" is also called {' or '.join(dict.fromkeys(a.title() for a in aka))}" if aka else
+                                     " has no other name saved")
+            + (f", and I have {' and '.join(known)} for them." if known else "."))
+
+
+@tool(tags=TAG)
 def list_contacts() -> str:
     """List everyone in the contact book."""
     contacts = _load()
@@ -187,16 +219,6 @@ def _wa_hwnd() -> int | None:
     return cands[0] if cands else None
 
 
-def _wait_for_whatsapp(seconds: float = 20.0) -> bool:
-    """Wait until the WhatsApp app window exists, then bring it forward."""
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        for _hwnd, title in winapi.list_windows():
-            if _WA_WINDOW.match(title.strip()):
-                winapi.focus_window(title.strip())
-                return True
-        time.sleep(0.5)
-    return False
 
 
 def parse_request(utterance: str) -> tuple[str, str] | None:
@@ -225,7 +247,10 @@ def parse_request(utterance: str) -> tuple[str, str] | None:
     #
     # "message me" and "send me a whatsapp" still work: those name the channel,
     # so they really are asking for a message.
-    if re.match(r"^\W*(?:(?:athena|jarvis)\W+)?(?:(?:can|could|will)\s+you\s+)?(?:please\s+)?(?:tell|send|give)\s+(?:me|myself)\b", low) \
+    # Anywhere in the sentence, not only at its start: "No, please tell me if
+    # I have any alarms" and "similarly tell me what is ..." were both sent
+    # to you as WhatsApp messages (3 Oct 2026).
+    if re.search(r"\b(?:tell|send|give)\s+(?:me|myself)\b", low) \
             and not re.search(r"\b(whats ?app|message|msg|text)\b", low):
         return None     # "send me a joke", "send me the lab manual" are asks, not messages
 
@@ -238,11 +263,8 @@ def parse_request(utterance: str) -> tuple[str, str] | None:
     # rather than trying to parse a name out of the sentence.
     contacts = _load()
     names: list[str] = []
-    for key in contacts:
-        names.append(key.lower())
-        for canonical, aliases in _RELATIONS.items():
-            if canonical == key.lower():
-                names.extend(aliases)
+    names.extend(k.lower() for k in contacts)
+    names.extend(_aliases(contacts))
     hit = next((n for n in sorted(names, key=len, reverse=True)
                 if re.search(r"\b" + re.escape(n) + r"\b", low)), None)
     if not hit:
@@ -256,7 +278,8 @@ def parse_request(utterance: str) -> tuple[str, str] | None:
                 r"\btell(?:ing)?\s+\S+\s+(.+)$",
                 r"\"([^\"]+)\""):
         m = re.search(pat, utterance, re.I)
-        if m:
+        # "send a whatsapp message to neha saying hi" sent "whatsapp" (4 Oct 2026)
+        if m and not re.fullmatch(r"(?:whats ?app|text|sms|quick|short|new|voice)", m.group(1).strip(), re.I):
             body = m.group(1)
             break
     if not body:
@@ -280,10 +303,7 @@ def parse_request(utterance: str) -> tuple[str, str] | None:
 
     # Answer with the name the contact book actually uses, so the step the
     # user sees says "maa" rather than whichever word they happened to say.
-    for canonical, aliases in _RELATIONS.items():
-        if hit in aliases and canonical in contacts:
-            return canonical, body
-    return hit, body
+    return _aliases(contacts).get(hit, hit), body
 
 
 def _chat_header(items) -> str:
@@ -489,7 +509,7 @@ _IN_CALL = ("End call", "Mute", "Unmute", "Turn off camera",
             "Turn on camera", "Speaker", "Hang up")
 
 
-@tool(tags=TAG, destructive=True,
+@tool(tags=TAG, destructive=True, timeout=120,
       brief="Place a WhatsApp voice or video call to a saved contact or a phone number. "
             "It checks the chat is the right person before calling, and stops if it cannot.")
 def whatsapp_call(to: str, video: bool = False) -> str:
@@ -593,10 +613,7 @@ def parse_call_request(utterance: str) -> tuple[str, bool] | None:
     # resolves to the "me" contact and opens a chat. Placing a call needs the
     # name to be one we actually know, exactly.
     contacts = _load()
-    known = set(contacts)
-    for canonical, aliases in _RELATIONS.items():
-        if canonical in contacts:
-            known.update(aliases)
+    known = set(contacts) | set(_aliases(contacts))
     if name not in known:
         return None
 
@@ -621,7 +638,7 @@ def _resolve_recipient(to: str) -> tuple[str, str] | str:
     return number, label
 
 
-@tool(tags=TAG,
+@tool(tags=TAG, timeout=120,   # WhatsApp takes 25-40 s; given up at 45 s it could still send, and then twice
       brief="Send a WhatsApp message to a saved contact or a phone number. "
             "It checks the chat is the right person before typing and sending.")
 def whatsapp_message(to: str, text: str) -> str:
@@ -684,10 +701,22 @@ def whatsapp_message(to: str, text: str) -> str:
     if not winapi.type_text(text):
         return f"Could not type the message into {header}'s chat."
     time.sleep(0.6)
+    # The box's own text, read from the box itself (1 ms, against ~4 s for
+    # each search of WhatsApp's 27,000-element window): what was typed must
+    # be what was asked for before anything is sent.
+    typed = box.value
+    if typed is not None and " ".join(typed.split()) != text:
+        return (f"The message box in {header}'s chat says \"{typed.strip()[:80]}\", not what you asked, "
+                "so I didn't send it - check the chat.")
 
     # Enter sends, the way a person does it. The on-screen Send button is the
     # fallback - finding it by name is what failed and left "press it yourself".
     winapi.press_vk(0x0D)
+    if typed is not None:
+        for _ in range(15):                     # sent = the box has emptied
+            time.sleep(0.2)
+            if not (box.value or "").strip():
+                return f"Sent to {label}: \"{text}\""
     if _appeared(hwnd, text):
         return f"Sent to {label}: \"{text}\""
     send = uia.find_button(hwnd, "Send")

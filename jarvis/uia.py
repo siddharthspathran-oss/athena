@@ -88,6 +88,16 @@ class Element:
         return not bool(self._get("CachedIsOffscreen", "CurrentIsOffscreen", True))
 
     @property
+    def value(self) -> str | None:
+        """The text in a box, read live from this one element - no tree walk.
+        None if the control has no value to read."""
+        try:
+            pat = self._raw.GetCurrentPattern(self._uiac.UIA_ValuePatternId)
+            return pat.QueryInterface(self._uiac.IUIAutomationValuePattern).CurrentValue or ""
+        except Exception:
+            return None
+
+    @property
     def control_type(self) -> int:
         return int(self._get("CachedControlType", "CurrentControlType", 0) or 0)
 
@@ -115,7 +125,6 @@ class Element:
 
 BUTTON = 50000
 EDIT = 50004
-LIST_ITEM = 50007
 DATA_ITEM = 50029   # WhatsApp's chat and search-result rows
 
 

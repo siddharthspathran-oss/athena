@@ -26,7 +26,6 @@ import math
 import threading
 import time
 import tkinter as tk
-from ctypes import wintypes
 
 import numpy as np
 

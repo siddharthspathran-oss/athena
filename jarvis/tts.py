@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -124,14 +125,70 @@ class Kokoro(Engine):
 
     speaks_hindi = True
 
-    def synth(self, text: str, hindi: bool = False) -> np.ndarray:
+    def _style(self, mood: str):
+        """The voice for a mood: your voice, blended a little toward another
+        one for colour (Kokoro styles mix linearly). Cached per mood."""
+        if not hasattr(self, "_styles"):
+            self._styles = {}
+        if mood not in self._styles:
+            style = self.k.get_voice_style(self.voice)
+            for other, w in MOODS.get(mood, MOODS["neutral"])[2].items():
+                try:
+                    style = (1 - w) * style + w * self.k.get_voice_style(other)
+                except Exception:
+                    pass
+            self._styles[mood] = style
+        return self._styles[mood]
+
+    def synth(self, text: str, hindi: bool = False, mood: str = "neutral") -> np.ndarray:
         # bf_/bm_ voices are British: British pronunciation too, not just the accent.
         voice, lang = self.voice, "en-gb" if self.voice[:1] == "b" else "en-us"
         if hindi:
             voice, lang = str(cfg.get("language.hindi_voice", "hf_alpha")), "hi"
-        audio, sr = self.k.create(text, voice=voice, speed=self.speed, lang=lang)
+        if hindi or not cfg.get("voice.expression", True) or mood not in MOODS:
+            mood = "neutral"
+        pace, semitones, _ = MOODS[mood]
+        shift = 2 ** (semitones / 12)
+        # Pitch up by speaking slower, then playing back faster by the same
+        # factor: higher voice, same timing - no extra library needed.
+        audio, sr = self.k.create(text, voice=voice if mood == "neutral" or hindi else self._style(mood),
+                                  speed=self.speed * pace / shift, lang=lang)
         self.sample_rate = sr
-        return np.asarray(audio, dtype=np.float32)
+        audio = np.asarray(audio, dtype=np.float32)
+        if abs(shift - 1) > 1e-3 and len(audio) > 1:
+            n = max(2, int(len(audio) / shift))
+            audio = np.interp(np.linspace(0, len(audio) - 1, n), np.arange(len(audio)), audio).astype(np.float32)
+        return audio
+
+
+# ---------------------------------------------------------------- expression
+# Kokoro has no emotion control, so a mood is pace, pitch and a little of a
+# second voice blended in (asked for 4 Oct 2026: "a questioning tone, a
+# joyful tone"). (pace x, pitch in semitones, {voice: share}).
+MOODS = {
+    "neutral":  (1.00, 0.0, {}),
+    "question": (0.97, 0.6, {}),                        # Kokoro itself lifts the end at a "?"
+    "happy":    (1.05, 1.0, {"bf_isabella": 0.30}),
+    "excited":  (1.09, 1.6, {"bf_isabella": 0.40}),
+    "sorry":    (0.91, -0.8, {"bf_lily": 0.30}),
+}
+_HAPPY = re.compile(r"\b(?:done|great|awesome|nice|welcome back|good (?:morning|afternoon|evening)|congrat\w*|yay|"
+                    r"perfect|you'?re welcome|sure thing|on it|got it|playing|here you go|there you are|well done|"
+                    r"no problem|happy|love|ready|all set|hey)\b", re.I)
+_SORRY = re.compile(r"\b(?:sorry|couldn'?t|can'?t|cannot|unfortunately|failed|missed|overdue|didn'?t|not able|"
+                    r"afraid|problem|error|unable|lost|no luck|signed out|expired)\b", re.I)
+
+
+def mood_of(text: str) -> str:
+    """The mood of one sentence, from its words and its last mark."""
+    t = text.strip()
+    if _SORRY.search(t):
+        return "sorry"
+    if t.endswith("?"):
+        return "question"
+    if t.endswith("!"):
+        return "excited" if _HAPPY.search(t) else "happy"
+    return "happy" if _HAPPY.search(t) else "neutral"
 
 
 def kokoro_installed() -> bool:

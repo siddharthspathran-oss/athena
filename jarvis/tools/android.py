@@ -259,3 +259,68 @@ def phone_media(action: str) -> str:
     return {"pause": "Paused your phone.", "play": "Playing on your phone.", "next": "Next track on your phone.",
             "previous": "Previous track on your phone.", "mute": "Muted your phone."}.get(
         action.strip().lower(), f"Turned your phone's volume {action.split()[-1]}.")
+
+
+# ---------- every connected device at once ("on all devices", 6 Oct 2026) ----------
+
+def _all_serials() -> list[str]:
+    """One adb name per device (the same phone can be listed twice: by Wi-Fi name and by address)."""
+    _serial()                                            # connects whatever can be found
+    out, models = [], set()
+    for line in _run("devices", "-l").stdout.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            model = next((p.split(":", 1)[1] for p in parts if p.startswith("model:")), parts[0])
+            if model not in models:
+                models.add(model)
+                out.append(parts[0])
+    return out
+
+
+def _on(serials: list[str], *args: str) -> None:
+    for s in serials:
+        _run("-s", s, *args)
+
+
+@tool(tags=TAG, timeout=20)
+def phone_devices() -> str:
+    """How many phones and tablets are connected, and which."""
+    serials = _all_serials()
+    if not serials:
+        return "No phones are connected - switch on Wireless debugging on the phone."
+    names = [(_run("-s", s, "shell", "getprop", "ro.product.model").stdout.strip() or s) for s in serials]
+    return f"{len(names)} device{'s' if len(names) > 1 else ''} connected: {', '.join(names)}, plus this PC."
+
+
+@tool(tags=TAG, timeout=40)
+def phone_youtube(query: str, everywhere: bool = False) -> str:
+    """Search YouTube on the phone (or on every connected device).
+
+    query: what to search for
+    everywhere: true for every connected phone and tablet
+    """
+    serials = _all_serials() if everywhere else [s for s in [_serial()] if s]
+    if not serials:
+        return "I can't reach your phone - is Wireless debugging on?"
+    _on(serials, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
+    _on(serials, "shell", "am", "start", "-a", "android.intent.action.SEARCH", "-p", "com.google.android.youtube",
+        "-e", "query", f"'{query}'")
+    where = f"on all {len(serials)} devices" if len(serials) > 1 else "on your phone"
+    return f"Searching YouTube for {query} {where}."
+
+
+@tool(tags=TAG, timeout=40)
+def phone_open_everywhere(name: str) -> str:
+    """Open an app on every connected phone and tablet at once.
+
+    name: the app, e.g. YouTube, Spotify
+    """
+    serials = _all_serials()
+    if not serials:
+        return "No phones are connected."
+    pkg = _package(name)
+    if pkg is None:
+        return f"I couldn't find {name}."
+    _on(serials, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
+    _on(serials, "shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1")
+    return f"Opened {name} on {len(serials)} device{'s' if len(serials) > 1 else ''}."

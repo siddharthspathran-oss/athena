@@ -84,6 +84,18 @@ def _extract(path: Path) -> str:
 
             return _demangle("\n".join(p.text
                                        for p in docx.Document(str(path)).paragraphs))
+        if ext == ".pptx":
+            # Lecture slides from LMS (9 Oct 2026): a .pptx is a zip of XML,
+            # the words are in <a:t>, one slide file each, in slide order.
+            import html
+            import re
+            import zipfile
+            with zipfile.ZipFile(path) as z:
+                slides = sorted((n for n in z.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)),
+                                key=lambda n: int(re.search(r"\d+", n).group()))
+                return "\n\n".join(" ".join(html.unescape(t) for t in re.findall(r"<a:t>([^<]*)</a:t>",
+                                                                               z.read(n).decode("utf-8", "replace")))
+                                   for n in slides)
         return _demangle(path.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         return ""
@@ -147,6 +159,9 @@ def index_documents(folder: str = "", rebuild: bool = False) -> str:
     if rebuild:
         db.clear("doc")
     seen = db.sources("doc")
+    from ..config import DATA
+    from ..store import load_json, save_json
+    mtimes: dict[str, float] = load_json(DATA / "index_mtimes.json", {})
 
     new_chunks: list[str] = []
     new_meta: list[dict] = []
@@ -162,8 +177,14 @@ def index_documents(folder: str = "", rebuild: bool = False) -> str:
                 continue
             if any(part in skip for part in p.parts):
                 continue
+            # Edited since it was read (a note changed in Obsidian): read it
+            # again. Files indexed before mtimes were kept count as unchanged.
+            mtime = p.stat().st_mtime
             if str(p) in seen:
-                continue
+                if mtimes.setdefault(str(p), mtime) == mtime:
+                    continue
+                db.drop_source("doc", str(p))
+            mtimes[str(p)] = mtime
             text = _extract(p)
             if not text.strip():
                 continue
@@ -172,6 +193,7 @@ def index_documents(folder: str = "", rebuild: bool = False) -> str:
                 new_meta.append({"source": str(p), "title": p.name, "pos": i, "text": ch})
             files_done += 1
 
+    save_json(DATA / "index_mtimes.json", mtimes)
     if not new_chunks:
         return f"Nothing new to index. The index holds {db.count('doc')} chunk(s)."
 

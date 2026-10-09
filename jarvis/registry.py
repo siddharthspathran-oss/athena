@@ -31,6 +31,23 @@ _PY_TO_JSON = {
     dict: "object",
 }
 
+# ---------- permissions (9 Oct 2026) ----------
+# The Agent working on a request, per thread; Tool.run asks it before a call.
+# Nobody set (rules you wrote, routines, background jobs): no check.
+_guard = threading.local()
+
+# Text from these was written by someone else - a web page, an email, a file,
+# another app's screen - and may carry instructions aimed at Athena.
+UNTRUSTED = {"web_search", "read_webpage", "browser_read", "browser_open", "inbox_summary", "check_deadlines",
+             "read_file", "search_documents", "find_document", "app_read", "look_at_screen", "read_text", "place_info",
+             "download_file", "open_from_phone"}
+# What such instructions could do harm with: reach people, change files, run
+# code, or plant something that lasts (a rule, a memory).
+OUTWARD = {"whatsapp_message", "whatsapp_call", "call_number", "compose_email", "send_to_phone",
+           "run_powershell", "delete_file", "move_file", "organize_folder", "write_file", "power_action",
+           "add_rule", "add_watch", "remember", "remember_about_me", "add_contact", "remove_contact",
+           "forget", "clear_index", "type_text", "app_type", "app_click"}
+
 
 @dataclass
 class Tool:
@@ -110,6 +127,20 @@ class Tool:
             return f"ERROR in {self.name}: {type(e).__name__}: {e}"
 
     def run(self, **kwargs: Any) -> str:
+        """Every tool call passes here - the router, two commands in one
+        sentence, the model, the planner - so the permission check lives here
+        too. The split path and the planner used to skip the old one entirely
+        (9 Oct 2026 audit)."""
+        g = getattr(_guard, "agent", None)
+        if g is not None and not g.allowed(self, kwargs):
+            return ("ERROR: not done - this needs the user's OK and they have not given it. "
+                    "Do not try again; tell the user.")
+        result = self._run(**kwargs)
+        if g is not None and self.name in UNTRUSTED:
+            g.saw_untrusted()
+        return result
+
+    def _run(self, **kwargs: Any) -> str:
         kwargs, bad = self._check_args(self._coerce(kwargs))
         if bad:
             return bad
@@ -279,7 +310,7 @@ CORE_TOOLS = [
     "open_app", "close_app", "open_file", "open_folder", "find_files",
     "web_search", "read_webpage", "open_url", "get_weather",
     "remember", "recall", "add_reminder", "music", "set_volume",
-    "battery", "system_info", "take_screenshot", "look_at_screen", "explain",
+    "battery", "system_info", "take_screenshot", "look_at_screen", "read_text", "explain",
     "list_skills",
 ]
 
@@ -295,7 +326,7 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
     ("phone_control", re.compile(
         r"\b(?:phone|mobile|galaxy|samsung)" + _W, re.I),
      ["show_phone", "phone_open_app", "find_my_phone", "phone_status", "lock_phone", "phone_screenshot",
-      "phone_media"]),
+      "phone_media", "phone_devices", "phone_youtube", "phone_open_everywhere"]),
     ("media", re.compile(
         r"\b(?:songs?|tracks?|music|spotify|play|playlist|album|artist|pause|skip|"
         r"volume|loud|quiet|mute|listen)" + _W, re.I),
@@ -304,28 +335,28 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
         r"\b(?:automat|rules?\b|whenever|every\s*time|each\s+time|pause|resume|on\s+(?:your|its)\s+own|health|check\s+yourself|retrain|"
         r"standing|keep\s+(?:my|an?\s+eye))" + _W, re.I),
      ["add_rule", "list_rules", "remove_rule", "pause_automation", "resume_automation", "what_did_you_do",
-      "health_check", "retrain_athena", "add_watch"]),
+      "health_check", "retrain_athena", "add_watch", "watch_for_changes", "backup_now"]),
     ("schedule", re.compile(
         r"\b(?:remind|alarm|timer|tasks?|to[- ]?dos?|deadline|assignment|due|schedul|calendar|"
         r"timetable|class|lecture|meeting|teams|brief|today|tomorrow|tonight|week|agenda|exam|revis|primer|prepare|attend|bunk|skip|upes|portal|lms|due|alarm|snooze|"
         r"time|date|day|free|busy|cancel)" + _W, re.I),
      ["list_reminders", "cancel_reminder", "add_task", "complete_task", "list_tasks",
-      "check_deadlines", "daily_brief", "get_datetime", "show_timetable", "set_timetable",
+      "check_deadlines", "daily_brief", "evening_summary", "get_datetime", "show_timetable", "set_timetable",
       "add_calendar_feed", "list_calendar_feeds", "connect_google",
       "teams_meetings", "join_teams_meeting", "plan_my_assignments", "prepare_for_tomorrow", "exam_plan",
-      "my_attendance", "can_i_skip", "upes_classes", "open_upes_login", "lms_deadlines", "open_lms",
+      "my_attendance", "can_i_skip", "upes_classes", "open_upes_login", "lms_deadlines", "lms_files", "quiz_me", "lab_report", "open_lms",
       "stop_alarm", "snooze_alarm"]),
     ("messaging", re.compile(
         r"\b(?:whatsapp|messag|text|msg|call|ring|dial|phone|mobile|contacts?|e-?mail|mail|"
         r"inbox|send|sent|reply|number|tell|hang)" + _W, re.I),
-     ["whatsapp_message", "whatsapp_call", "compose_email", "list_contacts", "add_contact",
+     ["whatsapp_message", "whatsapp_call", "compose_email", "contact_info", "list_contacts", "add_contact",
       "remove_contact", "call_me", "call_number", "end_call", "inbox_summary", "connect_gmail_drafts"]),
     ("apps", re.compile(
         r"\b(?:windows?|minimi[sz]|maximi[sz]|focus|switch|resiz|snap|running|apps?|"
         r"programs?|installed|type|typing|click|button|field|press|clipboard|paste|"
         r"lock|shut|restart|reboot|sleep|power|log\s*off|report|doing|cpu|ram|memory|"
         r"gpu|slow|task\s*manager)" + _W, re.I),
-     ["list_running_apps", "list_installed_apps", "list_windows", "focus_window",
+     ["gesture_mode", "list_running_apps", "list_installed_apps", "list_windows", "focus_window",
       "resize_window", "type_text", "clipboard", "lock_screen", "power_action",
       "app_read", "app_click", "app_type", "system_report"]),
     ("browser", re.compile(
@@ -356,7 +387,7 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
         r"ip\s+address|ping|registry|service|environment)" + _W, re.I),
      ["run_powershell"]),
     ("routines", re.compile(r"\b(?:routines?|workflows?|mode)\b", re.I),
-     ["run_routine", "list_routines"]),
+     ["run_routine", "list_routines", "set_mode"]),
 ]
 
 
@@ -389,8 +420,10 @@ def select(request: str = "", everything: bool = False) -> list[str]:
     names = [n for n in CORE_TOOLS if n in REGISTRY]
     # Anything registered but never placed in a group counts as core.
     names += [n for n in REGISTRY if n not in grouped and n not in names]
-    for _, pattern, members in TOOL_GROUPS:
-        if pattern.search(request or ""):
+    from . import modes
+    keep = set(modes.groups())                  # the mode's own tools are always ready
+    for gname, pattern, members in TOOL_GROUPS:
+        if gname in keep or pattern.search(request or ""):
             names += [n for n in members if n in REGISTRY and n not in names]
     return [n for n in names if _visible(REGISTRY[n], shop)]
 

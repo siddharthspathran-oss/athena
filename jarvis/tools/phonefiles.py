@@ -31,6 +31,23 @@ def _share_one(p: Path) -> str:
             f"Tap Download in Athena's chat on the phone - it works for {minutes} minutes.")
 
 
+def _distinct(found: list) -> list:
+    """One entry per actual file: the same name and size in two folders (the
+    LMS copy and a download of it) is one file, not a choice between two
+    identical names nobody can tell apart (9 Oct 2026). The newest copy wins."""
+    best: dict = {}
+    for e in found:
+        try:
+            st = Path(e.path).stat()
+        except OSError:
+            continue
+        k = (re.sub(r"\s*\(\d+\)(?=\.\w+$)", "", e.name.lower()), st.st_size)   # "x (1).pdf" is a re-download
+        if k not in best or st.st_mtime > Path(best[k].path).stat().st_mtime:
+            best[k] = e
+    keep = set(id(e) for e in best.values())
+    return [e for e in found if id(e) in keep]
+
+
 @tool(tags=TAG, timeout=60)
 def send_to_phone(file: str) -> str:
     """Send a file from this PC to the user's phone. Use for "send me X",
@@ -53,7 +70,7 @@ def send_to_phone(file: str) -> str:
         if p.is_file():
             return _share_one(p)
 
-    found = [e for e in finder.find_all(q, limit=8) if not share.refusal(Path(e.path))]
+    found = _distinct([e for e in finder.find_all(q, limit=8) if not share.refusal(Path(e.path))])
     if len(found) == 1:
         files._remember(Path(found[0].path))
         return _share_one(Path(found[0].path))

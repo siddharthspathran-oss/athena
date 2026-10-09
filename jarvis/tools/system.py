@@ -240,10 +240,26 @@ function Await($t, $rt) {
 $mgr = Await ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
 $out = @()
 foreach ($s in $mgr.GetSessions()) {
-    $out += "$($s.GetPlaybackInfo().PlaybackStatus)"
+    $out += "$($s.GetPlaybackInfo().PlaybackStatus)|$($s.SourceAppUserModelId)"
 }
 Write-Output ($out -join ",")
 """
+
+
+def playing_apps() -> list[str]:
+    """The apps playing right now, as Windows names them ("Spotify.exe",
+    "Chrome", "...MSEdge"), from the same media sessions."""
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _MEDIA_SESSION_PS],
+                           capture_output=True, text=True, timeout=20, check=False)
+    except Exception:
+        return []
+    out = []
+    for item in (r.stdout or "").strip().split(","):
+        state, _, app = item.partition("|")
+        if state.strip().lower() == "playing":
+            out.append(app.strip())
+    return out
 
 
 def _media_status() -> str:
@@ -258,7 +274,7 @@ def _media_status() -> str:
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", _MEDIA_SESSION_PS],
             capture_output=True, text=True, timeout=20, check=False,
         )
-        states = [s.strip().lower() for s in (r.stdout or "").strip().split(",") if s.strip()]
+        states = [s.split("|")[0].strip().lower() for s in (r.stdout or "").strip().split(",") if s.strip()]
     except Exception:
         return "unknown"
     if not states:

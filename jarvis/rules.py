@@ -121,7 +121,8 @@ def describe(r: dict) -> str:
             name, _, arg = c[6:].partition(" ")
             return {"stuck_orders": f"check for RAGAZZA orders stuck over {arg or 2} days",
                     "due_soon": "tell me what's due by tomorrow",
-                    "attendance": f"warn me if attendance drops below {arg or 75}%"}.get(name, c)
+                    "attendance": f"warn me if attendance drops below {arg or 75}%",
+                    "changes": f"tell me what's new in '{arg}'"}.get(name, c)
         if c.startswith("tool:"):
             from .habits import _label
             name, _, raw = c[5:].partition(" ")
@@ -161,7 +162,62 @@ def _watch_attendance(limit: str = "75") -> str:
         f"{c['course']} {c['percent']:.0f}%" for c in low) + ".") if low else ""
 
 
-WATCHERS = {"stuck_orders": _watch_stuck_orders, "due_soon": _watch_due_soon, "attendance": _watch_attendance}
+LAST = DATA / "watch_last.json"
+# Words that change by themselves ("in 3 days" becomes "in 2 days"), not news.
+_DRIFT = re.compile(r"\b(?:overdue|today|tomorrow|in \d+ days?|as of \d+ \w+ ago|\d+ (?:min|hour|day)s? ago)\b|[^\w ]", re.I)
+
+
+def _items(result: str) -> dict[str, str]:
+    """'On LMS: a (x) - in 3 days; b (y) - today.' -> {key: item}, keys without the drift."""
+    body = result.split(": ", 1)[1] if re.match(r"^[\w ]{1,25}: ", result) else result
+    out = {}
+    for it in re.split(r";\s*|\n|\.\s+(?=[A-Z])", body):
+        it = it.strip(" .")
+        key = " ".join(_DRIFT.sub(" ", it).lower().split())
+        if key:
+            out[key] = it
+    return out
+
+
+def _watch_changes(command: str) -> str:
+    """Anything Athena can check directly, compared with last time: news is
+    what was added or has gone, not the same list said again (9 Oct 2026)."""
+    from . import agent as agent_mod, registry
+    direct = agent_mod.route(command)
+    if not direct or not registry.get(direct[0]):
+        return ""
+    result = str(registry.get(direct[0]).run(**direct[1]))
+    if re.search(r"\b(?:sign in|signed out|failed|error|can't|couldn't)\b", result, re.I):
+        return ""                                   # a failed check is not a change
+    day = dt.date.today().isoformat() if re.search(r"\b(?:today|tomorrow)\b", command, re.I) else ""
+    seen = load_json(LAST, {})
+    before = seen.get(command)
+    now = _items(result)
+    seen[command] = {"items": now, "day": day, "t": time.time()}
+    save_json(LAST, seen)
+    if before is None or before.get("day") != day:  # first look, or "today" is a new day
+        return ""
+    new = [v for k, v in now.items() if k not in before["items"]]
+    gone = [v for k, v in before["items"].items() if k not in now]
+    if not new and not gone:
+        return ""
+    # The same thing with a new number or room ("DBMS 80%" -> "DBMS 78%") is a change, not new + gone.
+    from difflib import SequenceMatcher
+    changed = []
+    for n in list(new):
+        old = max(gone, key=lambda g: SequenceMatcher(None, g, n).ratio(), default=None)
+        if old and SequenceMatcher(None, old, n).ratio() >= 0.6:
+            changed.append(n)
+            new.remove(n)
+            gone.remove(old)
+    return " ".join(p for p in (
+        "Changed: " + "; ".join(changed[:5]) + "." if changed else "",
+        "New: " + "; ".join(new[:5]) + "." if new else "",
+        "No longer there: " + "; ".join(gone[:5]) + "." if gone else "") if p)
+
+
+WATCHERS = {"stuck_orders": _watch_stuck_orders, "due_soon": _watch_due_soon, "attendance": _watch_attendance,
+            "changes": _watch_changes}
 
 
 def _watch(spec: str) -> str:
@@ -415,6 +471,38 @@ def add_watch(what: str, every_hours: float = 6, value: str = "") -> str:
     rules.append(rule)
     _save(rules)
     return f"Done - {describe(rule)}. I'll only say something when there's news."
+
+
+# What "keep an eye on my LMS" means: a check the router answers directly.
+_WATCH_ALIASES = [(r"\blms\b|assignment|deadline|quiz", "what's due on lms"),
+                  (r"time\s*table|classes|schedule", "what classes do i have tomorrow"),
+                  (r"attendance", "my attendance"),
+                  (r"tasks|to-?do", "what are my tasks")]
+
+
+@tool(tags=TAG)
+def watch_for_changes(what: str, every_hours: float = 1) -> str:
+    """A background job: check something on its own every so often and speak up
+    only when something is new or gone - "keep an eye on my LMS", "tell me when
+    my timetable changes", "watch my attendance every 6 hours".
+
+    what: the thing to watch, in the user's words (LMS, timetable, attendance, tasks, or a command)
+    every_hours: how often to check
+    """
+    from . import agent as agent_mod
+    cmd = next((c for p, c in _WATCH_ALIASES if re.search(p, what, re.I)), what.strip())
+    if not agent_mod.route(cmd):
+        return (f"I can't check '{what}' on my own reliably. I can keep an eye on your LMS, timetable, "
+                "attendance, tasks, or anything I answer directly, like your phone battery.")
+    first = _watch_changes(cmd)                       # the starting point to compare with
+    rule = {"id": uuid.uuid4().hex[:6], "when": {"type": "every", "minutes": max(10, int(every_hours * 60))},
+            "do": [f"watch:changes {cmd}"], "enabled": True, "last": time.time(),
+            "created": dt.datetime.now().isoformat(timespec="seconds")}
+    rules = load()
+    rules.append(rule)
+    _save(rules)
+    every = f"{every_hours:g} hour" + ("" if every_hours == 1 else "s")
+    return f"Done - I'll check '{cmd}' every {every} and tell you only when something changes." + (f" {first}" if first else "")
 
 
 @tool(tags=TAG)

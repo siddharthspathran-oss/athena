@@ -49,6 +49,16 @@ def get_token() -> str:
     return tok
 
 
+ORB_KEY_FILE = DATA / "orb_key.txt"
+
+
+def orb_key() -> str:
+    """The desk orb's own key - read state, press listen; nothing more."""
+    if not ORB_KEY_FILE.exists() or not ORB_KEY_FILE.read_text(encoding="utf-8").strip():
+        ORB_KEY_FILE.write_text(secrets.token_urlsafe(18), encoding="utf-8")
+    return ORB_KEY_FILE.read_text(encoding="utf-8").strip()
+
+
 def _tailscale_https() -> str:
     """The https:// address Tailscale Serve is publishing, if it is on.
 
@@ -905,6 +915,8 @@ def _live_payload() -> dict:
     merged = sorted(voice.get("log", []) + _web_log, key=lambda e: e[0])[-40:]
     voice["log"] = merged
     voice["time"] = time.strftime("%H:%M:%S")
+    from .. import modes
+    voice["mode"] = modes.current()          # read here: data/mode.json is shared by every process
     return voice
 
 
@@ -940,6 +952,11 @@ class Handler(BaseHTTPRequestHandler):
     def _authorised(self) -> bool:
         return secrets.compare_digest(self.headers.get("X-Token", ""), get_token())
 
+    def _orb_ok(self) -> bool:
+        """The desk orb's own key (data/orb_key.txt): it can read Athena's
+        state and press "listen", nothing else - never the full token."""
+        return secrets.compare_digest(self.headers.get("X-Orb-Key", ""), orb_key())
+
     # ---------- routes ----------
 
     def do_GET(self) -> None:
@@ -953,6 +970,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(401, {"error": "Bad or missing token."})
                 return
             self._json(200, _live_payload())
+        elif path == "/orb":
+            # The desk orb (C:\claude code\orb) polls this a few times a second.
+            if not self._orb_ok():
+                self._json(401, {"error": "Bad or missing orb key."})
+                return
+            v = live.read_voice()
+            from .. import modes
+            self._json(200, {"s": v.get("state", "idle"), "l": round(float(v.get("level") or 0), 2),
+                             "m": modes.current()})
         elif path == "/status":
             if not self._authorised():
                 self._json(401, {"error": "Bad or missing token."})
@@ -1343,6 +1369,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = self.path.split("?")[0]
+        if route.startswith("/chats/") and route.endswith("/restore"):      # Undo a delete
+            if not self._authorised():
+                self._json(401, {"error": "Bad or missing token."})
+                return
+            chat_id = Path(route[len("/chats/"):-len("/restore")]).name
+            self._json(200, {"restored": chats.restore(chat_id)})
+            return
+        if route == "/orb/listen":                  # the orb's button: same as the HUD's mic button
+            if not self._orb_ok():
+                self._json(401, {"error": "Bad or missing orb key."})
+                return
+            live.request_wake()
+            self._json(200, {"ok": True})
+            return
         if route == "/look":
             self._look()
             return

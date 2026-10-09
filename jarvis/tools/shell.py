@@ -132,6 +132,13 @@ def remember(what: str, label: str = "") -> str:
             return result
         return f"{result} (saved as a contact, not a note, so messaging can find it)"
 
+    # Your name is set in data/config.local.yaml, not by what is heard: a
+    # misheard sentence saved "name: neha, also named Bratu" (4 Oct 2026).
+    from ..config import cfg
+    own = str(cfg.get("assistant.call_me", "") or "").strip()
+    if own and re.fullmatch(r"(?:my\s+|user'?s?\s+)?(?:full\s+)?name", key.lower()) and own.lower() not in val.lower():
+        return f"I have your name as {own}. To change it, edit call_me in data/config.local.yaml."
+
     if key:
         # A label the user already has, said slightly differently, updates
         # that fact instead of starting a second one next to it.

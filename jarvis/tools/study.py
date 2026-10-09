@@ -133,6 +133,12 @@ page rather than spoken.
   JK: \\(Q_{n+1} = J\\overline{Q_n} + \\overline{K}Q_n\\), D: \\(Q_{n+1} = D\\),
   T: \\(Q_{n+1} = T \\oplus Q_n\\) - and check every row of the table against
   the equation before writing it: J = 1, K = 0 sets Q to 1 whatever Q was.
+- After the **Final answer:** line of a calculated answer, add a ```check
+  block: a few lines of Python that work each final result out again from
+  the values given in the question and print it - print("fc", fc). Use only
+  math (already imported) or sympy (import what you need from it). It is run
+  before the page is shown, and every printed number must match the Final
+  answer, so it catches a slip; it is not shown on the page.
 - Define each symbol the first time it appears, with its unit.
 - Finish with a short "In short" line.
 
@@ -459,7 +465,9 @@ def _ask(llm: LLM, messages: list[dict], think: bool | None = None) -> str:
 def _faults(answer: str) -> list[str]:
     """Everything checkable that is wrong with an answer."""
     try:
-        return verify.problems(answer) + plot.problems(answer) + diagram.problems(answer)
+        from .. import checkcode
+        return (verify.problems(answer) + plot.problems(answer) + diagram.problems(answer)
+                + checkcode.problems(answer))
     except Exception:
         # The checker is a safety net, not a gate. If it throws, the answer
         # still goes out.
@@ -762,6 +770,5 @@ def explain(question: str) -> str:
     lead = _lead_line(answer, prefer_final=True)
     _finished(started)
 
-    name = cfg.get("assistant.name", "Athena")
     opened = f"I've opened the full answer with the working. [{path.name}]"
     return f"{lead}\n\n{opened}" if lead else opened

@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import live, offer, presence
-from ..agent import Agent, Step
+from ..agent import Agent
 from ..config import cfg
 from ..tools import scheduler
 
@@ -305,6 +305,7 @@ def build_prompt_bias() -> str:
 
 PROMPT_BIAS = _BASE_BIAS  # replaced at startup by build_prompt_bias()
 MULTILINGUAL = False      # set at startup: a model without .en hears Hindi too
+_JUST_NAME = "<athena: name only>"  # _barge_in: the name alone was said while Athena was busy
 
 # Small speech models mangle proper nouns; these are what "Athena" tends to
 # come back as. Cheaper and more predictable than lowering the match threshold.
@@ -372,6 +373,28 @@ _COMMANDISH = re.compile(
     r"switch|minimi[sz]e|maximi[sz]e|screenshot|note|save|copy|paste|end|hang\s+up|answer|help|"
     r"i\s+need|i\s+want|let's|focus|study|hi|hello|hey|good|can|could|would|will|please|are|am|"
     r"any|thanks?|wake|you\s+there)\b", re.I)
+
+
+# Words that join a follow-up to what came before: "and tomorrow?", "also
+# open it", "okay now play something". Taken off before the command check.
+_JOINERS = re.compile(r"^\W*(?:(?:and|also|then|but|so|now|actually|ok|okay|oh|wait|right)\W+)+", re.I)
+
+
+def _followish(text: str) -> bool:
+    """Sounds like the next thing said to Athena, not room talk (9 Oct 2026):
+    a command or question once the joining words are off, a follow-up the
+    agent understands ("what about DSA", "and tomorrow"), "open it", or a
+    sentence Whisper punctuated as a question."""
+    from ..agent import _OPEN_IT
+    core = _JOINERS.sub("", text)
+    return bool(_COMMANDISH.match(core) or _ABOUT.match(text) or _OPEN_IT.match(text)
+                or (text.rstrip().endswith("?") and len(text.split()) >= 2))
+
+
+# Not the agent's own _FOLLOW: its bare "and <anything>" let a lyric through
+# ("and then the ocean"); the agent can afford it, the open mic cannot.
+_ABOUT = re.compile(r"^\W*(?:and\s+)?(?:what|how)\s+about\s+\S|^\W*(?:and\s+)?same\s+for\s+\S|"
+                    r"^\W*(?:and\s+)?(?:for\s+)?(?:today|tomorrow|next\s+week)\W*$", re.I)
 
 
 _FILLER_ONLY = re.compile(
@@ -625,6 +648,7 @@ class Speaker:
         self._neural = None
         self._gen = 0
         self._synthing = threading.Event()
+        self._neural_loading = threading.Event()
         self._play_q: queue.Queue = queue.Queue()
         threading.Thread(target=self._loop, daemon=True).start()
         self._ready.wait(timeout=10)
@@ -681,6 +705,7 @@ class Speaker:
         else:
             # Loaded in the background: until it is ready (a few seconds at
             # start-up), the Windows voice speaks, so nothing waits on it.
+            self._neural_loading.set()
             threading.Thread(target=self._load_neural, daemon=True, name="tts-load").start()
 
         while True:
@@ -690,6 +715,16 @@ class Speaker:
             hindi = isinstance(text, tuple)              # (text, "hi"): reply in Hindi
             if hindi:
                 text = text[0]
+            # The neural voice still loading: wait for it, rather than say the
+            # first sentence (the welcome) in the Windows voice and switch
+            # after - "why does Athena change her voice" (4 Oct 2026).
+            if self._neural is None and self._neural_loading.is_set():
+                self._synthing.set()                 # busy meanwhile: not a gap to listen in
+                deadline = time.time() + float(cfg.get("voice.wait_for_voice", 20))
+                while self._neural is None and self._neural_loading.is_set() and time.time() < deadline:
+                    time.sleep(0.1)
+                if self._neural is None:
+                    self._synthing.clear()
             if self._neural is not None:
                 gen = self._gen
                 self._synthing.set()
@@ -698,6 +733,16 @@ class Speaker:
                         from .. import hindi as _hi
                         text = _hi.to_hindi(text)
                         audio = self._neural.synth(text, hindi=True)
+                    elif getattr(self._neural, "speaks_hindi", False):
+                        # Kokoro: each sentence in its own tone - "Welcome back"
+                        # bright, "it's still overdue" softer, a question lifted.
+                        from .. import tts as _tts
+                        parts = [p for p in re.split(r"(?<=[.!?])\s+", _for_speech(text)) if p.strip()] or [text]
+                        pieces = []
+                        for n, part in enumerate(parts):
+                            a = self._neural.synth(part, mood=_tts.mood_of(part))
+                            pieces.append(_breathe(a, part, self._neural.sample_rate) if n < len(parts) - 1 else a)
+                        audio = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
                     else:
                         audio = self._neural.synth(_for_speech(text))
                     if len(audio):
@@ -748,12 +793,12 @@ class Speaker:
             engine = tts.load()
         except Exception as e:
             print(f"[voice: neural voice unavailable ({str(e)[:100]}) - Windows voice]")
-            return
-        if engine is None:
-            return
-        threading.Thread(target=self._play_loop, daemon=True, name="tts-play").start()
-        self._neural = engine
-        self._backend = engine.name
+            engine = None
+        if engine is not None:
+            threading.Thread(target=self._play_loop, daemon=True, name="tts-play").start()
+            self._neural = engine
+            self._backend = engine.name
+        self._neural_loading.clear()
 
     def _play_loop(self) -> None:
         import sounddevice as sd
@@ -766,6 +811,8 @@ class Speaker:
             self.current = text
             self.started.append(time.time())
             try:
+                from .. import echo as _echo_mod
+                _echo_mod.guard.played(audio, rate, start=time.monotonic())   # so its echo is known
                 sd.play(audio, rate)
                 end = time.time() + len(audio) / rate + 0.05
                 while time.time() < end:
@@ -1116,7 +1163,7 @@ class Listener:
         """One open microphone stream. Returns (audio or None, reopen?)."""
         captured: list[np.ndarray] = []
         from collections import deque
-        preroll: deque = deque(maxlen=4)       # 0.3 s before speech, plus the block that starts it
+        preroll: deque = deque(maxlen=9)       # 0.8 s before speech (0.3 s still clipped "A-the-"), plus the trigger block
         speaking = False
         last_voice = time.time()
         stalls = 0
@@ -1159,7 +1206,7 @@ class Listener:
             if rms > gate:
                 if not speaking:
                     speaking = True
-                    # The 0.3 s before it got loud: the soft start of "Athena"
+                    # The 0.8 s before it got loud: the soft start of "Athena"
                     # was cut off, and Whisper heard "You now" (4 Oct 2026).
                     captured = list(preroll)[:-1]
                     preroll.clear()
@@ -1358,8 +1405,15 @@ def _start_wake_shadow() -> None:
         import subprocess
 
         import psutil
-        if any("wake_shadow" in " ".join(p.info["cmdline"] or []) for p in psutil.process_iter(["cmdline"])):
-            return
+        # Per process: one process whose details can't be read used to end the
+        # whole check, and every restart started another copy (5 running, 4 Oct 2026).
+        for p in psutil.process_iter(["cmdline"]):
+            try:
+                cmd = p.info["cmdline"] or []
+                if cmd and cmd[-1].endswith("wake_shadow.py"):
+                    return
+            except Exception:
+                continue
         subprocess.Popen([str(Path(sys.executable).with_name("pythonw.exe")), str(script)],
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except Exception as e:
@@ -1469,8 +1523,22 @@ def _voice_loop() -> None:
 
     # Away and back, "sorry to interrupt", welcome-backs (presence.py).
     presence.set_speaker(speaker.say, speaker.busy)
+    try:
+        from .. import gestures                       # back on if it was on before a restart
+        gestures.start()
+    except Exception as e:
+        print(f"[gestures not started: {e}]")
     _start_wake_shadow()
     presence.start()
+    try:
+        from ..tools import brief
+        brief.start_evening(presence.interject)   # the day wrapped up, once each evening
+        from .. import vault
+        vault.start()                             # Obsidian notes kept searchable
+        from .. import backup
+        backup.start()                            # data/ to OneDrive once a day, no secrets
+    except Exception as e:
+        print(f"[evening summary not started: {e}]")
     threading.Thread(target=_keep_warm, daemon=True, name="jarvis-warm").start()
     threading.Thread(target=_watch_wake, daemon=True, name="jarvis-wake").start()
     try:
@@ -1598,6 +1666,12 @@ def _voice_loop() -> None:
         audio = listener.record_utterance(0.5, cap=4.0, until=done)
         if audio is None:
             return None
+        # Athena's own voice coming back through the mic, recognised by its
+        # sound before any transcribing (echo.py): it used to come back as
+        # "Athena." or "Stop." and cut her off.
+        from .. import echo as _echo_mod
+        if _echo_mod.guard.has_voice(audio) is False:
+            return None
         # Primed for the words that matter here: with the general prompt and
         # a single beam, "Athena, stop" came back as "Athena, copy, plug".
         # No timestamps: nothing here reads them, and this runs on the same
@@ -1653,6 +1727,8 @@ def _voice_loop() -> None:
         if not rest or _STOP.match(rest):
             if unsure:                       # "Athena." out of her own voice or noise
                 return None
+            if not rest:
+                return _JUST_NAME            # her name alone: you want her attention, not silence
             print(f"   [stopped - heard {heard!r} while busy]")
             return ""
         return rest
@@ -1690,7 +1766,7 @@ def _voice_loop() -> None:
                     if audio is None:
                         if pre == "word":        # just "Athena" - someone getting our attention
                             awake_until = time.time() + follow_up
-                            followups = int(cfg.get("voice.follow_ups", 1))
+                            followups = int(cfg.get("voice.follow_ups", 3))
                             _orb_state("speaking")
                             speaker.say("Yes?")
                             invited = True
@@ -1705,6 +1781,12 @@ def _voice_loop() -> None:
                     if audio is None:
                         continue
                 t_stop = time.time() - listener.last_wait     # you stopped talking about here
+                # Just her own last sentence trailing out of the speaker.
+                from .. import echo as _echo_mod
+                if _echo_mod.guard.has_voice(audio) is False:
+                    if log_ignored:
+                        print("   [ignored: only Athena's own voice]")
+                    continue
 
                 # Priming the decoder with the words we expect makes a small model
                 # far better at proper nouns - "Athena" instead of "Here's your wrist".
@@ -1773,12 +1855,31 @@ def _voice_loop() -> None:
                     # A bare "Athena" came back at 0.35-0.51 with small.en and was
                     # ignored four times in a row (26 Sep 2026); noise sits at
                     # 0.00-0.03. So the bare name passes from 0.3.
-                    if p is not None and p < float(cfg.get("voice.wake_min_prob", 0.6)) and not (
+                    # The word's own score stopped meaning anything once the mic's
+                    # effects were off: real commands ("Athena, do I have any
+                    # pending tasks?", "Athena.") came back at 0.00 and were
+                    # dropped all day (5 Oct 2026). Whisper's confidence in the
+                    # WHOLE sentence still separates you from noise and TV,
+                    # which come back as low-confidence gibberish.
+                    seg_lp = min((float(s.avg_logprob or 0) for s in segments), default=-9.0)
+                    seg_ns = max((float(s.no_speech_prob or 0) for s in segments), default=1.0)
+                    # -0.8 dropped real ones ("Athena." at -1.04, "Athena, enough." at -1.00,
+                    # 6 Oct 2026); a confident "this is speech" (low no-speech) earns a wider margin.
+                    clear = ((seg_lp >= float(cfg.get("voice.wake_sentence_logprob", -0.8))
+                              or (seg_lp >= -1.1 and seg_ns <= 0.55))
+                             and seg_ns <= float(cfg.get("voice.wake_sentence_no_speech", 0.55))
+                             and (not remainder or _COMMANDISH.match(remainder)
+                                  or len(remainder.split()) <= 12))
+                    if p is not None and p < float(cfg.get("voice.wake_min_prob", 0.6)) and not clear and not (
                             (p >= float(cfg.get("voice.wake_floor_prob", 0.1))
                              and _COMMANDISH.match(remainder or ""))
                             or (p >= float(cfg.get("voice.wake_bare_prob", 0.3))
                                 and not _FILLER_ONLY.match(remainder or ""))):
-                        print(f"   [wake word too uncertain ({p:.2f}) - ignored]")
+                        # What was heard, now that "Athena doesn't listen sometimes" needs
+                        # evidence (4 Oct 2026) - only sentences starting with her name,
+                        # i.e. meant for her; other room speech is still never written.
+                        print(f"   [wake word too uncertain ({p:.2f}, sentence {seg_lp:.2f}/{seg_ns:.2f})"
+                              f" - ignored: {text[:80]!r}]")
                         heard_wake = False
                 still_awake = _ENGAGED and time.time() < awake_until and followups > 0
                 # The HUD's mic button stands in for saying "Athena".
@@ -1795,7 +1896,7 @@ def _voice_loop() -> None:
                 # counts as a follow-up. Song lyrics came through as "We'll see
                 # you in a minute" and "And then the ocean..." (26 Sep 2026).
                 if still_awake and not heard_wake and not tapped and not invited \
-                        and not _COMMANDISH.match(text):
+                        and not _followish(text):
                     still_awake = False
                 # Not for an answer: "all" is mostly Athena's own "...a number,
                 # or all." and would be thrown away as her echo.
@@ -1805,10 +1906,10 @@ def _voice_loop() -> None:
                 addressed = (not wake) or heard_wake or still_awake
                 if addressed:
                     invited = False
-                # Only a command that named Athena (or the mic button) opens a
-                # follow-up window; a follow-up does not open another. Each
-                # answer used to restart the window, so a video playing nearby
-                # kept Athena answering it, line after line.
+                # A command that named Athena (or the mic button) gives a fresh
+                # budget of voice.follow_ups; each follow-up spends one, so a
+                # conversation runs a few turns without the name but a video
+                # playing nearby can't keep her answering it line after line.
                 via_wake = heard_wake or tapped or not wake
                 if addressed and not via_wake:
                     followups -= 1
@@ -1839,7 +1940,7 @@ def _voice_loop() -> None:
                         # "Athena" on its own is someone getting our attention
                         if not remainder:
                             awake_until = time.time() + follow_up
-                            followups = int(cfg.get("voice.follow_ups", 1))
+                            followups = int(cfg.get("voice.follow_ups", 3))
                             _orb_state("speaking")
                             speaker.say("Yes?")
                             invited = True
@@ -1953,11 +2054,15 @@ def _voice_loop() -> None:
                     if got is not None:
                         cut = got
                         break
-            # No follow-up window once music is on: the mic is then mostly
-            # hearing the song.
-            if via_wake and not last_said["a"].startswith("Playing"):
-                awake_until = time.time() + follow_up
-                followups = int(cfg.get("voice.follow_ups", 1))
+            # No follow-up window once music is on, or while a video plays
+            # (presence._watching): the mic is then mostly hearing that. The
+            # Athena reel playing in the browser said "Athena..." and then "find
+            # his phone", and she spent three minutes looking for it (9 Oct 2026).
+            if not last_said["a"].startswith("Playing") and not presence._watching():
+                if via_wake:
+                    followups = int(cfg.get("voice.follow_ups", 3))
+                if via_wake or followups > 0:            # the conversation carries on
+                    awake_until = time.time() + follow_up
             # Athena asked something ("Which one? Say a number, or all.",
             # "Want me to open it?"): listen for the answer without the wake
             # word, and let a one-word reply through.
@@ -1969,6 +2074,23 @@ def _voice_loop() -> None:
             if cut is not None:
                 agent.cancelled = True        # the old turn stops generating and talking
                 speaker.stop()
+                if cut == _JUST_NAME:
+                    # "Athena" on its own while she was busy: you want her
+                    # attention. It used to stop her and drop what you said
+                    # next, so every question had to be asked twice (4 Oct 2026).
+                    live.note("interrupted - listening")
+                    time.sleep(0.2)
+                    listener.drain()
+                    _orb_state("speaking")
+                    speaker.say("Yes?")
+                    speaker.wait_until_done(timeout=5)
+                    listener.drain()
+                    invited = True
+                    awake_until = time.time() + follow_up
+                    followups = max(followups, 1)
+                    _engage(True)
+                    _orb_state("listening")
+                    continue
                 if cut:
                     live.note(f"interrupted - new command: {cut[:60]}")
                     queued = cut

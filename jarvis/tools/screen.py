@@ -94,6 +94,9 @@ def _window_text(hwnd: int, limit: int = 1300) -> str:
 def capture(whole: bool = False) -> tuple[Path | None, str, str]:
     """(screenshot path, window title, window text)."""
     SHOTS.mkdir(parents=True, exist_ok=True)
+    for old in SHOTS.glob("*.png"):          # pictures of your screen are kept a week, not forever
+        if time.time() - old.stat().st_mtime > 7 * 86400:
+            old.unlink(missing_ok=True)
     path = SHOTS / f"screen_{time.strftime('%Y%m%d_%H%M%S')}.png"
     hwnd, title = (0, "") if whole else _target_window()
     region = None
@@ -105,7 +108,37 @@ def capture(whole: bool = False) -> tuple[Path | None, str, str]:
         winapi.screenshot(path, region)
     except Exception:
         return None, title, ""
-    return path, title, _window_text(hwnd) if hwnd else ""
+    text = _window_text(hwnd) if hwnd else ""
+    if len(text) < 200:
+        # Nothing UI Automation can reach (a PDF, a video, an image, the
+        # whole screen): the words straight off the picture instead.
+        from .. import ocr
+        text = (text + "\n" + ocr.text(path)).strip()[:1300]
+    return path, title, text
+
+
+@tool(tags=TAG, timeout=30)
+def read_text(path: str = "", whole_screen: bool = False) -> str:
+    """Read out the exact text in an image file, or on the screen - fast, by
+    Windows OCR, without the vision model. Use for "read the text on my
+    screen", "copy the text from this window", "what does this picture say".
+
+    path: an image file to read; empty means the screen
+    whole_screen: true for every monitor rather than the window in front
+    """
+    from .. import ocr
+    if path:
+        from .files import _resolve
+        p, msg = _resolve(path, want_dir=False)
+        if p is None:
+            return msg
+        words = ocr.text(p)
+    else:
+        shot, title, _ = capture(whole_screen)
+        if shot is None:
+            return "ERROR: couldn't capture the screen."
+        words = ocr.text(shot)
+    return words[:4000] if words else "I couldn't find any text there."
 
 
 _SYSTEM = ("You are Athena, looking at the user's own computer screen because they asked you to. "

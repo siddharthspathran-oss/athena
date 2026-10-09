@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from . import planner, registry
+from . import offer, planner, registry
 from .config import cfg
 from .llm import LLM
 from .memory import Memory
@@ -84,6 +84,10 @@ then - like a trusted assistant who has known the user for years, not a help
 desk. Confirm actions in a word or two: "Done." "On it." "Playing it now."
 Use the user's name only occasionally. One light remark is fine when nothing is
 urgent; never joke about bad news.
+Your punctuation sets your tone of voice: good news ends with "!" ("Done! It's
+open.", "Nice, all three classes are done!"), a question ends with "?", and bad
+news is a plain, gentle sentence. Don't put "!" on everything - only where you'd
+genuinely sound pleased.
 Good: "You're on 43 percent, running on battery." Bad: "Your battery is
 currently at 43 percent and you are running on battery power. Let me know if
 you need anything else."
@@ -115,11 +119,26 @@ def warm(voice: bool = True, load: bool = False) -> None:
         prompt = SYSTEM_PROMPT.format(name=cfg.get("assistant.name", "Athena"))
         if voice:
             prompt += VOICE_STYLE
-        system = Memory(prompt).build()[0]
+        from . import modes
+        system = Memory(prompt + modes.prompt()).build()[0]
         llm.chat([system, {"role": "user", "content": "hi"}],
                  tools=registry.schemas(""), max_tokens=1)
     except Exception as e:                      # warming is a nicety, never an error
         print(f"[warm: {e}]")
+
+
+def _new_recipient(args: dict) -> bool:
+    """A message or call going to a number that is not one of your contacts -
+    or, for call_number, to anyone who is not (a business, a raw number)."""
+    from .tools import messaging
+    to = str(args.get("to") or args.get("who") or "").strip()
+    if not to:
+        return False
+    digits = messaging._normalise_phone(to)
+    if len(digits) >= 10:
+        return not any(messaging._normalise_phone(c.get("phone", ""))[-10:] == digits[-10:]
+                       for c in messaging._load().values())
+    return messaging._find_contact(to) is None
 
 
 class Agent:
@@ -130,11 +149,17 @@ class Agent:
         prompt = SYSTEM_PROMPT.format(name=cfg.get("assistant.name", "Athena"))
         if voice:
             prompt += VOICE_STYLE
+        self._base_prompt = prompt
         self.memory = Memory(prompt)
         # UI hooks: show progress, and ask before destructive actions
         self._last_answer = ""
         self.on_step = on_step or (lambda s: None)
-        self.confirm = confirm or (lambda name, args: True)
+        # No dialog to ask in (the phone/web chat, rules): offer it instead,
+        # and "yes" as the next message does it (offer.py).
+        self.confirm = confirm or self._offer_instead
+        self._approved: set[str] = set()     # this request's yes and no answers
+        self._refused: set[str] = set()
+        self._untrusted_until = 0.0
         # Set by the voice loop: called with each finished sentence of a model
         # reply, so Athena starts talking before the whole answer is written.
         # self.spoken is what was handed over this turn.
@@ -152,15 +177,52 @@ class Agent:
         from . import offer
         return bool(offer.pending()) or self._last_answer.rstrip().endswith("?")
 
-    def _needs_confirm(self, tool: registry.Tool) -> bool:
-        if not tool.destructive:
-            return False
-        # Some tags always ask, even with confirm_destructive off: changing the
-        # RAGAZZA shop reaches real customers (27 Sep 2026: an unconfirmed
-        # "set stock to 50" looped six times before the step limit stopped it).
-        if set(tool.tags) & set(cfg.get("safety.always_confirm_tags", []) or []):
+    def _needs_confirm(self, tool: registry.Tool, args: dict | None = None) -> bool:
+        """Risk tiers (9 Oct 2026 audit):
+
+          critical  every time: safety.ask_first (PowerShell, deleting) and
+                    safety.always_confirm_tags (the RAGAZZA shop - an
+                    unconfirmed "set stock to 50" looped six times, 27 Sep 2026)
+          high      a message or call to someone not in your contacts; and
+                    anything in registry.OUTWARD while a web page, email, file
+                    or another app's text is in the conversation - it may
+                    carry instructions written for Athena (prompt injection)
+          low       everything else just runs, as before (confirm_destructive off)
+        """
+        if tool.name in (cfg.get("safety.ask_first", []) or []) or                 set(tool.tags) & set(cfg.get("safety.always_confirm_tags", []) or []):
             return True
-        return bool(cfg.get("safety.confirm_destructive", True))
+        if tool.name in registry.OUTWARD and time.time() < self._untrusted_until:
+            return True
+        if tool.name in ("whatsapp_message", "whatsapp_call", "call_number") and _new_recipient(args or {}):
+            return True
+        return bool(tool.destructive and cfg.get("safety.confirm_destructive", True))
+
+    def allowed(self, tool: registry.Tool, args: dict) -> bool:
+        """Ask if this call needs it - once per request: the router asking
+        and then Tool.run asking again would be the same question twice."""
+        key = tool.name + json.dumps(args, sort_keys=True, default=str)
+        if key in self._approved or not self._needs_confirm(tool, args):
+            return True
+        if key in self._refused:
+            return False
+        # On the HUD's live feed: what is waiting for your OK, and what was refused.
+        self.on_step(Step(tool=f"permission: {tool.name}", args=args, result="asked"))
+        ok = bool(self.confirm(tool.name, args))
+        (self._approved if ok else self._refused).add(key)
+        if not ok:
+            self.on_step(Step(tool=f"blocked: {tool.name}", args=args, result="not done"))
+        return ok
+
+    def saw_untrusted(self) -> None:
+        """Text someone else wrote is now in the conversation; it stays in the
+        history for a while, so outward actions ask for the next 10 minutes."""
+        self._untrusted_until = time.time() + float(cfg.get("safety.untrusted_minutes", 10)) * 60
+
+    def _offer_instead(self, name: str, args: dict) -> bool:
+        from . import offer
+        from .habits import _label
+        offer.set_choices([offer.Choice(_label(name, args), name, args)])
+        return False
 
     def _follow_up(self, text: str) -> tuple[str, dict] | None:
         """The last command again with one thing changed, for a follow-up
@@ -201,10 +263,13 @@ class Agent:
         read the word "cancel" as a cue and called cancel_reminder("all")
         seven times in a row (27 Sep 2026). Nothing further runs this turn.
         """
+        from . import offer
+        from .habits import _label
         note = "Not done: waiting for the user's approval."
         self.on_step(Step(tool=name, args=args, result=note))
         self.memory.add_raw({"role": "tool", "name": name, "content": note})  # every tool call gets its result
-        answer = "I haven't done that - it needs your OK first."
+        answer = (f"That needs your OK first: {_label(name, args)}. Say yes to go ahead." if offer.pending()
+                  else "I haven't done that - it needs your OK first.")
         self.memory.add("assistant", answer)
         return answer
 
@@ -222,6 +287,10 @@ class Agent:
         """
         self._trouble: list[str] = []
         started = time.time()
+        self._approved, self._refused = set(), set()
+        from . import modes
+        self.memory.system_prompt = self._base_prompt + modes.prompt()    # study / coding / research ...
+        registry._guard.agent = self       # Tool.run checks permissions with this request
         try:
             answer = self._ask(user_input)
         except Exception as e:
@@ -233,6 +302,8 @@ class Agent:
             answer = ("I lost my connection to the model for a moment - say that again?" if dropped
                       else "Something went wrong on my side with that - try once more?")
             self._last_answer = answer
+        finally:
+            registry._guard.agent = None
         try:
             self._log_trouble(user_input, answer, time.time() - started)
         except Exception:
@@ -285,6 +356,15 @@ class Agent:
         self.spoken = ""
         self.cancelled = False
 
+        # A quiz is running (quiz.py): what you say is your answer.
+        from . import quiz
+        marked = quiz.handle(user_input)
+        if marked is not None:
+            self.memory.add("user", user_input)
+            self._last_answer = marked
+            self.memory.add("assistant", marked)
+            return marked
+
         # An answer to what Athena just offered ("which one?", "want me to
         # open it?"): "yes", "two", "all", "no". Checked before anything else,
         # because every one of those is a fragment to the rest of this method.
@@ -298,6 +378,7 @@ class Agent:
                 said = []
                 for c in picked:
                     t = registry.get(c.tool)
+                    self._approved.add(c.tool + json.dumps(c.args, sort_keys=True, default=str))   # "yes" was the OK
                     result = t.run(**c.args) if t else f"ERROR: no tool {c.tool}"
                     self.on_step(Step(tool=c.tool, args=c.args, result=result))
                     self.memory.add_raw({"role": "tool", "name": c.tool, "content": _truncate(result)})
@@ -383,9 +464,32 @@ class Agent:
         # router: "find the scheduler pdf and send it to Rahul" would parse
         # as a WhatsApp message to Rahul reading "find the scheduler pdf".
         multi = cfg.get("planner.enabled", True) and planner.is_multistep(user_input)
-        # "and tomorrow?" / "what about DSA?" / "open it" right after a command
-        # carries on from it, instead of starting from nothing.
-        follow = self._follow_up(user_input)
+        # A message with no one to send it to: ask, never guess. "Send a high
+        # message on WhatsApp through my phone" went to the model, which picked
+        # a chat and sent "High message sent." (4 Oct 2026).
+        pend = getattr(self, "_pending_msg", None)
+        self._pending_msg = None
+        if pend and offer.NO.match(user_input):
+            answer = "Okay, I won't send it."
+            self._last_answer = answer
+            self.memory.add("assistant", answer)
+            return answer
+        if pend and time.time() - pend[1] < 90 and len(user_input.split()) <= 4:
+            who = _mentioned_contact(user_input) or user_input.strip(" .?!,")
+            follow = ("whatsapp_message", {"to": who, "text": pend[0]})
+        else:
+            m = _NO_RECIPIENT.match(user_input)
+            if m and route(user_input) is None and not _mentioned_contact(user_input):
+                body = m.group("b").strip()
+                body = "hi" if body.lower() in ("high", "hai", "hay") else body
+                self._pending_msg = (body, time.time())
+                answer = f"Who should I send \"{body}\" to?"
+                self._last_answer = answer
+                self.memory.add("assistant", answer)
+                return answer
+            # "and tomorrow?" / "what about DSA?" / "open it" right after a command
+            # carries on from it, instead of starting from nothing.
+            follow = self._follow_up(user_input)
         if follow is not None:
             multi = False
         direct = follow or (None if multi else route(user_input))
@@ -405,9 +509,13 @@ class Agent:
         if direct is not None:
             name, args = direct
             tool = registry.get(name)
-            if self._needs_confirm(tool) and not self.confirm(name, args):
-                answer = "Cancelled."
+            if not self.allowed(tool, args):
+                answer = self._declined(name, args)
             else:
+                # Tools that take half a minute: say so first, or the silence
+                # sounds like Athena never heard you.
+                if name in _SLOW_TOOLS:
+                    self._acknowledge(_SLOW_TOOLS[name])
                 result = tool.run(**args)
                 self.on_step(Step(tool=name, args=args, result=result))
                 self.memory.add_raw({"role": "tool", "name": name, "content": result})
@@ -513,7 +621,7 @@ class Agent:
                 if written is not None:
                     name, args = written
                     t = registry.get(name)
-                    if self._needs_confirm(t) and not self.confirm(name, args):
+                    if not self.allowed(t, args):
                         return self._declined(name, args)
                     result = _truncate(t.run(**args))
                     used_tools = True
@@ -614,7 +722,7 @@ class Agent:
                     continue
                 if t is None:
                     result = f"ERROR: no such tool '{name}'. Available: {', '.join(registry.REGISTRY)}"
-                elif self._needs_confirm(t) and not self.confirm(name, args):
+                elif not self.allowed(t, args):
                     return self._declined(name, args)
                 else:
                     result = t.run(**args)
@@ -681,14 +789,6 @@ class Agent:
         self._acknowledge("One moment.")
         return self._plan(brief)
 
-    def chat_only(self, user_input: str):
-        """Streaming plain chat with no tools - used for obvious conversation."""
-        self.memory.add("user", user_input)
-        parts: list[str] = []
-        for piece in self.llm.stream(self.memory.build()):
-            parts.append(piece)
-            yield piece
-        self.memory.add("assistant", "".join(parts))
 
 
 # A person does not greet you with the same sentence every time. A few
@@ -845,6 +945,13 @@ _GREETING = re.compile(
 # screen rotation" or anything naming another thing to unlock.
 # What the last reply offered to do: "let me know if you want to play it or
 # add it to your queue" -> "play it". The first option only, up to " or ".
+_NO_RECIPIENT = re.compile(r"^\W*(?:(?:athena|jarvis|ok|okay|please)\W+)*(?:can\s+you\s+)?(?:please\s+)?send\s+(?:a|an)\s+"
+                           r"(?P<b>[\w' ]{1,30}?)\s+(?:message|msg|text)(?:\s+(?:on|over|through|via|using)\s+"
+                           r"(?:whats\s?app|my\s+phone|the\s+phone|phone))*\W*$", re.I)
+
+_SLOW_TOOLS = {"whatsapp_message": "Sending it.", "whatsapp_call": "Calling.", "open_lms": "Opening it.",
+               "find_my_phone": "Ringing your phone.", "show_phone": "Bringing up your phone."}
+
 _FOLLOW = re.compile(r"^\W*(?:(?:athena|jarvis|ok|okay|so|hmm|and)\W+)*(?:and\s+)?(?:what\s+about|how\s+about|what\s+of|"
                      r"and\s+for|same\s+for|and)\s+(?P<x>[^.?!]+?)\W*$|"
                      r"^\W*(?:(?:athena|jarvis|and|so)\W+)*(?P<x2>today|tomorrow)\W*$", re.I)
@@ -927,6 +1034,10 @@ def _direct_app(text: str) -> tuple[str, dict] | None:
     # only when it is short and not a question.
     if not verb:
         if len(name.split()) > 3 or _QUESTION_WORD.match(name):
+            return None
+        # An answer, not an app: a bare "no" opened Node.js (4 Oct 2026).
+        if offer.YES.match(name) or offer.NO.match(name) or re.fullmatch(
+                r"\W*(?:nah|ok|okay|yes|no|yeah|yep|nope|sure|fine|cool|thanks?|thank\s+you|done|right|good|now|wait|hmm|huh|what|hello|hi|hey|later|so|well)\W*", name, re.I):
             return None
 
     # _match_app falls back to fuzzy matching, which is right when the model
@@ -1317,7 +1428,7 @@ def _direct_brief(text: str) -> tuple[str, dict] | None:
 # the model, it guessed: "your next MS Teams meeting is tomorrow at 14:00",
 # repeated even after "but tomorrow is Sunday" (3 Oct 2026). These always go
 # to the tool that has the real answer.
-_G_ASK = re.compile(r"^\W*(?:(?:athena|jarvis|so|and|hey|ok|okay|but|then)\W+)*(?:what|when|which|where|how\s+(?:many|much|is|are|'?s)|"
+_G_ASK = re.compile(r"^\W*(?:(?:athena|jarvis|so|and|hey|ok|okay|but|then|no|yes|yeah|please|similarly|also|actually)\W+)*(?:what|when|which|where|who|how\s+(?:many|much|is|are|'?s)|"
                     r"do\s+i|did\s+i|am\s+i|is\s+there|are\s+there|any|anything|tell\s+me|show|check|list|have\s+i|"
                     r"can\s+you\s+(?:tell|check|show)|is\s+my|are\s+my|what'?s)\b", re.I)
 _G_MINE = re.compile(r"\b(?:my|i|me|mine|i'?ve|i'?m)\b", re.I)
@@ -1327,11 +1438,35 @@ _GROUNDS = (
     (r"\b(?:class|classes|lecture|lectures|timetable|lab)\b", "upes_classes", "day"),
     (r"\b(?:deadline|deadlines|assignment|assignments|due|submission|quiz|quizzes|homework|lms)\b", "lms_deadlines", None),
     (r"\b(?:task|tasks|to-?dos?)\b", "list_tasks", None),
-    (r"\b(?:reminder|reminders|alarm|alarms)\b", "list_reminders", None),
+    (r"\b(?:reminder|reminders|alarm|alarms|timer|timers)\b", "list_reminders", None),
     (r"\b(?:schedule|agenda|calendar|plans?|busy|free)\b", "daily_brief", "brief"),
     (r"\b(?:battery|charge|charging)\b", "battery", None),
     (r"\b(?:mail|mails|email|emails|inbox)\b", "inbox_summary", None),
 )
+
+
+def _mentioned_contact(text: str) -> str | None:
+    """The saved contact (or nickname) a sentence names, longest first."""
+    try:
+        from .tools import messaging
+        contacts = messaging._load()
+        names = list(contacts) + list(messaging._aliases(contacts))
+    except Exception:
+        return None
+    low = text.lower()
+    return next((n for n in sorted(names, key=len, reverse=True)
+                 if len(n) > 2 and re.search(r"\b" + re.escape(n.lower()) + r"\b", low)), None)
+
+
+def _direct_contact_q(text: str) -> tuple[str, dict] | None:
+    """"What is Neha also known as?" - asked of the contact book. It went to
+    the explainer and came back as "the Neha River" (4 Oct 2026)."""
+    if not _G_ASK.match(text):
+        return None
+    if not re.search(r"\b(?:alternate|alternative|other|nick|also|aka|known|call|called|who|name)\w*\b", text, re.I):
+        return None
+    who = _mentioned_contact(text)
+    return ("contact_info", {"name": who}) if who and who not in ("me", "myself", "self") else None
 
 
 def _direct_grounded(text: str) -> tuple[str, dict] | None:
@@ -1425,7 +1560,7 @@ def route(text: str) -> tuple[str, dict] | None:
     "open downloads" exactly as you would.
     """
     said = _fix_verb(clean_speech(text))
-    return (_direct_phone_ctl(said) or _direct_teams(said) or _direct_power(said) or _direct_basic(said) or _direct_info(said) or _direct_memory(said)
+    return (_direct_watch(said) or _direct_mode(said) or _direct_quiz(said) or _direct_labreport(said) or _direct_phone_ctl(said) or _direct_teams(said) or _direct_power(said) or _direct_basic(said) or _direct_info(said) or _direct_memory(said)
             or _direct_phone_files(said) or _direct_find_document(said)
             or _direct_store(said)
             or _direct_routine(said) or _direct_it(said)
@@ -1435,7 +1570,7 @@ def route(text: str) -> tuple[str, dict] | None:
             or _direct_bluetooth(said)
             or _direct_app(said) or _direct_file(said)
             or _direct_message(said) or _direct_song(said)
-            or _direct_brief(said) or _direct_grounded(said) or _direct_explain(said))
+            or _direct_brief(said) or _direct_contact_q(said) or _direct_grounded(said) or _direct_explain(said))
 
 
 # Automations (jarvis/rules.py). A rule needs its trigger set off by a comma -
@@ -1456,6 +1591,61 @@ _R_DO_FIRST = re.compile(_R_LEAD + r"(?P<do>(?!remind)(?:play|open|close|connect
                          r"night|evening|\d+\s+(?:min|minute|hour|day)s?|hour)|daily|hourly)\b.*)$", re.I)
 
 
+def _direct_labreport(text: str) -> tuple[str, dict] | None:
+    """ "make my lab report for experiment 5.1", "build my lab report" (tools/labreports.py)."""
+    m = re.match(_R_LEAD + r"(?:make|build|create|write|generate|do|start|prepare|finish)\s+(?:my\s+|the\s+|a\s+)?"
+                 r"lab\s+(?:report|record)(?:\s+(?:for|of|on)\s+(?P<x>.+?))?\W*$|"
+                 + _R_LEAD + r"lab\s+(?:report|record)\s+(?:for|of|on)\s+(?P<x2>.+?)\W*$", text, re.I)
+    if not m:
+        return None
+    x = re.sub(r"^(?:the|my)\s+", "", (m.group("x") or m.group("x2") or "").strip(), flags=re.I)
+    return "lab_report", {"experiment": x}
+
+
+def _direct_quiz(text: str) -> tuple[str, dict] | None:
+    """ "quiz me on convolution", "test me on Fourier series with 8 questions" (quiz.py)."""
+    m = re.match(_R_LEAD + r"(?:quiz|test)\s+me(?:\s+(?:on|about|in|from))?\s+(?P<t>.+?)"
+                 r"(?:\s+with\s+(?P<n>\d+)\s+questions?)?\W*$|"
+                 + _R_LEAD + r"ask\s+me\s+(?:some\s+)?(?:(?P<n2>\d+)\s+)?questions\s+(?:on|about)\s+(?P<t2>.+?)\W*$", text, re.I)
+    if not m:
+        return None
+    topic = re.sub(r"^(?:my|the)\s+", "", (m.group("t") or m.group("t2")).strip(), flags=re.I)
+    n = int(m.group("n") or m.group("n2") or 5)
+    return "quiz_me", {"topic": topic, "questions": n}
+
+
+def _direct_mode(text: str) -> tuple[str, dict] | None:
+    """Modes (modes.py): "coding mode", "switch to research mode", "normal
+    mode", "what mode are you in". Study mode is the routine of that name,
+    which switches the mode as one of its steps."""
+    m = re.match(_R_LEAD + r"(?:(?:switch|change|go|get)\s+(?:back\s+)?(?:in)?to\s+|turn\s+on\s+|enter\s+|start\s+|use\s+)?"
+                 r"(?P<m>coding|code|research|system|general|normal|default)\s+mode(?:\s+on)?\W*$|"
+                 + _R_LEAD + r"(?:exit|leave|stop|turn\s+off|end)\s+(?:the\s+)?(?:coding|code|research|system)\s+mode\W*$|"
+                 + _R_LEAD + r"(?P<q>what|which)\s+mode\s+(?:are\s+you|am\s+i)\s+in\W*$", text, re.I)
+    if not m:
+        return None
+    if m.group("q"):
+        return "set_mode", {"mode": "status"}
+    return "set_mode", {"mode": (m.group("m") or "general").lower()}
+
+
+def _direct_watch(text: str) -> tuple[str, dict] | None:
+    """Background jobs: "keep an eye on my LMS", "tell me when my timetable
+    changes", "watch my attendance every 6 hours" (rules.watch_for_changes)."""
+    m = re.match(_R_LEAD + r"(?:keep\s+(?:an\s+)?eye\s+on|watch|monitor|track\s+changes\s+(?:in|to|on))\s+(?P<w>.+?)"
+                 r"(?:\s+every\s+(?P<n>\d+|an?|one)\s*(?P<u>hours?|hrs?|min\w*))?\W*$|"
+                 + _R_LEAD + r"(?:tell|let)\s+me\s+(?:know\s+)?(?:when|if|whenever)\s+(?:anything\s+(?:new\s+)?(?:comes\s+up\s+)?(?:on|in)\s+)?"
+                 r"(?P<w2>.+?)(?:\s+(?:changes?|updates?|gets?\s+updated|has\s+anything\s+new))?\W*$", text, re.I)
+    if not m:
+        return None
+    what = (m.group("w") or m.group("w2") or "").strip()
+    if not re.search(r"\blms\b|assignment|deadline|quiz|time\s*table|classes|schedule|attendance|tasks|to-?do", what, re.I):
+        return None                                   # "watch a movie", "tell me when it's 5"
+    n = m.group("n")
+    hours = 1.0 if not n else (1 if n in ("a", "an", "one") else int(n)) / (60 if (m.group("u") or "").startswith("min") else 1)
+    return "watch_for_changes", {"what": what, "every_hours": hours}
+
+
 def _direct_rules(text: str) -> tuple[str, dict] | None:
     m = _R_PAUSE.match(text)
     if m:
@@ -1467,6 +1657,9 @@ def _direct_rules(text: str) -> tuple[str, dict] | None:
         return "list_rules", {}
     if _R_DID.match(text):
         return "what_did_you_do", {}
+    if re.match(_R_LEAD + r"(?:back\s*up|backup)\s+(?:athena|yourself|everything|my\s+data|now)(?:\s+now)?\W*$|"
+                + _R_LEAD + r"(?:make|do|run|take)\s+a\s+backup(?:\s+now)?\W*$", text, re.I):
+        return "backup_now", {}
     if re.match(_R_LEAD + r"(?:run\s+(?:a\s+)?)?(?:health\s*check|check\s+yourself|self[\s-]?check|"
                 r"how\s+are\s+you\s+running|any\s+problems\s+with\s+you)\W*$", text, re.I):
         return "health_check", {}
@@ -1501,6 +1694,10 @@ def _direct_rules(text: str) -> tuple[str, dict] | None:
                 r"(?:\s+deadlines?|\s+assignments?)?\W*$|" + _R_LEAD + r"(?:what'?s|what\s+is)\s+due\s+on\s+(?:the\s+)?lms\W*$|"
                 + _R_LEAD + r"(?:lms|moodle)\s+(?:deadlines?|assignments?)\W*$", text, re.I):
         return "lms_deadlines", {}
+    if re.match(_R_LEAD + r"(?:get|download|fetch|sync|update)\s+(?:my\s+|the\s+)?(?:lms|course|class)\s+(?:files|material|notes|slides)"
+                r"(?:\s+from\s+(?:the\s+)?lms)?\W*$|" + _R_LEAD + r"(?:any\s+)?new\s+(?:course\s+)?(?:material|files|slides)"
+                r"(?:\s+on\s+(?:the\s+)?lms)?\W*$", text, re.I):
+        return "lms_files", {}
     # LMS items open signed in (upes.open_lms) - "open the feedback forum for
     # leading conversation" went to open_url with a guessed address (3 Oct 2026).
     m = re.match(_R_LEAD + r"open\s+(?:up\s+)?(?:the\s+|my\s+)?(?P<w>.*?\b(?:forum|assignment|quiz|submission|lab\s+record|"
@@ -1557,6 +1754,26 @@ _P_MY = r"(?:my\s+|the\s+)?(?:phone|mobile|galaxy|samsung)"
 
 def _direct_phone_ctl(text: str) -> tuple[str, dict] | None:
     t = text.strip()
+    # Anything about gestures goes to the gesture switch - never to the model:
+    # "turn on gesture mode" misheard as "Tower now of gesture mode" went to
+    # recall, which answered "gesture mode is currently on" when it was not (6 Oct 2026).
+    if re.search(r"\bgestures?\b", t, re.I):
+        if re.search(r"\b(?:off|stop|disable|close|end|exit|quit|kill|deactivate|cancel)\b", t, re.I):
+            return "gesture_mode", {"action": "off"}
+        if re.search(r"^\W*(?:(?:athena|jarvis)\W+)?(?:is|are|was|what'?s|what\s+is|status|whether|check)\b|\?\s*$", t, re.I) \
+                and not re.search(r"\b(?:turn|switch|start|enable|activate)\b", t, re.I):
+            return "gesture_mode", {"action": "status"}
+        return "gesture_mode", {"action": "on"}
+    every = bool(re.search(r"\b(?:on|in)\s+(?:all|every|both)\s+(?:(?:the|my)\s+)?(?:phones?|devices?|screens?|youtubes?)\b"
+                           r"|\ball\s+(?:three|two|my)\s+(?:phones|devices|youtubes)\b", t, re.I))
+    if re.match(_P_LEAD + r"how\s+many\s+(?:devices|phones)\b|" + _P_LEAD + r"(?:which|what)\s+devices\s+(?:are\s+)?connected", t, re.I):
+        return "phone_devices", {}
+    m = re.match(_P_LEAD + r"(?:search|look\s+up|find)\s+(?P<q>.+?)\s+(?:on|in)\s+(?:all\s+(?:three|two|the|my)\s+)?(?:the\s+)?you\s*tubes?\b", t, re.I)
+    if m and (every or re.search(r"\b(?:phone|mobile|devices?|phones)\b", t, re.I)):
+        return "phone_youtube", {"query": m.group("q"), "everywhere": every}
+    m = re.match(_P_LEAD + r"(?:open|launch|start)\s+(?P<app>.+?)\s+(?:on|in)\s+(?:all|every|both)\b", t, re.I)
+    if m and every:
+        return "phone_open_everywhere", {"name": m.group("app")}
     if re.match(_P_LEAD + r"(?:show|open|mirror|cast)\s+(?:me\s+)?" + _P_MY + r"(?:'?s)?(?:\s+screen)?(?:\s+on\s+(?:the\s+)?(?:pc|laptop|screen))?\W*$", t, re.I):
         return "show_phone", {}
     m = re.match(_P_LEAD + r"(?:open|launch|start)\s+(?P<app>.+?)\s+(?:on|in)\s+" + _P_MY + r"\W*$", t, re.I)
@@ -1727,9 +1944,16 @@ _NOT_A_FILE_TO_SEND = re.compile(
     r"call|ring|alert|push|update|reply)\b", re.I)
 _SEND_TO_PHONE = re.compile(
     r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|now|just)\W+)*(?:(?:can|could|would|will)\s+you\s+)?"
-    r"(?:please\s+)?(?:send|share|transfer|move|copy|put|push|get)\s+(?:me\s+)?(?:over\s+)?"
+    r"(?:please\s+)?(?P<verb>(?:send|share|transfer|move|copy|put|push|get)\s+)?(?:me\s+)?(?:over\s+)?"
     r"(?P<q>.+?)\s+(?:to|on|onto|with|over\s+to|on\s+to)\s+(?:my\s+|the\s+)?(?:phone|mobile|cell(?:\s*phone)?)"
     r"(?:\s+(?:please|now))*\W*$", re.I)
+# Whisper drops a short "send" after the name: "Athena, send the reel to my
+# phone" came out as "Athena reel to my phone", nothing ran, and the model
+# made up "a timeout issue" (9 Oct 2026). Without a verb, it is still a send -
+# unless what is left is itself an action ("connect to my phone").
+_NOT_A_FILE_NO_VERB = re.compile(
+    r"^(?:connect|open|show|play|cast|mirror|switch|turn|lock|unlock|call|ring|text|message|go|come|reply|"
+    r"talk|listen|look|stay|login|log|sign|pair|link|sync|it'?s|is|was|what|how|why|who|where|when)\b", re.I)
 _SEND_ME = re.compile(
     r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|now|just)\W+)*(?:(?:can|could|would|will)\s+you\s+)?"
     r"(?:please\s+)?(?:send|give|share|pass)\s+me\s+(?P<q>.+?)(?:\s+(?:please|now))*\W*$", re.I)
@@ -1757,6 +1981,8 @@ def _direct_phone_files(text: str) -> tuple[str, dict] | None:
         latest = m.group("latest") or (kind and not kind.endswith("s"))
         return "open_from_phone", {"which": "latest" if latest else "folder"}
     m = _SEND_TO_PHONE.match(t)
+    if m and not m.group("verb") and _NOT_A_FILE_NO_VERB.match(m.group("q").strip()):
+        m = None
     if not m:
         from . import share
         m = _SEND_ME.match(t) if share.from_phone else None
@@ -1777,6 +2003,13 @@ def _direct_find_document(text: str) -> tuple[str, dict] | None:
         if kind and kind.group(1).lower().startswith(("pdf", "slide", "ppt", "sheet")):
             q += " " + kind.group(1).lower().rstrip("s")     # keep the type: "dsp pdf"
         return "find_document", {"query": q, "open_all": True}
+    # Obsidian notes (9 Oct 2026): "open my note on X", "find X in my notes".
+    m = re.match(r"^\W*(?:(?:athena|hey|ok|okay|please)\W+)*(?:can\s+you\s+)?(?:open|show|find|get)\s+(?:me\s+)?(?:my\s+|the\s+)?"
+                 r"notes?\s+(?:on|about|for|of)\s+(?P<a>.+?)\W*$|"
+                 r"^\W*(?:(?:athena|hey|ok|okay|please)\W+)*(?:find|look\s+up|look\s+for)\s+(?P<b>.+?)\s+in\s+my\s+(?:notes|vault|obsidian)\W*$",
+                 text.strip(), re.I)
+    if m:
+        return "find_document", {"query": (m.group("a") or m.group("b")).strip()}
     m = _DOC_FIND.match(text.strip())
     if not m:
         return None
@@ -1890,6 +2123,11 @@ _BASIC += [
      "system_report", {}),
 ]
 # Screen awareness: questions about what is on the screen right now.
+# The words themselves, not an opinion on them: Windows OCR, no vision model (9 Oct 2026).
+_SCREEN_TEXT = re.compile(
+    _BASIC_LEAD + r"(?:(?:read(?:\s+out)?|copy|get|grab|extract)\s+(?:all\s+)?(?:the\s+)?(?:text|words)\s+(?:on|from|in|off)\s+"
+    r"(?:my|the|this)\s+(?:(?:whole|entire|full)\s+)?(?:screen|window)|ocr\s+(?:my|the|this)\s+(?:screen|window)|"
+    r"what\s+does\s+(?:my|the)\s+screen\s+say)\W*$", re.I)
 _SCREEN = re.compile(
     _BASIC_LEAD + r"(?:"
     r"what(?:'?s|\s+is)\s+(?:on|in)\s+(?:my|the|this)\s+screen|what\s+am\s+i\s+(?:looking\s+at|seeing|doing)|"
@@ -1954,6 +2192,11 @@ _ADD_TASK = re.compile(
 
 def _direct_basic(text: str) -> tuple[str, dict] | None:
     t = text.strip()
+    if re.match(_BASIC_LEAD + r"(?:(?:give\s+me\s+)?(?:my\s+|the\s+)?evening\s+(?:summary|brief|report|wrap[\s-]?up)|"
+                r"wrap\s+up\s+(?:my|the)\s+day|how\s+did\s+(?:my\s+)?(?:today|day)\s+go)\W*$", t, re.I):
+        return "evening_summary", {}
+    if _SCREEN_TEXT.match(t):
+        return "read_text", {"whole_screen": bool(_WHOLE.search(t))}
     if _SCREEN.match(t):
         return "look_at_screen", {"question": t, "whole_screen": bool(_WHOLE.search(t))}
     m = _ADD_TASK.match(t)

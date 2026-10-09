@@ -60,7 +60,7 @@ def run() -> None:
             time.sleep(0.5)
 
     # Opens on the Command Centre (the phone keeps the voice stage as home).
-    url = f"http://127.0.0.1:{port}/?t={get_token()}&home=dash"
+    url = f"http://127.0.0.1:{port}/?t={get_token()}&home=dash&orb={cfg.get('hud.orb', 'core')}"   # core | face
     exe = _browser()
     if not exe:
         # No Chromium: fall back to the old window rather than nothing.

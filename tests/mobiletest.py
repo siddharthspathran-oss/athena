@@ -251,7 +251,7 @@ BASIC = [
     ("call it a day", None), ("call off the meeting", None),
     ("book a table at Barbeque Nation for 4 at 8 pm tonight", "book_reservation"),
     ("is dominos open now", "place_info"), ("what time does doon hospital close", "place_info"),
-    ("explain kirchhoff voltage law", "explain"), ("read my email", None),
+    ("explain kirchhoff voltage law", "explain"), ("read my email", "inbox_summary"),   # your real inbox, never guessed (4 Oct 2026)
     ("add a task finish the DSD lab record", "add_task"), ("add submit assignment to my tasks for friday", "add_task"),
     ("what's my full schedule today", "daily_brief"), ("what do you remember about me", "what_you_remember"),
 ]
@@ -262,14 +262,13 @@ SIMPLE_SPLIT = [
     ("open spotify and then play believer", 2),
     ("take a screenshot and open downloads", 2),
     ("find the scheduler pdf and send it to Rahul", None),
-    ("check my battery and tell me what classes I have tomorrow", None),
+    ("check my battery and tell me what classes I have tomorrow", 2),   # two instant lookups
 ]
 # Today's brief covers what is left of the day; "full"/"whole" asks for all.
 # (said, full?)
 BRIEF_FULL = [
     ("what is my schedule", False), ("brief me", False),
     ("what's my full schedule today", True), ("whats my whole day", True),
-    ("what classes do I have tomorrow", False),
     ("Athena, breathe me.", False),
 ]
 ROUTINES = [

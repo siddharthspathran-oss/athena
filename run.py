@@ -212,8 +212,16 @@ def _log_to_file(mode: str) -> None:
     down with it."""
     if sys.stdout is not None and sys.stderr is not None:
         return
+    import time as _time
     from jarvis.config import DATA
-    log = open(DATA / f"{mode}.log", "w", encoding="utf-8", buffering=1)
+    path = DATA / f"{mode}.log"
+    # Appended, not overwritten: every restart wiped the day's log, so a
+    # day of voice bugs could not be looked at afterwards (4 Oct 2026).
+    # Past 2 MB the old log becomes <mode>.1.log (one copy kept).
+    if path.exists() and path.stat().st_size > 2_000_000:
+        path.replace(path.with_name(f"{mode}.1.log"))
+    log = open(path, "a", encoding="utf-8", buffering=1)
+    log.write(f"\n===== {mode} started {_time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
     sys.stdout = sys.stderr = log
 
 

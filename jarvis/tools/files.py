@@ -682,6 +682,14 @@ def open_file(path: str) -> str:
         return f"Opened the {p.name} folder."
 
     where = _where(p)
+    from .. import vault
+    v = vault.root()
+    if v and p.suffix.lower() == ".md" and v in p.parents and vault.obsidian_installed():
+        # Notes in the vault open in Obsidian (it does not claim .md files itself).
+        import os
+        import urllib.parse
+        os.startfile("obsidian://open?path=" + urllib.parse.quote(str(p)))
+        return f"Opened {p.stem} in Obsidian."
     handler = _handler(p.suffix) if p.suffix else None
     if handler:
         try:

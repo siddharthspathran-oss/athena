@@ -143,11 +143,24 @@ def check_failure_log(bad):
         bad.append("run.py failures report is empty")
 
 
+def check_follow_ups(bad):
+    """Said within the follow-up window, without "Athena": what is meant for her
+    counts, room talk and lyrics do not (9 Oct 2026)."""
+    from jarvis.ui.voice import _followish
+    for t in ("and tomorrow?", "what about DSA", "also open it", "okay now play something",
+              "why is that?", "same for probability", "then remind me at 5"):
+        if not _followish(t):
+            bad.append(f"follow-up not taken: {t!r}")
+    for t in ("and then the ocean", "we'll see you in a minute", "yeah", "the match was crazy man"):
+        if _followish(t):
+            bad.append(f"room talk taken as a follow-up: {t!r}")
+
+
 if __name__ == "__main__":
     bad: list[str] = []
-    for check in (check_player, check_fallback, check_text, check_failure_log):
+    for check in (check_player, check_fallback, check_text, check_failure_log, check_follow_ups):
         check(bad)
     for b in bad:
         print("FAIL", b)
-    print(f"4 groups of checks, {len(bad)} failure(s)")
+    print(f"5 groups of checks, {len(bad)} failure(s)")
     sys.exit(1 if bad else 0)

@@ -22,9 +22,7 @@ Everything is read-only. Nothing here sends, deletes, accepts or replies.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import urllib.request
-from pathlib import Path
 
 from ..config import DATA, cfg
 from ..registry import tool
@@ -533,3 +531,74 @@ def daily_brief(day: str = "today", full: bool = False) -> str:
             pass
 
     return "\n".join(lines)
+
+
+# ---------- the evening summary (9 Oct 2026) ----------
+
+def _evening() -> str:
+    """What got done today, what is still open, and tomorrow's start."""
+    from .. import upes
+    from ..store import load_json
+    from . import todo
+    today, tomorrow = dt.date.today(), dt.date.today() + dt.timedelta(days=1)
+    tasks = todo.load()
+    done = [t["text"] for t in tasks if t["done"] and (t.get("finished") or "")[:10] == today.isoformat()]
+    late = [t["text"] for t in tasks if not t["done"] and t.get("due") and t["due"][:10] <= today.isoformat()]
+    parts = [f"Today you finished {len(done)} task{'s' if len(done) != 1 else ''}"
+             + (f": {', '.join(done[:3])}." if done else ".")]
+    if late:
+        parts.append(f"Still open: {', '.join(late[:3])}" + (f" and {len(late) - 3} more." if len(late) > 3 else "."))
+    lms = [e["name"] for e in load_json(upes.LMS_CACHE, {}).get("events", [])
+           if not e["done"] and dt.date.fromtimestamp(e["due"]) == tomorrow]
+    if lms:
+        parts.append(f"Due tomorrow on LMS: {', '.join(lms[:3])}.")
+    try:
+        cs = [c for c in upes.classes(tomorrow, cached_only=True) if not c["cancelled"]]
+    except Exception:
+        cs = []
+    if cs:
+        c = cs[0]
+        parts.append(f"Tomorrow starts with {c['course'].split(',')[0]} at {c['start']}"
+                     + (f" in {c['room']}." if c.get("room") else "."))
+    else:
+        first = _first_tomorrow()
+        parts.append(f"Tomorrow your first thing is {first['title']} at {_clock(_local(first['start']))}."
+                     if first else "No classes tomorrow.")
+    return " ".join(parts)
+
+
+@tool(tags=TAG, timeout=60)
+def evening_summary() -> str:
+    """The day wrapped up: tasks finished today, what is still open, what is
+    due tomorrow, and tomorrow's first class. Use for "evening summary",
+    "how did today go", "wrap up my day"."""
+    return _evening()
+
+
+def start_evening(speak) -> None:
+    """Said once each evening at brief.evening_at, only if you're at the PC
+    (presence) and automation isn't paused; brief.evening: false turns it off."""
+    import threading
+    import time
+
+    def loop():
+        from .. import presence, rules
+        said = load_json(DATA / "evening.json", {}).get("said", "")   # a restart must not repeat it
+        while True:
+            time.sleep(60)
+            try:
+                now = dt.datetime.now()
+                at = str(cfg.get("brief.evening_at", "21:30"))
+                late = (dt.datetime.strptime(at, "%H:%M") + dt.timedelta(hours=2)).strftime("%H:%M")
+                if (not cfg.get("brief.evening", True) or said == now.date().isoformat()
+                        or not at <= now.strftime("%H:%M") < late or presence.away() or rules.paused()):
+                    continue
+                said = now.date().isoformat()
+                save_json(DATA / "evening.json", {"said": said})
+                summary = _evening()
+                speak(summary)
+                from .. import vault
+                vault.append_daily("Evening summary", summary)   # kept in Obsidian's daily note
+            except Exception as e:
+                print(f"[evening summary: {e}]")
+    threading.Thread(target=loop, daemon=True, name="athena-evening").start()

@@ -341,10 +341,6 @@ def press_keys(*vks: int) -> None:
         user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
 
 
-VK_CONTROL = 0x11
-VK_RETURN = 0x0D
-VK_ESCAPE = 0x1B
-
 
 # --- screen ---
 
@@ -360,6 +356,3 @@ def screenshot(path: Path, region: tuple[int, int, int, int] | None = None) -> P
     img.save(path)
     return path
 
-
-def screen_size() -> tuple[int, int]:
-    return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)

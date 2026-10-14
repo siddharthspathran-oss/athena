@@ -305,6 +305,7 @@ def classes(day=None, cached_only: bool = False) -> list[dict]:
         out.append({"course": ", ".join(m.get("ModuleName", "") for m in s.get("ModuleList") or []),
                     "start": _hhmm(str(s.get("SlotStartTime", ""))), "end": _hhmm(str(s.get("SlotEndTime", ""))),
                     "room": (s.get("FloorPlanDetails") or {}).get("VenueName", ""),
+                    "link": (s.get("FloorPlanDetails") or {}).get("MeetingLink") or "",
                     "teacher": ", ".join(t.get("Name", "") for t in s.get("TeacherList") or []),
                     "cancelled": bool(s.get("IsCancelledSlot"))})
     return sorted(out, key=lambda c: c["start"])

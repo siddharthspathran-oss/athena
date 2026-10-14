@@ -111,6 +111,9 @@ class Memory:
         # disk - which is what the voice and hotkey interfaces want, since a
         # spoken one-liner is not a conversation worth keeping.
         self.chat_id: str | None = None
+        # The project a new chat is started in (chats.projects); saved with it.
+        self.project = ""
+        self._summarising = False
         # What the model is shown, which is not what is kept. Trimming holds
         # the transcript inside the context window; the saved history is the
         # whole thing, so reopening a chat shows everything that was said.
@@ -142,7 +145,26 @@ class Memory:
 
     # ---------- short term ----------
 
+    def stale(self) -> bool:
+        """The open chat has been quiet for chat.new_after_hours: what comes
+        next is a new conversation, as in ChatGPT. One chat had run on for 162
+        messages across flip-flops, Teams and Fourier series (13 Oct 2026)."""
+        if not self.chat_id or not self.full:
+            return False
+        import time
+        from . import chats
+        from .config import cfg
+        updated = load_json(chats._path(self.chat_id), {}).get("updated", 0)
+        return bool(updated) and time.time() - updated > float(cfg.get("chat.new_after_hours", 3)) * 3600
+
     def add(self, role: str, content: str, **extra: Any) -> None:
+        if role == "user" and self.stale():
+            self.start_chat()
+        if role == "user" and self.chat_id:
+            # Set before any tool runs: a study question goes straight to its
+            # tool without build(), and its prompt reads the project's notes.
+            from . import chats
+            chats.ACTIVE = chats.project(self.project or chats.meta(self.chat_id).get("project", ""))
         msg = {"role": role, "content": content}
         msg.update(extra)
         if role == "user":
@@ -151,6 +173,8 @@ class Memory:
         self.full.append(msg)
         self._trim()
         self.persist()
+        if role == "assistant":
+            self._summarise_older()
         if not self.chat_id:
             # Voice and popup turns are not saved as chats; note them so the
             # profile learner still hears what was said.
@@ -177,15 +201,16 @@ class Memory:
             return
         try:
             from . import chats
-            chats.save(self.chat_id, self.full)
+            chats.save(self.chat_id, self.full, project=self.project)
         except Exception:
             pass            # never lose a reply over a failed write
 
-    def start_chat(self, chat_id: str | None = None) -> str:
-        """Begin a new conversation, or resume a saved one."""
+    def start_chat(self, chat_id: str | None = None, project: str = "") -> str:
+        """Begin a new conversation (in a project, optionally), or resume a saved one."""
         from . import chats
 
         self._sent = {}
+        self.project = chats.meta(chat_id).get("project", "") if chat_id else project
         if chat_id:
             self.full = chats.load(chat_id)
             # Only the tail goes to the model; the rest is history for the
@@ -199,6 +224,68 @@ class Memory:
             self.messages = []
         self.chat_id = chat_id
         return chat_id
+
+    def rewind(self, n: int = -1, text: str = "") -> bool:
+        """Cut the chat back to just before a user message, for Edit and
+        Regenerate: that question is then asked again. Found by its text (the
+        last one that matches) when given, else as the n-th (0-based)."""
+        users = [i for i, m in enumerate(self.full) if m.get("role") == "user"]
+        if text:
+            want = " ".join(text.split()).lower()
+            hit = [i for i in users if " ".join(str(self.full[i].get("content", "")).split()).lower().startswith(want)]
+            if not hit:
+                return False
+            cut = hit[-1]
+        elif 0 <= n < len(users):
+            cut = users[n]
+        else:
+            return False
+        self.full = self.full[:cut]
+        self.messages = self.full[-self.max_messages:]
+        while self.messages and self.messages[0].get("role") == "tool":
+            self.messages.pop(0)
+        self._sent = {k: v for k, v in self._sent.items() if any(id(m) == k for m in self.full)}
+        if self.chat_id:
+            from . import chats
+            chats.update(self.chat_id, messages=self.full, updated=__import__("time").time())
+        return True
+
+    def _summarise_older(self) -> None:
+        """Long chats: the model sees only the last stretch, so what fell off the
+        front is kept as a short running summary in the chat file (ChatGPT and
+        Claude remember a whole long chat; this is the cheap version)."""
+        if not self.chat_id or self._summarising:
+            return
+        from . import chats
+        dropped = len(self.full) - len(self.messages)
+        done = chats.meta(self.chat_id).get("summary_upto", 0)
+        if dropped - done < 12:
+            return
+        older = [m for m in self.full[done:dropped]
+                 if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)]
+        if not older:
+            return
+        prev = chats.meta(self.chat_id).get("summary", "")
+        chat_id = self.chat_id
+        self._summarising = True
+
+        def work():
+            try:
+                from .llm import LLM
+                talk = "\n".join(f"{m['role']}: {m['content'][:600]}" for m in older)
+                msg = LLM().chat([{"role": "user", "content":
+                                   "Update this running summary of an earlier part of a chat between the user and "
+                                   "their assistant Athena. Keep facts, decisions, names, numbers and what the user "
+                                   "is working on; drop small talk. Under 150 words, plain sentences.\n\n"
+                                   f"Summary so far: {prev or '(none)'}\n\nNew part:\n{talk}"}],
+                                 temperature=0.2, max_tokens=300)
+                if msg.content and msg.content.strip():
+                    chats.update(chat_id, summary=msg.content.strip(), summary_upto=dropped)
+            except Exception:
+                pass
+            finally:
+                self._summarising = False
+        __import__("threading").Thread(target=work, daemon=True).start()
 
     def _trim(self) -> None:
         """Keep the transcript inside the context window, dropping oldest first.
@@ -265,6 +352,22 @@ class Memory:
         if learned:
             sys += ("\n\nWhat you know about the user from earlier conversations "
                     "(use it; don't recite it):\n" + learned)
+        if self.chat_id:
+            from . import chats
+            meta = chats.meta(self.chat_id)
+            proj = chats.project(self.project or meta.get("project", ""))
+            chats.ACTIVE = proj
+            if proj:
+                sys += (f"\n\nThis chat is part of the user's project \"{proj['name']}\"."
+                        + (f" Their notes for it (keep them in mind):\n{proj['notes']}" if proj.get("notes") else ""))
+            if proj:
+                q = next((str(x.get("content", "")) for x in reversed(self.messages) if x.get("role") == "user"), "")
+                ctx = chats.relevant(proj["id"], q)
+                if ctx:
+                    sys += ("\n\nFrom the files in this project (use them when they help, and say which "
+                            "file):\n" + ctx)
+            if meta.get("summary") and len(self.full) > len(self.messages):
+                sys += "\n\nEarlier in this chat (summary):\n" + meta["summary"]
         out: list[dict[str, Any]] = [{"role": "system", "content": sys}]
         stamped = False
         for m in self.messages:

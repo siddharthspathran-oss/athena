@@ -62,6 +62,17 @@ Memory is a tool, not something you can do by thinking:
 - When the user states a lasting personal fact - their name, a birthday, a
   preference, a folder they use - call `remember` even if they did not say the
   word "remember".
+
+Work like a partner, not a vending machine (13 Oct 2026):
+- Keep track of what the user is working on in this conversation - the
+  assignment, the bug, the plan - and build on it. "Do the next one" or "now
+  make it shorter" refers to that work; don't make them repeat it.
+- When a piece of work is done and there is an obvious next step, offer it in
+  one short line ("Want me to send it to your phone?"). Don't offer anything
+  when there's no real next step.
+- Say what you think when it helps: if their approach has a problem, or there
+  is a clearly better way, say so briefly and why. Be honest when you're unsure.
+- If something is unclear, ask one short question instead of guessing.
 """
 
 
@@ -112,6 +123,8 @@ def warm(voice: bool = True, load: bool = False) -> None:
         if gaming.on() and not load:
             return      # Ollama still lists a model it just freed; warming would reload it mid-game
         llm = LLM()
+        if llm._cloud():
+            llm = llm._local()          # keep the local fallback warm instead
         loaded = [m.model for m in llm.client.ps().models]
         if not load and not any(m.split(":")[0] == str(llm.model).split(":")[0]
                                 and m.endswith(str(llm.model).split(":")[-1]) for m in loaded):
@@ -493,6 +506,30 @@ class Agent:
         if follow is not None:
             multi = False
         direct = follow or (None if multi else route(user_input))
+        # In a project whose files cover the question, a look-up shortcut steps
+        # aside and the model answers with the files in front of it (and the
+        # tools still to hand): "when is my Unit 3 quiz" went to the LMS list
+        # while the syllabus in the project had the date (14 Oct 2026).
+        # A project with files is a study room: questions there are class work,
+        # answered from the files in the chat (14 Oct 2026: "how many units in
+        # my course plan" got the daily brief). Commands ("open spotify",
+        # "remind me ...") still go to their shortcuts.
+        from . import chats
+        proj = chats.ACTIVE
+        if proj and not follow and chats.project_files(proj["id"]) and (
+                (direct and direct[0] in _LOOKUPS and (direct[0] == "explain" or chats.covers(proj["id"], user_input)))
+                or (not direct and _QUESTION.match(user_input))):
+            from .tools import study
+            self.on_step(Step(tool="project_files", args={"project": proj["name"]}, result="answering from the project's files"))
+            try:
+                answer = study.project_answer(user_input, self.memory.full[:-1], proj)
+            except Exception as e:
+                answer = ""
+                print(f"[project] {e}")
+            if answer:
+                self.memory.add("assistant", answer)
+                self._last_answer = answer
+                return answer
         # "open WhatsApp and message maa ..." is one job - the message tool opens
         # WhatsApp itself. Sent to the planner it re-ran whatsapp_message until
         # it timed out: 101 s and nothing sent (3 Oct 2026).
@@ -585,8 +622,12 @@ class Agent:
 
         done_calls: dict[str, str] = {}      # call -> its result, to stop repeat loops
         for _ in range(max_steps):
+            if self.cancelled:                  # Stop pressed in the chat (POST /ask/stop)
+                return "(stopped)"
             if self.speak is None:
                 msg = self.llm.chat(self.memory.build(), tools=tools)
+                if self.cancelled:
+                    return "(stopped)"
             else:
                 blocked = [False]
 
@@ -961,6 +1002,15 @@ _OPEN_IT = re.compile(r"^\W*(?:(?:athena|jarvis|ok|okay|then|so|yes)\W+)*(?:open
 _OFFERED = re.compile(
     r"\b(?:let me know if you(?:'d)? (?:want|like) (?:me )?to|(?:do )?you want me to|want me to|"
     r"shall i|should i|would you like me to|i can)\s+(.+?)(?:\s+or\s+.*)?[.?!]?\s*$", re.I)
+
+# Shortcuts that only look something up - a project's files can answer these better.
+_LOOKUPS = {"lms_deadlines", "check_deadlines", "upes_classes", "teams_meetings", "my_attendance",
+            "web_search", "show_timetable", "recall", "daily_brief", "explain", "read_webpage", "lms_files"}
+# A question or a piece of study work, as opposed to a command.
+_QUESTION = re.compile(r"\s*(?:athena[,\s]+)?(?:what|whats|what's|why|how|when|where|which|who|whom|whose|is|are|was|were|"
+                       r"do|does|did|can|could|should|would|will|explain|derive|solve|find|calculate|compute|prove|"
+                       r"show\s+that|list|summari[sz]e|summary|compare|differentiate|define|describe|give\s+me|tell\s+me|"
+                       r"make\s+(?:me\s+)?(?:notes|a\s+summary|questions)|quiz|revise|teach)\b|.*\?\s*$", re.I)
 
 _OPEN_WHATSAPP = re.compile(
     r"^\W*(?:(?:athena|jarvis)\W+)?(?:please\s+)?open\s+(?:the\s+)?whats\s?app(?:\s+app)?\s*(?:,\s*)?(?:and|then|&)?\s+", re.I)
@@ -1560,7 +1610,7 @@ def route(text: str) -> tuple[str, dict] | None:
     "open downloads" exactly as you would.
     """
     said = _fix_verb(clean_speech(text))
-    return (_direct_watch(said) or _direct_mode(said) or _direct_quiz(said) or _direct_labreport(said) or _direct_phone_ctl(said) or _direct_teams(said) or _direct_power(said) or _direct_basic(said) or _direct_info(said) or _direct_memory(said)
+    return (_direct_watch(said) or _direct_answer(said) or _direct_mode(said) or _direct_quiz(said) or _direct_labreport(said) or _direct_phone_ctl(said) or _direct_teams(said) or _direct_power(said) or _direct_basic(said) or _direct_info(said) or _direct_memory(said)
             or _direct_phone_files(said) or _direct_find_document(said)
             or _direct_store(said)
             or _direct_routine(said) or _direct_it(said)
@@ -1612,6 +1662,19 @@ def _direct_quiz(text: str) -> tuple[str, dict] | None:
     topic = re.sub(r"^(?:my|the)\s+", "", (m.group("t") or m.group("t2")).strip(), flags=re.I)
     n = int(m.group("n") or m.group("n2") or 5)
     return "quiz_me", {"topic": topic, "questions": n}
+
+
+def _direct_answer(text: str) -> tuple[str, dict] | None:
+    """"Open the answer (in the browser)", "show me the full answer": the newest
+    study page. 13 Oct 2026: the model said "I've already opened it" and opened
+    nothing."""
+    if not re.match(_R_LEAD + r"(?:open|show|display|bring\s+up)\s+(?:me\s+)?(?:the\s+|yhe\s+|teh\s+|tge\s+|that\s+|this\s+|your\s+)?"
+                    r"(?:full\s+|last\s+|latest\s+)?(?:answer|solution|working)(?:\s+page)?"
+                    r"(?:\s+(?:again|in\s+(?:the\s+|my\s+)?(?:browser|chrome|edge)))*\W*$", text, re.I):
+        return None
+    from .render import ANSWERS
+    pages = sorted(ANSWERS.glob("*.html"), key=lambda f: f.stat().st_mtime)
+    return ("open_file", {"path": str(pages[-1])}) if pages else None
 
 
 def _direct_mode(text: str) -> tuple[str, dict] | None:

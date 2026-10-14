@@ -561,7 +561,7 @@ def music(action: str, song: str = "", position: int = 0) -> str:
     play their saved playlist. Works with Spotify, YouTube and any player,
     even in the background. "skip" and "next" move FORWARD.
 
-    action: play, pause, next, previous, mute, song (play a named song), track (play song number `position` in the list), surprise (pick something the user likes) or playlist (their saved playlist)
+    action: play, pause, next, previous, mute, song (play a named song, or an artist: "play arijit singh" -> song="arijit singh"), track (play song number `position` in the list), surprise (only when no song or artist is named) or playlist (their saved playlist)
     song: the song to play, optionally "by" the artist - for action song, or a title for action track
     position: which song in Spotify's list, counting from 1, or -1 for the last song - for action track
     """

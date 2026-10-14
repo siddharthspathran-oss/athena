@@ -17,6 +17,8 @@ to the public internet.
 from __future__ import annotations
 
 import json
+import re
+import urllib.parse
 import secrets
 import socket
 import threading
@@ -1027,6 +1029,27 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"models": study.choices()})
         elif path == "/chats":
             self._list_chats()
+        elif path == "/projects":
+            if not self._authorised():
+                self._json(401, {"error": "Bad or missing token."})
+                return
+            self._json(200, {"projects": _projects()})
+        elif path.startswith("/chats/") and path.endswith("/export"):
+            if not self._authorised():
+                self._json(401, {"error": "Bad or missing token."})
+                return
+            cid = Path(path[len("/chats/"):-len("/export")]).name
+            if cid == "current":
+                cid = _agent.memory.chat_id or ""
+            text = chats.export_md(cid)
+            name = re.sub(r"[^\w\- ]+", "", chats.meta(cid).get("title") or "chat").strip()[:60] or "chat"
+            body = text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{name}.md"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif path.startswith("/chats/"):
             self._open_chat(path[len("/chats/"):])
         elif path.startswith("/answers/"):
@@ -1146,10 +1169,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorised():
             self._json(401, {"error": "Bad or missing token."})
             return
+        q = urllib.parse.parse_qs(self.path.partition("?")[2]).get("q", [""])[0].strip()
+        found = chats.search(q) if q else chats.listing()[:200]
         self._json(200, {"chats": [
             {**c, "when": chats.when(c["updated"]),
              "live": c["id"] == _agent.memory.chat_id}
-            for c in chats.listing()[:60]]})
+            for c in found], "projects": _projects(), "query": q})
 
     def _open_chat(self, chat_id: str) -> None:
         """Switch to a saved conversation and hand back its messages."""
@@ -1159,9 +1184,11 @@ class Handler(BaseHTTPRequestHandler):
         chat_id = Path(chat_id).name
         with _lock:
             if chat_id == "current":
-                pass            # just hand back what is already open
+                if _agent.memory.stale():       # back after a break: a fresh chat, not the old one
+                    _agent.memory.start_chat()
             elif chat_id == "new":
-                _agent.memory.start_chat()
+                pid = urllib.parse.parse_qs(self.path.partition("?")[2]).get("project", [""])[0]
+                _agent.memory.start_chat(project=pid if chats.project(pid) else "")
             elif not chats.load(chat_id):
                 self._json(404, {"error": "No such chat."})
                 return
@@ -1369,6 +1396,52 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = self.path.split("?")[0]
+        if route == "/ask/stop":                    # the Stop button: no lock, the answer holds it
+            if not self._authorised():
+                self._json(401, {"error": "Bad or missing token."})
+                return
+            _agent.cancelled = True
+            self._json(200, {"ok": True})
+            return
+        if route in ("/chats/rewind", "/projects", "/projects/delete") or (
+                route.startswith("/chats/") and route.endswith("/project")):
+            if not self._authorised():
+                self._json(401, {"error": "Bad or missing token."})
+                return
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            except ValueError:
+                body = {}
+            if route == "/chats/rewind":            # Edit / Regenerate: cut back to before question n
+                with _lock:
+                    ok = _agent.memory.rewind(int(body.get("n", -1)), str(body.get("text", "")))
+                self._json(200 if ok else 400, {"ok": ok})
+            elif route == "/projects":
+                self._json(200, {"project": chats.save_project(str(body.get("name", "")), str(body.get("notes", "")),
+                                                               str(body.get("id", "")))})
+            elif route == "/projects/delete":
+                self._json(200, {"ok": chats.delete_project(str(body.get("id", "")))})
+            else:                                   # /chats/<id>/project {"project": id or ""}
+                cid = Path(route[len("/chats/"):-len("/project")]).name
+                pid = str(body.get("project", ""))
+                ok = (not pid or bool(chats.project(pid))) and chats.update(cid, project=pid)
+                if ok and cid == _agent.memory.chat_id:
+                    _agent.memory.project = pid
+                self._json(200 if ok else 404, {"ok": bool(ok)})
+            return
+        if route.startswith("/chats/") and route.rsplit("/", 1)[-1] in ("rename", "pin"):
+            if not self._authorised():
+                self._json(401, {"error": "Bad or missing token."})
+                return
+            chat_id, what = Path(route[len("/chats/"):].rsplit("/", 1)[0]).name, route.rsplit("/", 1)[-1]
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            except ValueError:
+                body = {}
+            ok = (chats.rename(chat_id, str(body.get("title", ""))) if what == "rename"
+                  else chats.pin(chat_id, bool(body.get("on"))))
+            self._json(200 if ok else 404, {"ok": ok})
+            return
         if route.startswith("/chats/") and route.endswith("/restore"):      # Undo a delete
             if not self._authorised():
                 self._json(401, {"error": "Bad or missing token."})
@@ -1410,6 +1483,8 @@ class Handler(BaseHTTPRequestHandler):
                     out = views.run_routine(body.get("name", ""))
                 elif page == "tasks":
                     out = views.task_action(body)
+                elif page == "rules":                     # the Automations page: switch one off, remove one
+                    out = views.rule_action(body)
                 elif page == "alarm":
                     from .. import alarm
                     out = {"said": alarm.snooze(int(body.get("minutes", 10))) if body.get("action") == "snooze"
@@ -1432,6 +1507,32 @@ class Handler(BaseHTTPRequestHandler):
                 out = {"said": f"ERROR: {e}"}
             _log(f"page action: {page} {body.get('action') or body.get('name') or ''}".strip())
             self._json(200, out)
+            return
+        if route.startswith("/projects/") and route.endswith("/files"):      # add a file to a project
+            if not self._authorised():
+                self._json(401, {"error": "Bad or missing token."})
+                return
+            pid = Path(route[len("/projects/"):-len("/files")]).name
+            name = urllib.parse.parse_qs(self.path.partition("?")[2]).get("name", ["file"])[0]
+            size = int(self.headers.get("Content-Length") or 0)
+            if size > chats.MAX_FILE:
+                self._json(413, {"error": f"{name}: over 30 MB."})
+                return
+            try:
+                self._json(200, {"file": chats.add_file(pid, name, self.rfile.read(size))})
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+            return
+        if route.startswith("/projects/") and route.endswith("/files/delete"):
+            if not self._authorised():
+                self._json(401, {"error": "Bad or missing token."})
+                return
+            pid = Path(route[len("/projects/"):-len("/files/delete")]).name
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            except ValueError:
+                body = {}
+            self._json(200, {"ok": chats.remove_file(pid, str(body.get("name", "")))})
             return
         if route == "/upload":
             self._receive_upload()
@@ -1538,6 +1639,11 @@ def _voice_pids() -> list[int]:
         except Exception:
             continue
     return out
+
+
+def _projects() -> list[dict]:
+    """Projects with their files, for the chat list."""
+    return [{**p, "files": chats.project_files(p["id"])} for p in chats.projects()]
 
 
 def start_voice() -> str:

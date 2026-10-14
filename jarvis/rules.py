@@ -108,10 +108,36 @@ def _save(rules: list[dict]) -> None:
     save_json(RULES, rules)
 
 
+def _every(m: int) -> str:
+    """60 -> 'every hour', 360 -> 'every 6 hours', 1440 -> 'every day', 30 -> 'every 30 minutes'."""
+    if m and m % 1440 == 0:
+        return "every day" if m == 1440 else f"every {m // 1440} days"
+    if m and m % 60 == 0:
+        return "every hour" if m == 60 else f"every {m // 60} hours"
+    return f"every {m} minutes"
+
+
+def set_enabled(rule_id: str, on: bool) -> str:
+    """Switch one automation on or off without deleting it (the HUD's toggle)."""
+    rules = load()
+    for r in rules:
+        if r["id"] == rule_id:
+            r["enabled"] = bool(on)
+            _save(rules)
+            return f"{'On' if on else 'Off'}: {describe(r)}."
+    return "That automation no longer exists."
+
+
+_WATCH_NAMES = {"what's due on lms": "tell me about new or removed LMS deadlines",
+                "what classes do i have tomorrow": "tell me when tomorrow's classes change",
+                "my attendance": "tell me when my attendance changes",
+                "what are my tasks": "tell me when my tasks change"}
+
+
 def describe(r: dict) -> str:
     w = r["when"]
     t = w["type"]
-    when = {"time": f"every day at {w.get('at')}", "every": f"every {w.get('minutes')} minutes",
+    when = {"time": f"every day at {w.get('at')}", "every": _every(int(w.get("minutes") or 0)),
             "wifi": f"when Wi-Fi '{w.get('ssid')}' connects", "bluetooth": f"when {w.get('device')} connects",
             "app": f"when {w.get('name')} opens", "class": f"when {w.get('title')} class starts" if w.get('title') != "any"
             else "when a Teams class starts", "message": f"when {w.get('from')} messages you",
@@ -122,7 +148,7 @@ def describe(r: dict) -> str:
             return {"stuck_orders": f"check for RAGAZZA orders stuck over {arg or 2} days",
                     "due_soon": "tell me what's due by tomorrow",
                     "attendance": f"warn me if attendance drops below {arg or 75}%",
-                    "changes": f"tell me what's new in '{arg}'"}.get(name, c)
+                    "changes": _WATCH_NAMES.get(arg, f"tell me what's new in '{arg}'")}.get(name, c)
         if c.startswith("tool:"):
             from .habits import _label
             name, _, raw = c[5:].partition(" ")
@@ -163,6 +189,7 @@ def _watch_attendance(limit: str = "75") -> str:
 
 
 LAST = DATA / "watch_last.json"
+_LAST_LOCK = threading.Lock()
 # Words that change by themselves ("in 3 days" becomes "in 2 days"), not news.
 _DRIFT = re.compile(r"\b(?:overdue|today|tomorrow|in \d+ days?|as of \d+ \w+ ago|\d+ (?:min|hour|day)s? ago)\b|[^\w ]", re.I)
 
@@ -190,11 +217,12 @@ def _watch_changes(command: str) -> str:
     if re.search(r"\b(?:sign in|signed out|failed|error|can't|couldn't)\b", result, re.I):
         return ""                                   # a failed check is not a change
     day = dt.date.today().isoformat() if re.search(r"\b(?:today|tomorrow)\b", command, re.I) else ""
-    seen = load_json(LAST, {})
-    before = seen.get(command)
-    now = _items(result)
-    seen[command] = {"items": now, "day": day, "t": time.time()}
-    save_json(LAST, seen)
+    with _LAST_LOCK:        # the three watches fire together; parallel saves collided (WinError 5, 11 Oct 2026)
+        seen = load_json(LAST, {})
+        before = seen.get(command)
+        now = _items(result)
+        seen[command] = {"items": now, "day": day, "t": time.time()}
+        save_json(LAST, seen)
     if before is None or before.get("day") != day:  # first look, or "today" is a new day
         return ""
     new = [v for k, v in now.items() if k not in before["items"]]

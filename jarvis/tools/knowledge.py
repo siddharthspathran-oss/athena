@@ -80,10 +80,16 @@ def _extract(path: Path) -> str:
             return _demangle("\n".join((pg.extract_text() or "")
                                        for pg in PdfReader(str(path)).pages))
         if ext == ".docx":
-            import docx
-
-            return _demangle("\n".join(p.text
-                                       for p in docx.Document(str(path)).paragraphs))
+            # Every paragraph in the body, tables and text boxes included: an
+            # exam paper laid out in a table read as empty through
+            # python-docx's .paragraphs (14 Oct 2026).
+            import html
+            import re
+            import zipfile
+            with zipfile.ZipFile(path) as z:
+                xml = z.read("word/document.xml").decode("utf-8", "replace")
+            paras = ("".join(re.findall(r"<w:t(?:\s[^>]*)?>([^<]*)</w:t>", p)) for p in xml.split("</w:p>"))
+            return _demangle("\n".join(html.unescape(p) for p in paras if p.strip()))
         if ext == ".pptx":
             # Lecture slides from LMS (9 Oct 2026): a .pptx is a zip of XML,
             # the words are in <a:t>, one slide file each, in slide order.

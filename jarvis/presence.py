@@ -151,10 +151,16 @@ def welcome(minutes_away: float) -> str:
         today = now.date().isoformat()
         late = [_short(t["text"]) for t in todo.load() if not t["done"] and t.get("due") and t["due"][:10] < today]
         due = [_short(t["text"]) for t in todo.load() if not t["done"] and (t.get("due") or "")[:10] == today]
-        if late:
-            items.append(f"{_and(late[:2])} {'is' if len(late) == 1 else 'are'} still overdue")
-        elif due:
-            items.append(f"{_and(due[:2])} {'is' if len(due) == 1 else 'are'} due today")
+        # Said once a day, not in every welcome - "Voice in Action is still
+        # overdue" came with every greeting (11 Oct 2026).
+        from .config import DATA
+        from .store import load_json, save_json
+        saved = load_json(DATA / "presence.json", {})
+        nag = sorted(late[:2]) if late else sorted(due[:2])
+        if nag and saved.get("nagged") != [today, nag]:
+            items.append(f"{_and(late[:2])} {'is' if len(late) == 1 else 'are'} still overdue" if late
+                         else f"{_and(due[:2])} {'is' if len(due) == 1 else 'are'} due today")
+            save_json(DATA / "presence.json", {**saved, "nagged": [today, nag]})
     except Exception:
         pass
     try:
@@ -183,23 +189,42 @@ def _spoken_time(hhmm: str) -> str:
     return f"{(h - 1) % 12 + 1}" + (f":{m:02d}" if m else "")
 
 
+_greet_lock = threading.Lock()
+
+
 def greet(reason: str = "", minutes_away: float = 30) -> None:
-    """Called when you're back (or the laptop opens). At most once in 20 minutes."""
+    """Called when you're back (or the laptop opens). At most once in 20 minutes.
+
+    11 Oct 2026, "it starts talking by itself": every restart of Athena's
+    voice greeted you as if you had just arrived, and three triggers at once
+    (wake, unlock, back) each passed the 20-minute check before any had
+    written it down, so the same welcome was said three times in a row.
+    """
     from .config import DATA
     from .store import load_json, save_json
-    _state["greeted"] = max(_state["greeted"], load_json(DATA / "presence.json", {}).get("greeted", 0))
-    if not cfg.get("presence.greet", True) or time.time() - _state["greeted"] < 1200:
-        return                                   # (kept on disk: every restart greeted again)
+    if not cfg.get("presence.greet", True):
+        return
+    if reason == "start":
+        try:                                     # Athena restarting is not you arriving:
+            import psutil                        # greet at start only just after Windows did
+            if time.time() - psutil.boot_time() > 15 * 60:
+                return
+        except Exception:
+            return
     try:
         from . import gaming
         if gaming.on():
             return
     except Exception:
         pass
-    text = welcome(minutes_away)
-    _state["greeted"] = time.time()
-    save_json(DATA / "presence.json", {"greeted": _state["greeted"]})
-    interject(text)
+    with _greet_lock:                            # claim the slot before the slow part
+        saved = load_json(DATA / "presence.json", {})
+        _state["greeted"] = max(_state["greeted"], saved.get("greeted", 0))
+        if time.time() - _state["greeted"] < float(cfg.get("presence.greet_gap_minutes", 120)) * 60:
+            return
+        _state["greeted"] = time.time()
+        save_json(DATA / "presence.json", {**saved, "greeted": _state["greeted"]})
+    interject(welcome(minutes_away))
 
 
 def _back(minutes: float) -> None:
@@ -211,13 +236,17 @@ def _back(minutes: float) -> None:
             winapi.media_key("playpause")
         except Exception:
             pass
-    if minutes >= float(cfg.get("presence.greet_after_minutes", 10)):
+    # Only when the camera saw you leave: idle time alone (watching from the
+    # bed, a dark room) gave four welcome-backs a day while you never left
+    # (12 Oct 2026, "it starts talking by itself").
+    if _state.pop("saw_gone", False) and minutes >= float(cfg.get("presence.greet_after_minutes", 30)):
         greet("back", minutes)
 
 
 def _gone(since: float, saw: bool) -> None:
     from . import live, winapi
     live.note("you've stepped away")
+    _state["saw_gone"] = saw
     # Only on the camera's word: with idle time alone, a film you're watching
     # from the bed would be paused.
     # Music apps only (presence.music_apps): the play/pause key goes to

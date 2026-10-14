@@ -157,6 +157,10 @@ class LLM:
 
     def available(self) -> tuple[bool, str]:
         """(is_ollama_up, message). Starts the server if it is not running."""
+        if self._cloud():
+            from . import cloud
+            p = cloud.split(self.model)[0]
+            return (True, "ok") if cloud.get_key(p) else (False, cloud.how_to_get_one(p))
         if not self.ensure_server():
             return False, (f"Ollama is not reachable at {self.host} and could not be started. "
                            "Install it from ollama.com, or run: ollama serve")
@@ -174,6 +178,8 @@ class LLM:
         Worth checking - a model silently falling back to CPU is the difference
         between a half-second reply and three minutes.
         """
+        if self._cloud():
+            return "cloud"
         try:
             running = self.client.ps().models
         except Exception:
@@ -194,6 +200,30 @@ class LLM:
         return "not loaded"
 
     # ---------- generation ----------
+
+    def _cloud(self) -> bool:
+        """A hosted model ("nvidia:...", "groq:..."), with the local one as the fallback."""
+        from . import cloud
+        return cloud.split(self.model)[0] not in ("", "gemini")
+
+    def _local(self) -> "LLM":
+        return LLM(cfg.get("llm.fallback_model", "athena:3b"), self.host)
+
+    def _cloud_turn(self, messages, tools, temperature, max_tokens):
+        """The hosted model's answer, or None (and a note) if it failed - the caller falls back."""
+        from . import cloud
+        try:
+            return cloud.chat_tools(self.model, messages, tools,
+                                    temperature=cfg.get("llm.temperature", 0.3) if temperature is None else temperature,
+                                    max_tokens=int(max_tokens or cfg.get("llm.max_tokens", 600)),
+                                    timeout=int(cfg.get("llm.cloud_timeout_seconds", 20)))
+        except Exception as e:
+            try:
+                from . import live
+                live.note(f"cloud model failed, using the local one: {str(e)[:120]}")
+            except Exception:
+                pass
+            return None
 
     def _raw(self) -> bool:
         """Models fine-tuned on the Hugging Face template get that exact prompt
@@ -268,6 +298,9 @@ class LLM:
         worth having - but not without a limit, and not on a question that
         does not need it.
         """
+        if self._cloud():
+            msg = self._cloud_turn(messages, tools, temperature, max_tokens)
+            return msg if msg is not None else self._local()._chat(messages, tools, temperature, context, think, max_tokens)
         options: dict[str, Any] = {
             "temperature": (cfg.get("llm.temperature", 0.3)
                             if temperature is None else temperature),
@@ -320,6 +353,18 @@ class LLM:
         is never handed on; nor is anything once a real tool call shows up.
         """
         from types import SimpleNamespace
+        if self._cloud():
+            # Not streamed: a hosted reply is back in about a second, so it is
+            # spoken sentence by sentence once it arrives.
+            msg = self._cloud_turn(messages, tools, None, max_tokens)
+            if msg is None:
+                return self._local()._chat_stream(messages, tools, on_sentence, stop, max_tokens)
+            text = (msg.content or "").strip()
+            if not msg.tool_calls and text and text[:1] not in ("{", "[", "`") and not stop():
+                for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+                    if sentence.strip() and not stop():
+                        on_sentence(sentence.strip())
+            return msg
         content, calls, buf = [], [], ""
         quiet = False
         options = {"temperature": cfg.get("llm.temperature", 0.3),

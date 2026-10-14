@@ -60,7 +60,18 @@ def save_json(path: Path, data) -> None:
             json.dump(data, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)          # atomic on Windows and POSIX alike
+        for attempt in range(5):       # atomic on Windows and POSIX alike
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                # Windows refuses while another writer or a reader has the
+                # file open (two threads saving one chat, 14 Oct 2026): a
+                # moment later it is free.
+                if attempt == 4:
+                    raise
+                import time
+                time.sleep(0.05 * (attempt + 1))
     except Exception:
         try:
             os.unlink(tmp)

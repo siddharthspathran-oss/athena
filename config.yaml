@@ -10,7 +10,13 @@ llm:
   # model: "qwen2.5:7b".
   # This one answers everything spoken or typed; class work goes to
   # study.model instead, so a slow careful model there costs nothing here.
-  model: "athena:3b"
+  # 13 Oct 2026: a hosted model decides instead (NVIDIA NIM, ~1 s, right tool
+  # on every test), with athena:3b as the fallback when it fails or you're
+  # offline. Everything you say to Athena (text only) goes to NVIDIA.
+  # To go back to fully local: model: "athena:3b".
+  model: "nvidia:nvidia/nemotron-3.5-lightning-30b-a3b"
+  fallback_model: "athena:3b"
+  cloud_timeout_seconds: 20
   raw_models: ["athena"]
   host: "http://127.0.0.1:11434"
   temperature: 0.3
@@ -162,7 +168,7 @@ voice:
   #   sapi   - the Windows voice (tts_voice, tts_rate)
   #   clone  - the voice from data/voice_ref.wav (Coqui XTTS-v2, local)
   # Every one falls back to the Windows voice on any failure.
-  engine: "auto"
+  engine: "kokoro"   # pinned 13 Oct 2026: "auto" fell to piper when the GPU looked busy at start-up
   # 1.0 = the sample's own pace. 0.9 is a little slower, as asked.
   clone_speed: 0.9
   # auto = GPU when ~2.6 GB of VRAM is free, else CPU (slower, but it never
@@ -287,7 +293,10 @@ study:
   # The cost is real: about half an hour for a worksheet against five
   # minutes. Set this back to "" if you would rather have it quickly and
   # check the algebra yourself.
-  model: "gemini:gemini-3.5-flash"
+  # 13 Oct 2026: Groq first. Gemini 3.5 Flash failed every study question
+  # that day (503s and 3-minute timeouts) while Groq answered each one.
+  model: "groq:openai/gpt-oss-120b"
+  cloud_timeout_seconds: 45     # one hosted attempt, then the next in the list
 
   # Tried in order when the one above fails - a free tier that has run out
   # for the day, a 503, no network. The list ends with a local model on
@@ -327,9 +336,8 @@ study:
   # 24 Sep, with Gemini answering 503, that sent questions 3, 5 and 6 to the
   # local model. gpt-oss-120b answered the same request.
   fallback:
-    - "groq:openai/gpt-oss-120b"
+    - "nvidia:nvidia/nemotron-3-ultra-550b-a55b"   # 14 Oct 2026: before Gemini, which rate-limited all day
     - "gemini:gemini-3.5-flash"
-    - "openrouter:qwen/qwen3.8-27b:free"
     # The local rung is the everyday model, NOT qwen3:8b. qwen3 needs 7.8GB
     # of an 8GB card and answers a worksheet question in ten minutes, so
     # while it runs nothing else can load - a fallback meant to keep class
@@ -537,10 +545,10 @@ planner:
   # result (file names, page text, the brief). false = keep it all local;
   # multi-step requests then go to llm.model as before.
   enabled: true
-  model: "groq:openai/gpt-oss-120b"
+  model: "nvidia:nvidia/nemotron-3-ultra-550b-a55b"     # 13 Oct 2026, was groq:openai/gpt-oss-120b
   # Tried in order if the one above is rate limited or down. If none
   # answers, the request falls back to the local model.
-  fallback: ["gemini:gemini-3.5-flash", "groq:qwen/qwen3.8-27b"]
+  fallback: ["groq:openai/gpt-oss-120b", "gemini:gemini-3.5-flash", "groq:qwen/qwen3.8-27b"]
   # When the local model gets stuck on an ordinary request - runs out of
   # steps, repeats itself, or claims it did something without a tool - the
   # planner finishes the job, told what already ran so nothing is repeated.
@@ -573,7 +581,7 @@ teams:
   #            otherwise a push to your phone instead
   #   always - join even when you are away from the PC
   #   off    - never join; reminders only
-  auto_join: "at_pc"
+  auto_join: "always"
 
 phone_notify:
   # Read out phone messages that reach the PC through Phone Link / WhatsApp.
@@ -606,7 +614,8 @@ presence:
   camera: true
   camera_index: 0
   away_after_minutes: 3       # idle this long before she looks for you
-  greet_after_minutes: 10     # away at least this long for a welcome-back
+  greet_after_minutes: 30     # away at least this long (camera saw you go) for a welcome-back
+  greet_gap_minutes: 120      # at most one greeting in this long
   greet: true
   pause_music: true
   music_apps: ["spotify"]     # only these are paused when you leave; videos never are

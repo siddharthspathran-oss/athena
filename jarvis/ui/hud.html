@@ -16,6 +16,8 @@
 <script>window.MathJax={tex:{inlineMath:[['\\(','\\)']],displayMath:[['\\[','\\]'],['$$','$$']]},
   options:{skipHtmlTags:['script','style','textarea','code']},startup:{typeset:false}};</script>
 <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Figtree:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -229,11 +231,34 @@ body.chatting #say{display:block}
 .jv.err{border-color:rgba(255,107,122,.5);color:#ffc4ca}
 .jv .h{display:block;font-weight:700;color:var(--c);margin-top:6px}
 .jv code{font:13px var(--mono);background:rgba(196,168,255,.08);padding:0 4px;border-radius:4px}
+.jv .tbl{overflow-x:auto;margin:8px 0;white-space:normal}
+.jv table{border-collapse:collapse;font-size:13.5px;min-width:60%}
+.jv th,.jv td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+.jv th{background:rgba(196,168,255,.09);color:var(--c);font-weight:600}
 .jv.long .body{max-height:260px;overflow:hidden;-webkit-mask:linear-gradient(#000 75%,transparent)}
 .more,.open{display:inline-block;margin-top:6px;background:none;border:1px solid var(--line);border-radius:8px;
   color:var(--c);padding:4px 10px;font:12px var(--mono);letter-spacing:1px;text-decoration:none}
 .tr{font:12px var(--mono);color:var(--dim);margin:4px 0;overflow-wrap:anywhere}
 .shot{display:block;max-width:220px;border-radius:8px;margin-top:6px;border:1px solid var(--line)}
+/* chat tools (13 Oct 2026): copy, edit, regenerate, code blocks, stop, drop */
+.msgacts{display:flex;gap:4px;margin-top:6px;opacity:0;transition:opacity .15s;white-space:normal}
+.jv:hover .msgacts,.me:hover .msgacts,.msgacts:focus-within,.jv:last-child .msgacts{opacity:1}
+.me .msgacts{justify-content:flex-end}
+.msgacts button{background:none;border:1px solid transparent;border-radius:7px;color:var(--dim);font:12px var(--head);padding:2px 8px;cursor:pointer}
+.msgacts button:hover,.msgacts button:focus-visible{color:var(--txt);border-color:var(--line)}
+@media (hover:none){.msgacts{opacity:1}}
+.jv pre{position:relative;margin:8px 0;background:#0b0a10;border:1px solid var(--line);border-radius:10px;padding:30px 14px 12px;overflow-x:auto;white-space:pre}
+.jv pre code{background:none!important;padding:0;font:13px/1.55 var(--mono)}
+.jv pre .cp{position:absolute;top:5px;right:6px;background:rgba(150,170,205,.12);border:0;border-radius:6px;color:var(--dim);font:11px var(--mono);padding:3px 8px;cursor:pointer}
+.jv pre .cp:hover{color:var(--txt)}
+.jv pre .lang{position:absolute;top:8px;left:14px;font:10px var(--mono);color:var(--dim);letter-spacing:1px;text-transform:uppercase}
+#go.stop{background:var(--bad)}
+body.editing #q{box-shadow:0 0 0 1px var(--warn)}
+#editNote{font:12px var(--mono);color:var(--warn);margin:4px 2px}
+body.dropping .core{outline:2px dashed var(--c);outline-offset:-6px}
+.tr.think::after{content:"";display:inline-block;width:1.2em;text-align:left;animation:dots 1.2s steps(4) infinite}
+@keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}
+@media (prefers-reduced-motion:reduce){.tr.think::after{animation:none;content:"..."}}
 .wave{display:flex;align-items:center;justify-content:center;gap:3px;height:26px;margin:2px 0 8px}
 .wave i{width:3px;border-radius:2px;background:linear-gradient(var(--c),var(--c2));height:4px;transition:height .12s}
 #chip{font:12px var(--mono);color:var(--c);min-height:0}
@@ -370,10 +395,84 @@ footer{grid-column:2;position:relative;z-index:2;display:grid;grid-template-colu
 body.tour [data-callc]{filter:blur(6px)}
 /* full chat view */
 body.fullchat main{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
-body.fullchat main>.card:not(.core){display:none}
+body.fullchat main>.card:not(.core):not(.chatside):not(.canvas){display:none}
+/* canvas: a full answer beside the chat on a wide screen, instead of a new tab */
+.canvas{display:none}
+@media (min-width:1200px){
+  body.fullchat.cv-open main{grid-template-columns:264px minmax(0,1fr) minmax(0,1.1fr)}
+  body.fullchat.cv-open .canvas{display:flex;flex-direction:column;grid-column:3;grid-row:1/-1;padding:0;overflow:hidden;min-width:0}
+}
+.canvas .cvh{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.canvas .cvh b{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:600 13px var(--head)}
+.canvas .cvh a,.canvas .cvh button{background:none;border:1px solid var(--line);border-radius:7px;color:var(--dim);font:12px var(--head);padding:3px 9px;cursor:pointer;text-decoration:none}
+.canvas .cvh a:hover,.canvas .cvh button:hover{color:var(--txt)}
+.canvas iframe{flex:1;border:0;background:#fff;width:100%;min-height:0}
+/* projects in the chat list */
+.cs-sec{display:flex;align-items:center;justify-content:space-between;margin:12px 6px 4px}
+#csList .cs-sec h4{margin:0}
+.cs-sec button{background:none;border:0;color:var(--dim);cursor:pointer;font-size:17px;line-height:1;padding:0 4px;border-radius:6px}
+.cs-sec button:hover{color:var(--c)}
+.cs-proj{display:flex;align-items:center;gap:6px;padding:7px 8px;border-radius:9px;cursor:pointer;font-size:13.5px;font-weight:600;min-width:0}
+.cs-proj:hover{background:rgba(150,170,205,.08)}
+.cs-proj .car{color:var(--dim);width:10px;font-size:10px}
+.cs-proj .t{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.cs-proj .n{color:var(--dim);font:11px var(--mono)}
+.cs-proj .acts{display:none;gap:2px}
+.cs-proj:hover .acts,.cs-proj:focus-within .acts{display:flex}
+.cs-proj:hover .n{display:none}
+.cs-proj .acts button{background:none;border:0;color:var(--dim);cursor:pointer;padding:2px 5px;border-radius:6px;font-size:13px}
+.cs-proj .acts button:hover{color:var(--txt);background:rgba(150,170,205,.12)}
+.cs-in{padding-left:12px;display:flex;flex-direction:column;gap:2px}
+.cs-row .tw{flex:1;min-width:0;display:flex;flex-direction:column}
+.cs-row .snip{color:var(--dim);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cs-move{flex:1;min-width:0;background:var(--bg2);color:var(--txt);border:1px solid var(--c);border-radius:6px;font:12px var(--head);padding:3px}
+.cs-notes{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px solid var(--line);border-radius:10px;margin:4px 0 6px;background:var(--bg2)}
+.cs-notes input,.cs-notes textarea{background:var(--bg);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:7px 8px;font:13px var(--head);min-width:0}
+.cs-notes textarea{min-height:110px;resize:vertical}
+.cs-notes small{color:var(--dim);font-size:11.5px}
+.cs-notes .row{display:flex;gap:6px;justify-content:flex-end}
+.cs-notes button{background:none;border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:4px 10px;cursor:pointer;font:12px var(--head)}
+.cs-notes button.pri{border-color:var(--c);color:var(--c)}
+.cs-notes.over{border-color:var(--c);background:rgba(196,168,255,.08)}
+.pf-list{display:flex;flex-direction:column;gap:3px}
+.pf{display:flex;align-items:center;gap:6px;font-size:12.5px;padding:4px 6px;border-radius:7px;background:var(--bg);min-width:0}
+.pf .n{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.pf .z{color:var(--dim);font:11px var(--mono)}
+.pf button{background:none;border:0;color:var(--dim);cursor:pointer;padding:0 4px}
+.pf button:hover{color:var(--bad)}
+.pf.up{color:var(--dim)}.pf.bad{color:var(--bad);white-space:normal}
+.pf-empty{color:var(--dim);font-size:12px;padding:2px 6px}
+.cs-file{font-size:12px;color:var(--dim);padding:4px 8px;border-radius:7px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cs-file:hover,.cs-file:focus-visible{background:rgba(150,170,205,.08);color:var(--txt)}
+/* ChatGPT-style chat list beside the conversation (13 Oct 2026); phones keep the History drawer */
+.chatside{display:none}
+@media (min-width:901px){
+  body.fullchat main{grid-template-columns:264px minmax(0,1fr)}
+  body.fullchat .chatside{display:flex;flex-direction:column;gap:10px;grid-column:1;grid-row:1/-1;padding:14px 10px;min-width:0;overflow:hidden}
+  body.fullchat #histBtn2{display:none}
+}
+.cs-new{border:1px solid var(--c);border-radius:10px;background:rgba(196,168,255,.07);color:var(--c);padding:10px 12px;
+  font:600 14px var(--head);text-align:left;cursor:pointer}
+.cs-new:hover{background:rgba(196,168,255,.14)}
+#csFind{background:var(--bg2);border:1px solid var(--line);border-radius:9px;color:var(--txt);padding:8px 10px;font:500 13px var(--head);min-width:0}
+#csList{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:2px;padding-right:2px}
+#csList h4{margin:12px 6px 4px;font:600 11px var(--mono);letter-spacing:2px;color:var(--dim);text-transform:uppercase}
+.cs-row{display:flex;align-items:center;gap:4px;padding:8px;border-radius:9px;cursor:pointer;font-size:13.5px;color:var(--txt);min-width:0}
+.cs-row:hover{background:rgba(150,170,205,.08)}
+.cs-row.on{background:rgba(196,168,255,.14);color:var(--c)}
+.cs-row .t{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.cs-row .acts{display:none;gap:2px}
+.cs-row:hover .acts,.cs-row:focus-within .acts{display:flex}
+.cs-row .acts button{background:none;border:0;color:var(--dim);cursor:pointer;padding:2px 5px;border-radius:6px;font-size:13px}
+.cs-row .acts button:hover{color:var(--txt);background:rgba(150,170,205,.12)}
+.cs-row.gone{opacity:.6}
+.cs-row .undo{background:none;border:0;color:var(--c);cursor:pointer;text-decoration:underline;font:inherit;padding:0}
+.cs-edit{flex:1;min-width:0;background:var(--bg2);border:1px solid var(--c);border-radius:6px;color:var(--txt);padding:3px 6px;font:500 13px var(--head)}
+.cs-empty{color:var(--dim);font-size:13px;padding:8px}
 /* !important: the card carries style="grid-column:2" inline for the dashboard, which beat this
    rule and squeezed the chat into a narrow right-hand column ("15%", 27 Sep 2026) */
 body.fullchat .core{grid-column:1/-1!important;grid-row:1/-1!important;width:100%}
+@media (min-width:901px){body.fullchat .core{grid-column:2!important}}
 /* the Conversations view is the chat: orb shrunk to a strip, messages fill the page */
 body.fullchat .orbwrap{flex:0 0 190px}
 body.fullchat .orbwrap .title b{font-size:20px;letter-spacing:6px}
@@ -716,6 +815,7 @@ body.dash:not(.pageview) #f input::placeholder{font-family:var(--mono);letter-sp
     <button data-page="memory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg>Memory<span class="badge" id="nMem">-</span></button>
     <button data-page="brain"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="2.5"/><circle cx="5" cy="6" r="1.8"/><circle cx="19" cy="6" r="1.8"/><circle cx="5" cy="18" r="1.8"/><circle cx="19" cy="18" r="1.8"/><path d="M6.4 7.2 10 10.5M17.6 7.2 14 10.5M6.4 16.8 10 13.5M17.6 16.8 14 13.5"/></svg>Brain</button>
     <button data-page="workflows"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 6H15a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h6.5"/></svg>Workflows<span class="badge" id="nRoutines">-</span></button>
+    <button data-page="automations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>Automations<span class="badge" id="nAuto">-</span></button>
     <button data-page="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>System Report</button>
     <button data-page="models"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12 4 7.5"/></svg>Models</button>
     <button data-page="tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>Tasks</button>
@@ -799,6 +899,11 @@ body.dash:not(.pageview) #f input::placeholder{font-family:var(--mono);letter-sp
     </div>
   </section>
 
+  <section class="card chatside" id="chatside" aria-label="Chats">
+    <button type="button" class="cs-new" id="csNew">+ New chat</button>
+    <input id="csFind" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off">
+    <div id="csList"></div>
+  </section>
   <section class="card core" style="grid-column:2;grid-row:1">
     <div class="stagehead"><div class="stagetop"><span>ATHENA · PERSONAL AI</span><b id="stClock">--:--</b></div>
       <h1 id="stTitle">Say <em>Athena.</em></h1>
@@ -846,6 +951,10 @@ body.dash:not(.pageview) #f input::placeholder{font-family:var(--mono);letter-sp
     </form>
   </section>
 
+  <section class="card canvas" id="canvas" aria-label="Full answer">
+    <div class="cvh"><b id="cvTitle">Answer</b><a id="cvPop" target="_blank" rel="noopener">Open in tab ↗</a><button type="button" id="cvClose" aria-label="Close the answer panel">✕</button></div>
+    <iframe id="cvFrame" title="Full answer"></iframe>
+  </section>
   <section class="card" style="grid-column:3;grid-row:1">
     <div class="ch"><b>LIVE INTELLIGENCE FEED</b><span class="live">● LIVE</span></div>
     <div class="feed" id="feed"><div class="empty">Waiting for activity…</div></div>
@@ -940,34 +1049,85 @@ function line(text,cls){const d=document.createElement('div');d.className=cls;
 // without it a study answer arrived as "\[ s = -\frac{..." on screen.
 function esc(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function md(t){
+  // Code fences first, so nothing below (bold, bullets, $maths$) touches code.
+  const code=[];
+  t=String(t).replace(/```([\w+#.-]*)[ \t]*\n?([\s\S]*?)```/g,(_,lang,body)=>{code.push([lang,body.replace(/\n$/,'')]);return '\u0000'+(code.length-1)+'\u0000'});
   t=esc(t);
   t=t.replace(/(^|[^$])\$(?!\$)\s*([^$\n]+?)\s*\$(?!\$)/g,'$1\\($2\\)');
+  // Markdown tables (study answers use them): header row, a |---| line, rows.
+  t=t.replace(/(?:^\|.*\|[ \t]*(?:\n|$)){2,}/gm,blk=>{const rows=blk.trim().split('\n');
+    if(rows.length<2||!/^\|[\s:|-]+\|$/.test(rows[1].trim()))return blk;
+    const cells=r=>r.trim().replace(/^\||\|$/g,'').split('|').map(c=>c.trim());
+    return '<div class="tbl"><table><thead><tr>'+cells(rows[0]).map(c=>'<th>'+c+'</th>').join('')+'</tr></thead><tbody>'
+      +rows.slice(2).map(r=>'<tr>'+cells(r).map(c=>'<td>'+c+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>'});
   t=t.replace(/^#{1,4}\s+(.+)$/gm,'<span class="h">$1</span>');
   t=t.replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>');
   t=t.replace(/`([^`\n]+)`/g,'<code>$1</code>');
   t=t.replace(/^\s*[-*]\s+/gm,'• ');
+  t=t.replace(/\u0000(\d+)\u0000/g,(_,i)=>{const c=code[+i];
+    return '<pre data-lang="'+esc(c[0]||'')+'"><code'+(c[0]?' class="language-'+esc(c[0])+'"':'')+'>'+esc(c[1])+'</code></pre>'});
   return t}
-function answer(text,err){
+// Code blocks get highlighting and a Copy button; equations go to MathJax.
+function decorate(b){
+  b.querySelectorAll('pre').forEach(p=>{const c=p.querySelector('code');
+    if(window.hljs&&c){try{hljs.highlightElement(c)}catch(e){}}
+    if(p.dataset.lang){const l=document.createElement('span');l.className='lang';l.textContent=p.dataset.lang;p.appendChild(l)}
+    const k=document.createElement('button');k.type='button';k.className='cp';k.textContent='Copy';
+    k.onclick=()=>copyText(c?c.innerText:p.innerText,k);p.appendChild(k)});
+  if(window.MathJax&&MathJax.typesetPromise)MathJax.typesetPromise([b]).catch(()=>{})}
+function copyText(t,btn){const ok=()=>{const o=btn.textContent;btn.textContent='Copied ✓';setTimeout(()=>{btn.textContent=o},1400)};
+  if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(t).then(ok,()=>copyOld(t,ok));else copyOld(t,ok)}
+function copyOld(t,ok){const a=document.createElement('textarea');a.value=t;a.setAttribute('readonly','');
+  a.style.cssText='position:fixed;left:-9999px;opacity:0';document.body.appendChild(a);a.select();
+  try{document.execCommand('copy');ok()}catch(e){}a.remove()}
+function actBtn(label,fn,tip){const b=document.createElement('button');b.type='button';b.textContent=label;
+  if(tip){b.title=tip;b.setAttribute('aria-label',tip)}b.onclick=e=>{e.stopPropagation();fn(b)};return b}
+// Your message, with Edit and Copy.
+function userLine(text){const d=line(text,'me');const a=document.createElement('div');a.className='msgacts';
+  a.append(actBtn('✎ Edit',()=>startEdit(text,d),'Edit this message'),actBtn('Copy',b=>copyText(text,b),'Copy this message'));
+  d.appendChild(a);return d}
+function answer(text,err,o){o=o||{};
   if(!err&&text)$('txAth').textContent=String(text).replace(/\[share:[\w-]+\]/g,'').replace(/[*_`#>]/g,'').trim().slice(0,400);
   // [share:<id>] - a file the PC is sending: shown as a Download button.
   const shared=[];text=(text||'').replace(/\s*\[share:([\w-]+)\]/g,(_,id)=>{shared.push(id);return ''});
   const m=(text||'').match(/\[([\w.\-]+\.html)\]\s*$/m);
   const body=(m?text.replace(m[0],'').trim():(text||''));
   const d=document.createElement('div');d.className='jv'+(err?' err':'');
-  const b=document.createElement('div');b.className='body';b.innerHTML=md(body);d.appendChild(b);
-  if(body.length>700){d.classList.add('long');const x=document.createElement('button');
-    x.className='more';x.textContent='SHOW ALL';
-    x.onclick=()=>{d.classList.toggle('long');x.textContent=d.classList.contains('long')?'SHOW ALL':'SHOW LESS'};
-    d.appendChild(x)}
-  say.appendChild(d);say.scrollTop=say.scrollHeight;document.body.classList.add('chatting');
-  if(window.MathJax&&MathJax.typesetPromise)MathJax.typesetPromise([b]).catch(()=>{});
+  const b=document.createElement('div');b.className='body';d.appendChild(b);
+  const finish=()=>{b.innerHTML=md(body);decorate(b);
+    if(body.length>700&&!d.querySelector('.more')){d.classList.add('long');const x=document.createElement('button');
+      x.className='more';x.textContent='SHOW ALL';
+      x.onclick=()=>{d.classList.toggle('long');x.textContent=d.classList.contains('long')?'SHOW ALL':'SHOW LESS'};
+      b.after(x)}};
+  say.appendChild(d);document.body.classList.add('chatting');
+  // A fresh answer types itself out, as in ChatGPT; history and errors appear at once.
+  if(o.type&&!err&&body&&!matchMedia('(prefers-reduced-motion:reduce)').matches){
+    const parts=body.split(/(\s+)/);let i=0;const step=Math.max(1,Math.ceil(parts.length/80));
+    const tick=()=>{i+=step;b.textContent=parts.slice(0,i).join('');say.scrollTop=say.scrollHeight;
+      if(i<parts.length)setTimeout(tick,16);else{finish();say.scrollTop=say.scrollHeight}};tick()}
+  else finish();
+  say.scrollTop=say.scrollHeight;
   if(m){const a=document.createElement('a');a.className='open';
     a.href='/answers/'+encodeURIComponent(m[1])+'?t='+encodeURIComponent(token());
-    a.target='_blank';a.textContent='OPEN FULL ANSWER';d.appendChild(document.createElement('br'));d.appendChild(a)}
+    a.target='_blank';a.textContent='OPEN FULL ANSWER';
+    // Wide screen, chat view: open it beside the chat (the canvas) instead of a new tab.
+    const wide=()=>document.body.classList.contains('fullchat')&&matchMedia('(min-width:1200px)').matches;
+    const title=m[1].replace(/^\d{8}-\d{6}-/,'').replace(/\.html$/,'').replace(/-/g,' ');
+    a.onclick=e=>{if(wide()){e.preventDefault();openCanvas(a.href,title)}};
+    d.appendChild(document.createElement('br'));d.appendChild(a);
+    // A fresh answer with a page opens it beside the chat straight away (14 Oct 2026: "it doesn't open the answers").
+    if(o.type&&wide())openCanvas(a.href,title)}
   shared.forEach(id=>{const a=document.createElement('a');a.className='dl';a.href=shareLink(id);
     a.setAttribute('download','');a.textContent='⬇ DOWNLOAD';d.appendChild(document.createElement('br'));d.appendChild(a)});
+  if(!err&&body){const bar=document.createElement('div');bar.className='msgacts';
+    bar.append(actBtn('Copy',bt=>copyText(body,bt),'Copy this answer'));
+    if(o.q){say.querySelectorAll('.regen').forEach(x=>x.remove());     // only the latest answer can be regenerated
+      const r=actBtn('↻ Regenerate',()=>{if(!busy)resend(o.q,o.q,o.qnode)},'Ask again for a new answer');r.classList.add('regen');bar.append(r)}
+    d.appendChild(bar)}
   if(shared.length)loadShares();
   return d}
+function openCanvas(href,title){$('cvFrame').src=href;$('cvPop').href=href;$('cvTitle').textContent=title||'Answer';
+  document.body.classList.add('cv-open')}
 function shareLink(id){return '/get/'+encodeURIComponent(id)+'?t='+encodeURIComponent(token())}
 
 // ---------- files between the PC and this phone ----------
@@ -1001,20 +1161,42 @@ $('toPC').onchange=()=>{const fs=Array.from($('toPC').files||[]);$('toPC').value
 loadShares();setInterval(()=>{if(!document.hidden)loadShares()},8000);
 function term(){}   // the old terminal panel; activity now shows in the live feed
 
-let busy=false;
-function setBusy(b){busy=b;$('go').disabled=b}
+let busy=false,ctl=null;
+const goHTML=$('go').innerHTML;
+// While a typed question is being answered the send button is a Stop button.
+function setBusy(b){busy=b;const g=$('go'),stop=b&&!!ctl;g.disabled=b&&!ctl;g.classList.toggle('stop',stop);
+  g.innerHTML=stop?'<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>':goHTML;
+  g.title=stop?'Stop':'Send';g.setAttribute('aria-label',stop?'Stop':'Send')}
+$('go').addEventListener('click',e=>{if(busy&&ctl){e.preventDefault();
+  api('/ask/stop',{method:'POST',body:'{}'}).catch(()=>{});ctl.abort()}});
 
-async function send(text,force){
-  setBusy(true);const w=line('processing…','tr');
-  try{const j=await api('/ask',{method:'POST',body:JSON.stringify({text,confirm:!!force})});
+async function send(text,force,me){
+  ctl=new AbortController();setBusy(true);const w=line('thinking','tr think');
+  try{const j=await api('/ask',{method:'POST',body:JSON.stringify({text,confirm:!!force}),signal:ctl.signal});
     w.remove();(j.steps||[]).forEach(s=>line('› '+s.tool+'  '+(s.result||'').slice(0,160),'tr'));
+    if(j.answer==='(stopped)'){line('Stopped.','tr');return}
     if(j.needs_confirm){const d=answer(j.answer);const b=document.createElement('button');
-      b.className='open';b.textContent='RUN ANYWAY';b.onclick=()=>{b.remove();send(text,true)};d.appendChild(b)}
-    else answer(j.answer);
-  }catch(e){w.remove();answer('Cannot reach the PC. Is it awake and on Tailscale?',true)}
-  finally{setBusy(false)}
+      b.className='open';b.textContent='RUN ANYWAY';b.onclick=()=>{b.remove();send(text,true,me)};d.appendChild(b)}
+    else answer(j.answer,false,{type:true,q:text,qnode:me});
+  }catch(e){w.remove();if(e&&e.name==='AbortError')line('Stopped.','tr');
+    else answer('Cannot reach the PC. Is it awake and on Tailscale?',true)}
+  finally{ctl=null;setBusy(false);if(typeof loadSide==='function')setTimeout(loadSide,400)}
 }
-function ask(text){if(busy||!text)return;line(text,'me');$('txYou').textContent=text;send(text)}
+function ask(text){if(busy||!text)return;const me=userLine(text);$('txYou').textContent=text;send(text,false,me)}
+
+// Edit: put the message back in the box; sending cuts the chat back to before it and asks again.
+let editing=null;
+function startEdit(text,node){if(busy)return;editing={text,node};$('q').value=text;$('q').focus();
+  document.body.classList.add('editing');let n=$('editNote');
+  if(!n){n=document.createElement('div');n.id='editNote';$('f').before(n)}
+  n.textContent='Editing your message - Enter to send, Esc to cancel'}
+function stopEdit(){editing=null;document.body.classList.remove('editing');const n=$('editNote');if(n)n.remove()}
+$('q').addEventListener('keydown',e=>{if(e.key==='Escape'&&editing){stopEdit();$('q').value=''}});
+async function resend(oldText,newText,node){
+  try{await api('/chats/rewind',{method:'POST',body:JSON.stringify({text:oldText})})}
+  catch(e){answer('Could not go back to that message.',true);return}
+  if(node&&node.isConnected){while(node.nextSibling)node.nextSibling.remove();node.remove()}
+  ask(newText)}
 
 // ---------- attachments ----------
 let pending=null;
@@ -1022,12 +1204,21 @@ function chip(){ $('chip').innerHTML='';if(!pending)return;
   $('chip').textContent=(pending.doc?'📄 ':'🖼 ')+pending.name;
   const x=document.createElement('span');x.textContent='✕';x.onclick=()=>{pending=null;chip()};
   $('chip').appendChild(x)}
-function pick(input){input.onchange=()=>{const f=input.files&&input.files[0];input.value='';
-  if(!f)return;const name=f.name||'photo.jpg';
+function takeFile(f){if(!f)return;const name=f.name||'pasted-image.png';
   const img=(f.type||'').startsWith('image/')||/\.(jpe?g|png|gif|webp|heic|bmp)$/i.test(name);
   const r=new FileReader();r.onload=()=>{pending={data:r.result,name,doc:!img};chip();$('q').focus()};
-  r.readAsDataURL(f)}}
+  r.readAsDataURL(f)}
+function pick(input){input.onchange=()=>{const f=input.files&&input.files[0];input.value='';takeFile(f)}}
 pick($('pick'));pick($('cam'));
+// Paste a screenshot into the box, or drop a file anywhere on the page.
+$('q').addEventListener('paste',e=>{const f=e.clipboardData&&e.clipboardData.files&&e.clipboardData.files[0];
+  if(f){e.preventDefault();takeFile(f)}});
+const hasFiles=e=>e.dataTransfer&&Array.from(e.dataTransfer.types||[]).includes('Files');
+document.addEventListener('dragover',e=>{if(hasFiles(e)){e.preventDefault();document.body.classList.add('dropping')}});
+document.addEventListener('dragleave',e=>{if(!e.relatedTarget)document.body.classList.remove('dropping')});
+document.addEventListener('drop',e=>{document.body.classList.remove('dropping');if(!hasFiles(e))return;
+  e.preventDefault();const f=e.dataTransfer.files[0];if(!f)return;
+  if(!document.body.classList.contains('fullchat'))setView('chat');takeFile(f)});
 
 // The camera button on the PC takes the webcam frame on the server (ffmpeg);
 // on a phone the file input's `capture` opens the phone camera.
@@ -1056,6 +1247,7 @@ async function upload(text,att){
 }
 $('f').onsubmit=e=>{e.preventDefault();if(busy)return;
   const t=$('q').value.trim();
+  if(editing&&!pending){const ed=editing;stopEdit();$('q').value='';if(t)resend(ed.text,t,ed.node);return}
   if(pending){const a=pending;pending=null;chip();$('q').value='';
     const said=t||(a.doc?'Work through this and answer it.':'What is in this picture?');
     const me=line(said,'me');
@@ -1074,7 +1266,7 @@ document.querySelectorAll('[data-cmd]').forEach(b=>b.onclick=()=>{closeVeils();
 let lastView='stage';
 function setView(v){lastView=v;if(typeof closePage==='function'&&pageName)closePage();document.body.classList.toggle('fullchat',v==='chat');document.body.classList.toggle('stage',v==='stage');document.body.classList.toggle('dash',v==='dash');
   document.querySelectorAll('nav button[data-view]').forEach(b=>b.classList.toggle('on',b.dataset.view===v));
-  if(v==='chat'){document.body.classList.add('chatting');say.scrollTop=say.scrollHeight}}
+  if(v==='chat'){document.body.classList.add('chatting');say.scrollTop=say.scrollHeight;loadSide()}}
 document.querySelectorAll('nav button[data-view]').forEach(b=>b.onclick=()=>{closeVeils();setView(b.dataset.view)});
 $('expandBtn').onclick=()=>setView(document.body.classList.contains('fullchat')?'dash':'chat');
 $('focusBtn').onclick=()=>ask('study mode');
@@ -1085,7 +1277,7 @@ const esc2=s=>esc(String(s==null?'':s));
 let pageName='',pageTimer=null;
 setView('stage');            // the stage is the home screen
 const TITLES={calendar:['CALENDAR','Next 7 days · UPES timetable + Google Calendar · live'],memory:['MEMORY','What Athena knows about you'],
-  workflows:['WORKFLOWS','Routines and what is playing'],system:['SYSTEM REPORT','Live health of this PC'],
+  workflows:['WORKFLOWS','Routines and what is playing'],automations:['AUTOMATIONS','What Athena does on her own - switch any of it off'],system:['SYSTEM REPORT','Live health of this PC'],
   tasks:['TASKS','What to do today, and what is left'],phone:['CALLS & BOOKINGS','Call through your phone, look places up, book online'],skills:['TOOLS & SKILLS','Everything Athena can do'],store:['RAGAZZA','Your store · orders, money and stock'],brain:['BRAIN','What Athena knows, and how she is built - drag, zoom, hover'],
   models:['MODELS','The language models Athena can use, and which are ready']};
 // System Monitor and LLM Status left the dashboard for their pages. They are
@@ -1097,7 +1289,7 @@ function openPage(name,btn){parkPanels();pageName=name;closeVeils();document.bod
   $('pgTitle').textContent=TITLES[name][0];$('pgNote').textContent=TITLES[name][1];clearInterval(pageTimer);
   if(name==='models'){$('pgBody').innerHTML='';$('pgBody').appendChild($('llmCard'));return}
   $('pgBody').innerHTML='<div class="muted">Loading…</div>';renderPage();
-  pageTimer=setInterval(()=>{if(['workflows','system','phone','store','calendar'].includes(pageName))renderPage(true)},name==='workflows'?2000:name==='store'||name==='calendar'?30000:5000)}
+  pageTimer=setInterval(()=>{if(['workflows','automations','system','phone','store','calendar'].includes(pageName))renderPage(true)},name==='workflows'?2000:name==='store'||name==='calendar'?30000:5000)}
 function closePage(){pageName='';clearInterval(pageTimer);parkPanels();document.body.classList.remove('pageview');
   document.querySelectorAll('aside nav button').forEach(x=>x.classList.toggle('on',x.dataset.view===lastView))}
 $('pgBack').onclick=closePage;
@@ -1202,6 +1394,31 @@ async function brainShow(d){
     const wait=steps[i][2]||(name==='chat'?32000:8000);i++;if(i<steps.length)setTimeout(next,wait);else setTimeout(()=>document.title='Athena Tour done',4000)};
   setTimeout(next,5000)})();
 const PAGES={
+ automations(d,quiet){
+   $('nAuto').textContent=d.rules.length||'-';
+   if(quiet&&document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#pgBody'))return;  // not under your finger
+   const pill=(on)=>'<span class="st '+(on?'ok':'warn')+'">'+(on?'ON':'OFF')+'</span>';
+   let html='<div class="hero" style="grid-template-columns:1fr auto;align-items:center;padding:16px 20px"><div><div class="muted">ALL AUTOMATION</div>'+
+     '<div class="big" style="color:'+(d.paused?'var(--warn)':'var(--ok)')+'">'+(d.paused?'Paused':'Running')+'</div>'+
+     '<div class="muted" style="margin-top:4px">'+d.rules.length+' automation'+(d.rules.length===1?'':'s')+' · add one by voice: “Athena, every day at 11pm turn on focus mode” or “keep an eye on my LMS”</div></div>'+
+     '<button class="act" id="autoAll" style="padding:12px 20px">'+(d.paused?'Resume all':'Pause all')+'</button></div>';
+   html+='<h4 style="font:600 12px var(--mono);letter-spacing:2px;color:var(--c);margin:16px 0 10px">YOUR AUTOMATIONS</h4>';
+   html+=d.rules.length?'<div class="pgrid">'+d.rules.map(r=>'<div class="rt" style="opacity:'+(r.on?1:.55)+'">'+
+       '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><small class="muted">'+(r.kind==='watch'?'WATCH':'RULE')+' · '+esc2(r.when).toUpperCase()+'</small>'+pill(r.on)+'</div>'+
+       '<b style="display:block;margin:8px 0 6px">'+esc2(r.what)+'</b><small class="muted">Last run: '+esc2(r.last)+'</small>'+
+       '<div style="display:flex;gap:8px;margin-top:10px"><button data-tog="'+r.id+'" data-on="'+(r.on?0:1)+'">'+(r.on?'Turn off':'Turn on')+'</button>'+
+       '<button data-del="'+r.id+'" style="border-color:var(--warn);color:var(--warn)">Remove</button></div><small class="muted" data-said></small></div>').join('')+'</div>'
+     :'<div class="muted">None yet. Say “Athena, keep an eye on my LMS”, or “every time I get home, play my playlist”.</div>';
+   html+='<h4 style="font:600 12px var(--mono);letter-spacing:2px;color:var(--c);margin:20px 0 6px">WHAT ATHENA DID ON HER OWN</h4>'+(d.activity.length?
+     '<table class="tbl"><thead><tr><th>WHEN</th><th>WHAT</th></tr></thead><tbody>'+d.activity.map(a=>'<tr><td style="white-space:nowrap">'+esc2(a.t)+'</td><td>'+esc2(a.what)+'</td></tr>').join('')+'</tbody></table>'
+     :'<div class="muted">Nothing yet.</div>');
+   $('pgBody').innerHTML=html;
+   $('autoAll').onclick=async()=>{await act('automation',{pause:!d.paused});renderPage(true)};
+   $('pgBody').querySelectorAll('[data-tog]').forEach(b=>b.onclick=async()=>{b.disabled=true;await act('rules',{id:b.dataset.tog,action:'toggle',on:b.dataset.on==='1'});renderPage(true)});
+   // Remove asks once, on the button itself: the page cannot show a dialog.
+   $('pgBody').querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{
+     if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to remove';setTimeout(()=>{if(b.isConnected){delete b.dataset.sure;b.textContent='Remove'}},4000);return}
+     b.disabled=true;await act('rules',{id:b.dataset.del,action:'remove'});renderPage(true)})},
  store(d){if(d.error){$('pgBody').innerHTML='<div class="muted">'+esc2(d.error)+'</div>';return}
    const rs=n=>'₹'+Number(n||0).toLocaleString('en-IN'),tile=(t,big,sub)=>'<div class="pbox"><h4>'+t+'</h4><div class="big" style="font-size:28px">'+big+'</div><div class="muted">'+sub+'</div></div>';
    $('nShip').textContent=d.toShip.length||'-';
@@ -1657,12 +1874,140 @@ async function loadChats(){const l=$('chatlist');
   catch(e){l.textContent='Cannot reach the PC.'}}
 async function openChat(id,show=true){
   try{const j=await api('/chats/'+id);say.innerHTML='';document.body.classList.remove('chatting');
-    (j.messages||[]).forEach(m=>m.role==='user'?line(m.text,'me'):answer(m.text));
+    let lq='',ln=null;
+    (j.messages||[]).forEach(m=>{if(m.role==='user'){lq=m.text;ln=userLine(m.text)}else answer(m.text,false,{q:lq,qnode:ln})});
     closeVeils();
     // A new chat opens the chat screen, ready to type: on the Command Centre it
     // used to clear an area you could not see, and looked like nothing happened.
-    if(show){setView('chat');if(id==='new'){const q=$('q')||$('topq');if(q)setTimeout(()=>q.focus(),50)}}}
+    if(show){setView('chat');if(id==='new'){const q=$('q')||$('topq');if(q)setTimeout(()=>q.focus(),50)}}
+    loadSide()}
   catch(e){answer('Could not open that conversation.',true)}}
+
+// ---------- chat sidebar (ChatGPT-style, 13 Oct 2026) ----------
+let csAll=[],csProj=[],csTimer=null;
+const csOpen=new Set((()=>{try{return JSON.parse(localStorage.getItem('athena_projopen')||'[]')}catch(e){return []}})());
+const saveOpen=()=>{try{localStorage.setItem('athena_projopen',JSON.stringify([...csOpen]))}catch(e){}};
+const csBusy=()=>!!document.querySelector('.cs-notes,.cs-move,.cs-edit,.cs-row.gone');
+async function loadSide(){if(csBusy())return;const q=($('csFind').value||'').trim();
+  try{const j=await api('/chats'+(q?'?q='+encodeURIComponent(q):''));csAll=j.chats||[];csProj=j.projects||[];drawSide(q)}catch(e){}}
+function csSec(l,label,add,tip){const h=document.createElement('div');h.className='cs-sec';const t=document.createElement('h4');t.textContent=label;h.appendChild(t);
+  if(add)h.appendChild(actBtn('+',add,tip));l.appendChild(h);return h}
+function csEmpty(l,txt){const p=document.createElement('p');p.className='cs-empty';p.textContent=txt;l.appendChild(p)}
+function drawSide(q){const l=$('csList');if(!l)return;l.innerHTML='';
+  if(q){csSec(l,'Results');if(!csAll.length)csEmpty(l,'No chats match.');csAll.forEach(c=>l.appendChild(sideRow(c,true)));return}
+  csSec(l,'Projects',()=>projForm(null,l.querySelector('.cs-sec')),'New project');
+  csProj.forEach(p=>{const its=csAll.filter(c=>c.project===p.id);l.appendChild(projRow(p,its.length));
+    if(csOpen.has(p.id)){const box=document.createElement('div');box.className='cs-in';
+      (p.files||[]).forEach(x=>{const r=document.createElement('div');r.className='cs-file';r.tabIndex=0;r.textContent='📄 '+x.name;r.title=x.name+' - click to manage files';const go=e=>{e.stopPropagation();projForm(p,box.previousSibling)};r.onclick=go;r.onkeydown=e=>{if(e.key==='Enter')go(e)};box.appendChild(r)});its.forEach(c=>box.appendChild(sideRow(c)));if(!its.length)csEmpty(box,'No chats yet - press + on the project to start one.');l.appendChild(box)}});
+  if(!csProj.length)csEmpty(l,'Group chats by subject. Notes you add to a project are kept in mind in every chat in it.');
+  const known=new Set(csProj.map(p=>p.id)),loose=csAll.filter(c=>!c.project||!known.has(c.project));
+  const d=new Date(),start=new Date(d.getFullYear(),d.getMonth(),d.getDate()).getTime()/1000,day=86400;
+  const grp=c=>c.pinned?'Pinned':c.updated>=start?'Today':c.updated>=start-day?'Yesterday':
+    c.updated>=start-7*day?'Previous 7 days':c.updated>=start-30*day?'Previous 30 days':'Older';
+  ['Pinned','Today','Yesterday','Previous 7 days','Previous 30 days','Older'].forEach(g=>{
+    const its=loose.filter(c=>grp(c)===g);if(!its.length)return;csSec(l,g);its.forEach(c=>l.appendChild(sideRow(c)))});
+  if(!csAll.length)csEmpty(l,'No chats yet.')}
+function projRow(p,n){const r=document.createElement('div');r.className='cs-proj';r.tabIndex=0;
+  const open=csOpen.has(p.id);r.setAttribute('aria-expanded',open?'true':'false');
+  const car=document.createElement('span');car.className='car';car.textContent=open?'▾':'▸';
+  const t=document.createElement('span');t.className='t';t.textContent=p.name;t.title=p.name+((p.files||[]).length?' · '+p.files.length+' file'+(p.files.length>1?'s':''):'')+(p.notes?' - '+p.notes.slice(0,140):'');
+  const k=document.createElement('span');k.className='n';k.textContent=n||'';
+  const a=document.createElement('span');a.className='acts';let sure=false;
+  a.append(actBtn('+',()=>{csOpen.add(p.id);saveOpen();openChat('new?project='+encodeURIComponent(p.id))},'New chat in '+p.name),
+    actBtn('✎',()=>projForm(p,r),'Name and notes'),
+    actBtn('✕',b=>{if(!sure){sure=true;b.textContent='Delete?';b.title='Click again: the project goes, its chats stay';
+        setTimeout(()=>{sure=false;b.textContent='✕'},3000);return}
+      api('/projects/delete',{method:'POST',body:JSON.stringify({id:p.id})}).catch(()=>{}).then(loadSide)},'Delete project (its chats are kept)'));
+  const toggle=()=>{csOpen.has(p.id)?csOpen.delete(p.id):csOpen.add(p.id);saveOpen();drawSide('')};
+  r.onclick=toggle;r.onkeydown=e=>{if(e.key==='Enter'&&e.target===r)toggle()};
+  r.append(car,t,k,a);return r}
+function projForm(p,after){const old=document.querySelector('.cs-notes');if(old)old.remove();
+  const f=document.createElement('div');f.className='cs-notes';
+  const nm=document.createElement('input');nm.placeholder='Project name, e.g. Signals & Systems';nm.value=p?p.name:'';nm.setAttribute('aria-label','Project name');
+  const no=document.createElement('textarea');no.placeholder='Notes Athena keeps in mind in this project - exam dates, what to focus on, how you like answers…';
+  no.value=p?(p.notes||''):'';no.setAttribute('aria-label','Project notes');
+  const hint=document.createElement('small');hint.textContent='Every chat in this project sees these notes.';
+  f.append(nm,no,hint);
+  // Files: syllabus, notes, slides. Athena reads each once and uses the parts that fit each question.
+  if(p){const fh=document.createElement('small');fh.innerHTML='<b>Files</b> - PDF, Word, PowerPoint or text, up to 30 MB. Athena uses the parts that fit each question.';
+    const list=document.createElement('div');list.className='pf-list';
+    const draw=files=>{list.innerHTML='';(files||[]).forEach(x=>{const r=document.createElement('div');r.className='pf';
+        const n=document.createElement('span');n.className='n';n.textContent='📄 '+x.name;n.title=x.name;
+        const z=document.createElement('span');z.className='z';z.textContent=x.size>1048576?(x.size/1048576).toFixed(1)+' MB':Math.max(1,Math.round(x.size/1024))+' KB';
+        r.append(n,z,actBtn('✕',async()=>{await api('/projects/'+encodeURIComponent(p.id)+'/files/delete',{method:'POST',body:JSON.stringify({name:x.name})}).catch(()=>{});
+          p.files=(p.files||[]).filter(y=>y.name!==x.name);draw(p.files)},'Remove '+x.name));list.appendChild(r)});
+      if(!(files||[]).length){const e=document.createElement('div');e.className='pf-empty';e.textContent='No files yet.';list.appendChild(e)}};
+    draw(p.files);
+    const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.hidden=true;inp.accept='.pdf,.docx,.pptx,.txt,.md,.csv';
+    const add=actBtn('+ Add files',()=>inp.click(),'Add files to this project');
+    const upOne=file=>new Promise(res=>{const row=document.createElement('div');row.className='pf up';row.textContent='Reading '+file.name+'… 0%';list.appendChild(row);
+      const x=new XMLHttpRequest();x.open('POST','/projects/'+encodeURIComponent(p.id)+'/files?name='+encodeURIComponent(file.name));
+      x.setRequestHeader('X-Token',token());
+      x.upload.onprogress=e=>{if(e.lengthComputable)row.textContent='Reading '+file.name+'… '+Math.floor(100*e.loaded/e.total)+'%'};
+      x.onload=()=>{let j={};try{j=JSON.parse(x.responseText)}catch(e){}
+        if(x.status==200&&j.file){row.remove();p.files=[...(p.files||[]).filter(y=>y.name!==j.file.name),j.file];draw(p.files)}
+        else{row.classList.add('bad');row.textContent=j.error||('Could not add '+file.name)}res()};
+      x.onerror=()=>{row.classList.add('bad');row.textContent='Cannot reach the PC.';res()};x.send(file)});
+    inp.onchange=async()=>{const fs=Array.from(inp.files||[]);inp.value='';for(const file of fs)await upOne(file)};
+    // Drop files straight onto the project box.
+    f.addEventListener('dragover',e=>{if(hasFiles(e)){e.preventDefault();e.stopPropagation();f.classList.add('over')}});
+    f.addEventListener('dragleave',()=>f.classList.remove('over'));
+    f.addEventListener('drop',async e=>{if(!hasFiles(e))return;e.preventDefault();e.stopPropagation();f.classList.remove('over');
+      document.body.classList.remove('dropping');for(const file of Array.from(e.dataTransfer.files))await upOne(file)});
+    f.append(fh,list,add,inp)}
+  else{const fh=document.createElement('small');fh.textContent='You can add files (syllabus, notes, slides) once it is created.';f.append(fh)}
+  const row=document.createElement('div');row.className='row';
+  const save=actBtn(p?'Done':'Create',async()=>{const name=nm.value.trim();if(!name){nm.focus();return}
+    let made=null;
+    try{const j=await api('/projects',{method:'POST',body:JSON.stringify({id:p?p.id:'',name,notes:no.value})});made=j.project}catch(e){}
+    f.remove();
+    if(!p&&made){csOpen.add(made.id);saveOpen();await loadSide();
+      // straight on to adding files
+      const r=[...document.querySelectorAll('.cs-proj')].find(x=>x.querySelector('.t').textContent===made.name);
+      if(r)projForm({...made,files:[]},r)}
+    else loadSide()});save.classList.add('pri');
+  row.append(actBtn('Cancel',()=>{f.remove();loadSide()}),save);f.append(row);
+  f.onclick=e=>e.stopPropagation();after.after(f);nm.focus()}
+function sideRow(c,snip){const r=document.createElement('div');r.className='cs-row'+(c.live?' on':'');r.tabIndex=0;
+  const tw=document.createElement('span');tw.className='tw';
+  const t=document.createElement('span');t.className='t';t.textContent=c.title;t.title=c.title;tw.appendChild(t);
+  if(snip&&c.snippet){const s2=document.createElement('span');s2.className='snip';s2.textContent=c.snippet;tw.appendChild(s2)}
+  const a=document.createElement('span');a.className='acts';const id=encodeURIComponent(c.id);
+  a.append(
+    actBtn(c.pinned?'★':'☆',async()=>{await api('/chats/'+id+'/pin',{method:'POST',body:JSON.stringify({on:!c.pinned})}).catch(()=>{});loadSide()},c.pinned?'Unpin':'Pin'),
+    actBtn('✎',()=>{const i=document.createElement('input');i.className='cs-edit';i.value=c.title;i.setAttribute('aria-label','Chat name');
+      tw.replaceWith(i);a.style.display='none';i.focus();i.select();let done=false;
+      const finish=async keep=>{if(done)return;done=true;const v=i.value.trim();
+        if(keep&&v&&v!==c.title)await api('/chats/'+id+'/rename',{method:'POST',body:JSON.stringify({title:v})}).catch(()=>{});
+        i.remove();loadSide()};
+      i.onkeydown=e=>{if(e.key==='Enter')finish(true);if(e.key==='Escape')finish(false)};i.onblur=()=>finish(true);i.onclick=e=>e.stopPropagation()},'Rename'),
+    actBtn('↪',()=>{const sel=document.createElement('select');sel.className='cs-move';sel.setAttribute('aria-label','Move to project');
+      [['','- No project -'],...csProj.map(p=>[p.id,p.name])].forEach(([v,n])=>{const o=document.createElement('option');o.value=v;o.textContent=n;o.selected=v===(c.project||'');sel.appendChild(o)});
+      if(!csProj.length){const o=document.createElement('option');o.disabled=true;o.textContent='(make a project first: + next to Projects)';sel.appendChild(o)}
+      a.style.display='none';tw.after(sel);sel.focus();
+      const done=()=>{sel.remove();loadSide()};
+      sel.onchange=async()=>{await api('/chats/'+id+'/project',{method:'POST',body:JSON.stringify({project:sel.value})}).catch(()=>{});
+        if(sel.value){csOpen.add(sel.value);saveOpen()}done()};
+      sel.onblur=done;sel.onclick=e=>e.stopPropagation();sel.onkeydown=e=>{if(e.key==='Escape')done()}},'Move to project'),
+    actBtn('⬇',()=>exportChat(c),'Export as Markdown'),
+    actBtn('✕',async()=>{try{await api('/chats/'+id,{method:'DELETE'})}catch(e){return}
+      if(c.live)say.innerHTML='';
+      r.classList.add('gone');t.textContent='Deleted · ';a.remove();
+      const u=document.createElement('button');u.type='button';u.className='undo';u.textContent='Undo';
+      u.onclick=async e=>{e.stopPropagation();await api('/chats/'+id+'/restore',{method:'POST',body:'{}'}).catch(()=>{});r.classList.remove('gone');loadSide()};
+      t.appendChild(u);setTimeout(()=>{if(r.isConnected&&r.classList.contains('gone')){r.classList.remove('gone');loadSide()}},5000)},'Delete'));
+  r.onclick=()=>openChat(c.id);r.onkeydown=e=>{if(e.key==='Enter'&&e.target===r)openChat(c.id)};
+  r.append(tw,a);return r}
+async function exportChat(c){try{const r=await fetch('/chats/'+encodeURIComponent(c.id)+'/export',{headers:{'X-Token':token()}});
+    if(!r.ok)throw new Error('HTTP '+r.status);const b=await r.blob();const a=document.createElement('a');
+    a.href=URL.createObjectURL(b);a.download=((c.title||'chat').replace(/[^\w\- ]+/g,'').trim()||'chat')+'.md';
+    document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1500)}
+  catch(e){answer('Could not export that chat.',true)}}
+$('csNew').onclick=()=>openChat('new');
+$('csFind').oninput=()=>{clearTimeout(csTimer);csTimer=setTimeout(loadSide,250)};
+$('cvClose').onclick=()=>{document.body.classList.remove('cv-open');$('cvFrame').src='about:blank'};
+// Smart titles land a few seconds after the first answer: keep the list fresh while it is on screen.
+setInterval(()=>{if(document.body.classList.contains('fullchat')&&!document.hidden)loadSide()},6000);
 const openHist=()=>{$('histVeil').classList.add('open');loadChats()};
 $('histBtn').onclick=openHist;$('histBtn2').onclick=openHist;
 $('histVeil').onclick=e=>{if(e.target.id==='histVeil')closeVeils()};

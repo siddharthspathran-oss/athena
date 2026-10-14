@@ -36,6 +36,50 @@ def _browser() -> str | None:
     return shutil.which("chrome") or shutil.which("msedge")
 
 
+def _native(url: str) -> None:
+    """The HUD as a real Windows app (14 Oct 2026): pywebview on Edge WebView2,
+    which ships with Windows 11 - its own window, taskbar entry and icon, no
+    Chrome. Full screen at start like before; F11 toggles it."""
+    import ctypes
+
+    import webview
+
+    # One window: a second launch brings the first one forward instead.
+    ctypes.windll.kernel32.CreateMutexW(None, False, "Athena.HUD.single")
+    if ctypes.windll.kernel32.GetLastError() == 183:          # ERROR_ALREADY_EXISTS
+        h = ctypes.windll.user32.FindWindowW(None, "Athena")
+        if h:
+            ctypes.windll.user32.ShowWindow(h, 9)             # SW_RESTORE
+            ctypes.windll.user32.SetForegroundWindow(h)
+        return
+    # Its own taskbar group and icon, not Python's.
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Athena.HUD")
+
+    class Api:
+        def toggle_fullscreen(self):
+            win.toggle_fullscreen()
+
+    full = bool(cfg.get("hud.fullscreen", True))
+    win = webview.create_window("Athena", url, js_api=Api(), width=1440, height=920, min_size=(900, 600),
+                                background_color="#07060b", fullscreen=full, maximized=not full)
+    ico = Path(__file__).with_name("icons") / "jarvis.ico"
+
+    def shown():
+        try:                                                  # the window's own icon (WinForms)
+            from System.Drawing import Icon
+            win.native.Icon = Icon(str(ico))
+        except Exception:
+            pass
+        win.evaluate_js("document.addEventListener('keydown',e=>{if(e.key==='F11'){e.preventDefault();"
+                        "window.pywebview&&pywebview.api.toggle_fullscreen()}})")
+
+    win.events.shown += shown
+    webview.settings["ALLOW_DOWNLOADS"] = True                # chat export
+    webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
+    # Not private: the page keeps its settings (open projects, orb choice) between launches.
+    webview.start(gui="edgechromium", private_mode=False, storage_path=str(DATA / "hud-webview"))
+
+
 def _server_up(port: int) -> bool:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2):
@@ -61,6 +105,12 @@ def run() -> None:
 
     # Opens on the Command Centre (the phone keeps the voice stage as home).
     url = f"http://127.0.0.1:{port}/?t={get_token()}&home=dash&orb={cfg.get('hud.orb', 'core')}"   # core | face
+    if cfg.get("hud.native", True):
+        try:
+            _native(url)
+            return
+        except ImportError:
+            pass                    # no pywebview: the Chrome app window below
     exe = _browser()
     if not exe:
         # No Chromium: fall back to the old window rather than nothing.

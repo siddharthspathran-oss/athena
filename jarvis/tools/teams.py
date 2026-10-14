@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ctypes
 import datetime as dt
+import os
 import re
 import subprocess
 import threading
@@ -154,9 +155,15 @@ def _idle_seconds() -> float:
 
 
 def join(m: dict) -> str:
-    """Open the meeting from the calendar, press Join, then Join now - mic and camera off."""
+    """Open the meeting from its UPES timetable link (else the Teams calendar), press Join, then Join now - mic and camera off."""
     from .. import uia, winapi
     with _lock:
+        # The link from the UPES timetable first: the Teams calendar's own
+        # entry can be the wrong meeting (12 Oct 2026).
+        link = _upes_link(m)
+        if link:
+            os.startfile("msteams:" + link.split("teams.microsoft.com", 1)[1])
+            return _prejoin(m)
         h = _hwnd()
         if h is None or not _calendar(h):
             return "I couldn't open Teams."
@@ -171,33 +178,106 @@ def join(m: dict) -> str:
         if btn is None or not btn.press(h):
             winapi.press_vk(0x1B)
             return f"{_spoken(m)} has no Join button yet."
-        # The pre-join screen: turn camera and mic off if they are on, then Join now.
-        for _ in range(30):
-            time.sleep(1)
-            mh = next((x for x, t, _p in winapi.windows_with_pids() if "Microsoft Teams" in t and x != h), h)
-            uia.wake(mh, settle=0.3)
-            names = [(e, (e.name or "").lower()) for e in uia.elements(mh) if e.on_screen and e.name]
-            now = next((e for e, n in names if n == "join now"), None)
-            if now is None:
-                continue
+        return _prejoin(m)
+
+
+def _upes_link(m: dict) -> str:
+    """The Teams link the UPES timetable gives for this class (same day, start within 30 min)."""
+    from .. import upes
+    try:
+        t = dt.datetime.strptime(m["start"], "%H:%M")
+        for c in upes.classes(dt.date.fromisoformat(m["date"]), cached_only=True):
+            if ((c.get("link") or "").startswith("https://teams.microsoft.com/") and not c["cancelled"]
+                    and abs((dt.datetime.strptime(c["start"], "%H:%M") - t).total_seconds()) <= 1800):
+                return c["link"]
+    except Exception:
+        pass
+    return ""
+
+
+def _prejoin(m: dict) -> str:
+    """The pre-join screen: turn camera and mic off if they are on, then Join now."""
+    from .. import uia
+    # 12 Oct 2026, stuck on the pre-join screen while saying "joined": the
+    # toggles move the layout, so Join now was clicked at its old place;
+    # the screen can be in any Teams window; and nothing checked we got in.
+    toggled = False
+    for _ in range(45):
+        time.sleep(1)
+        mh, names = _teams_controls()
+        if _in_meeting(names):
+            break
+        now = next((e for e, n in names if n == "join now"), None)
+        if now is None:
+            continue
+        if not toggled:
             for e, n in names:
-                if n.startswith(("turn camera off", "camera on", "video on")) or n.startswith(("mute mic", "microphone on", "mute microphone")):
+                if n.startswith(("turn camera off", "camera on", "video on", "mute mic", "microphone on", "mute microphone")):
                     e.press(mh)
-            now.press(mh)
-            # Once in: the controls name their own state ("Mute mic", "Turn camera off").
-            time.sleep(6)
-            uia.wake(mh, settle=0.5)
-            for e in uia.elements(mh, uia.BUTTON):
-                n = (e.name or "").lower()
-                if e.on_screen and (n.startswith("mute mic") or n.startswith("turn camera off")):
-                    e.press(mh)
-            return f"Joined {_spoken(m)} with your mic and camera off."
-        return f"Opened {_spoken(m)} but the Join now button never appeared."
+            toggled = True
+            continue                                    # look again: the button has moved
+        now.press(mh)
+        time.sleep(3)
+    else:
+        return f"Opened {_spoken(m)} but couldn't get past the Join now screen - press Join now yourself."
+    # Once in: the controls name their own state ("Mute mic", "Turn camera off").
+    time.sleep(3)
+    mh, names = _teams_controls()
+    for e, n in names:
+        if n.startswith("mute mic") or n.startswith("turn camera off"):
+            e.press(mh)
+    return f"Joined {_spoken(m)} with your mic and camera off."
+
+
+def _in_meeting(names) -> bool:
+    """The meeting's own Leave button ("Leave" / "Leave (Ctrl+Shift+H)") - not "Leave team" and the like."""
+    from .. import live, uia
+    hit = next((n for e, n in names if e.control_type == uia.BUTTON and (n == "leave" or n.startswith("leave ("))), None)
+    if hit:
+        live.note(f"teams: in the meeting ({hit!r})")
+    return bool(hit)
+
+
+def _teams_controls():
+    """(window, [(element, lowercase name)]) for the Teams window showing a meeting
+    or its pre-join screen - the one with Join now or Leave - else the first one."""
+    from .. import uia, winapi
+    first = None
+    for x, t, _p in winapi.windows_with_pids():
+        if "Microsoft Teams" not in t:
+            continue
+        uia.wake(x, settle=0.3)
+        names = [(e, e.name.lower()) for e in uia.elements(x) if e.on_screen and e.name]
+        if any(n == "join now" for _e, n in names) or _in_meeting(names):
+            return x, names
+        first = first or (x, names)
+    return first or (None, [])
 
 
 def _meetings_today() -> list[dict]:
+    """Today's Teams meetings, plus the UPES timetable's online classes (the ones
+    with a Teams link). 13 Oct 2026: the Teams calendar often can't be read,
+    or reads empty, so auto-join had nothing to join - the timetable is the
+    source that's always there."""
+    today = dt.date.today().isoformat()
     s = load_json(STATE, {})
-    return s.get("meetings", []) if s.get("day") == dt.date.today().isoformat() else []
+    meets = list(s.get("meetings", [])) if s.get("day") == today else []
+    try:
+        from .. import upes
+        for c in upes.classes(cached_only=True):
+            t = dt.datetime.strptime(c["start"], "%H:%M")
+            if c.get("link") and not any(abs((dt.datetime.strptime(m["start"], "%H:%M") - t).total_seconds()) <= 1800
+                                         for m in meets):
+                meets.append({"date": today, "start": c["start"], "end": c["end"], "title": c["course"],
+                              "who": c.get("teacher", ""), "canceled": c["cancelled"], "tile": ""})
+    except Exception:
+        pass
+    seen, unique = set(), []
+    for m in meets:                     # Teams sometimes lists one class twice (14 Oct 2026)
+        if (m["start"], m["title"]) not in seen:
+            seen.add((m["start"], m["title"]))
+            unique.append(m)
+    return sorted(unique, key=lambda m: m["start"])
 
 
 def upcoming(weeks: int = 3) -> list[dict] | None:
@@ -368,6 +448,8 @@ def start(note=print) -> None:
                         said = join(m)
                         live.note(f"teams: {said}")
                         note(said)
+                        if not said.startswith("Joined"):   # locked PC, Teams stuck: tell the phone
+                            alerts.submit("teams", key + "-failed", f"I couldn't join {_spoken(m)} - join from your phone.")
                     else:
                         alerts.submit("teams", key, f"{_spoken(m)} is starting on Teams - join from your phone.")
             except Exception as e:

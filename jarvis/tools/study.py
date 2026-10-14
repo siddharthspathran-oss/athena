@@ -379,7 +379,7 @@ def _retry_after(error: str) -> float | None:
 last_answered_by = ""
 
 
-def _ask(llm: LLM, messages: list[dict], think: bool | None = None) -> str:
+def _ask(llm: LLM, messages: list[dict], think: bool | None = None, max_wait: float = 90) -> str:
     """One turn at the study settings, with any reasoning trace removed.
 
     A reasoning model works through the problem out loud before answering,
@@ -416,7 +416,8 @@ def _ask(llm: LLM, messages: list[dict], think: bool | None = None) -> str:
         model = queue.pop(0)
         try:
             if cloud.is_cloud(model):
-                text = cloud.chat(model, messages, temperature, max_tokens)
+                text = cloud.chat(model, messages, temperature, max_tokens,
+                                  timeout=int(cfg.get("study.cloud_timeout_seconds", 45)))
             else:
                 # A local name here, or "" meaning the everyday model.
                 msg = LLM(model or None).chat(
@@ -433,7 +434,7 @@ def _ask(llm: LLM, messages: list[dict], think: bool | None = None) -> str:
             trouble.append(f"{model} failed ({first[:80]})")
             wait = _retry_after(str(e))
             waited = retried.get(model, 0.0)
-            if wait is not None and waited + wait <= 90:
+            if wait is not None and waited + wait <= max_wait:
                 # A rate limit is the one failure that fixes itself. Free
                 # tiers count per minute and a worksheet fires eight
                 # questions in a row, so waiting the few seconds the provider
@@ -656,7 +657,7 @@ def answer_worksheet(context: str, source: str, note=None) -> str | None:
             note(f"question {number} of {len(questions)}")
         try:
             text = _ask_checked(llm, [
-                {"role": "system", "content": STUDY_PROMPT},
+                {"role": "system", "content": _study_prompt(body)},
                 {"role": "user", "content":
                     f"This is question {number} of an assignment"
                     f"{' in ' + source if source else ''}. Answer only this "
@@ -696,7 +697,7 @@ def answer_page(question: str, context: str = "", source: str = "") -> str:
             return (f"{lead}\n\nI've worked through every question. "
                     f"[{path.name}]") if lead else f"I've worked through every question. [{path.name}]"
 
-    messages = [{"role": "system", "content": STUDY_PROMPT}]
+    messages = [{"role": "system", "content": _study_prompt(question)}]
     if context.strip():
         messages.append({
             "role": "user",
@@ -732,6 +733,70 @@ def answer_page(question: str, context: str = "", source: str = "") -> str:
     return f"{lead}\n\n{opened}" if lead else opened
 
 
+PROJECT_PROMPT = """You are Athena, the student's study partner in their project "{name}".{notes}
+
+Answer the student's question in this chat. When the course files below cover
+it, answer from them: name the file you used (e.g. "Course Plan, Unit 2") and
+use the course's notation. When they don't cover it, answer from your own
+knowledge and say the files don't. Never invent what a file says.
+Be complete but to the point. Markdown: short headings or lists where they
+help, $...$ for maths, ``` for code. Work problems through step by step.
+
+Course files - the parts that match this question:
+{ctx}"""
+
+
+def project_answer(question: str, history: list[dict], project: dict) -> str:
+    """A question in a project chat, answered like class work from the
+    project's files - in the chat, with the conversation so far (14 Oct 2026:
+    "how many units in my course plan" got the daily brief instead)."""
+    from .. import chats
+    ctx = chats.relevant(project["id"], question, budget=int(cfg.get("study.project_context_chars", 12000)))
+    notes = f"\nTheir notes for it: {project['notes']}" if project.get("notes") else ""
+    turns = [{"role": m["role"], "content": str(m.get("content", ""))[:3000]} for m in history
+             if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)][-8:]
+    messages = ([{"role": "system", "content": PROJECT_PROMPT.format(name=project["name"], notes=notes,
+                                                                    ctx=ctx or "(nothing in the files matches)")}]
+                + turns + [{"role": "user", "content": question}])
+    # A chat is waited on: a few seconds on a rate limit, then the next model.
+    llm = _model()
+    answer = _ask(llm, messages, max_wait=float(cfg.get("study.chat_max_wait", 6)))
+    # A lesson, derivation or worked problem gets the full answer page (equations,
+    # drawings, graphs), as "explain" always did; a short fact stays in the chat
+    # (14 Oct 2026: "teach me the first topic of unit 2" came back as a wall of
+    # text in the chat bubble, and no page opened).
+    lesson = re.search(r"\b(teach|explain|derive|derivation|solve|prove|proof|notes|lesson|worked|step[- ]by[- ]step|"
+                       r"walk me through|from scratch|in detail)\b", question, re.I)
+    if not lesson and len(answer) < int(cfg.get("study.project_page_chars", 2500)):
+        return answer
+    try:
+        answer = _ensure_drawing(llm, question, answer)
+        path = render.write_page(question.strip(), answer)
+    except Exception as e:
+        print(f"[project] page: {e}")
+        return answer
+    lead = _lead_line(answer, prefer_final=True)
+    opened = f"I've opened the full answer with the working. [{path.name}]"
+    return f"{lead}\n\n{opened}" if lead else opened
+
+
+def _study_prompt(question: str = "") -> str:
+    """STUDY_PROMPT plus the open chat's project (chats.ACTIVE): its notes, and
+    the parts of its files that bear on the question - the syllabus, the
+    professor's slides - so class work follows them."""
+    from .. import chats
+    p = chats.ACTIVE
+    out = STUDY_PROMPT
+    if p and p.get("notes"):
+        out += f"\n\nThe student's notes for their project \"{p['name']}\" (follow them):\n{p['notes']}"
+    if p and question:
+        ctx = chats.relevant(p["id"], question, budget=8000)
+        if ctx:
+            out += ("\n\nFrom the student's course files for this project - use their notation and "
+                    "method, and name the file when you draw on it:\n" + ctx)
+    return out
+
+
 @tool(tags=TAG, timeout=0)
 def explain(question: str) -> str:
     """Answer a study question properly and open it as a formatted page.
@@ -750,7 +815,7 @@ def explain(question: str) -> str:
     llm = _model()
     try:
         answer = _ask_checked(llm, [
-            {"role": "system", "content": STUDY_PROMPT},
+            {"role": "system", "content": _study_prompt(question)},
             {"role": "user", "content": question.strip()},
         ], think=_thinking(question))
     except Exception as e:

@@ -167,6 +167,42 @@ def music_action(action: str) -> dict:
     return {"said": "Unknown action."}
 
 
+def automations() -> dict:
+    """The Automations page: every rule and watch, and what Athena did on her own."""
+    import time as _t
+    from .. import rules
+
+    def ago(ts):
+        if not ts:
+            return "not run yet"
+        m = int((_t.time() - float(ts)) / 60)
+        return "just now" if m < 1 else f"{m} min ago" if m < 60 else f"{m // 60} h ago" if m < 1440 else f"{m // 1440} d ago"
+
+    rows = []
+    for r in rules.load():
+        when, _, what = rules.describe(r).partition(": ")
+        rows.append({"id": r["id"], "when": when, "what": what, "on": r.get("enabled", True),
+                     "kind": "watch" if any(str(d).startswith("watch:") for d in r.get("do", [])) else "rule",
+                     "last": ago(r.get("last"))})
+    acts = [{"t": _t.strftime("%d %b %H:%M", _t.localtime(a["t"])), "what": a.get("what", ""), "kind": a.get("kind", "")}
+            for a in rules.recent_activity(15)]
+    return {"paused": rules.paused(), "rules": rows, "activity": acts}
+
+
+def rule_action(body: dict) -> dict:
+    from .. import rules
+    rid, action = str(body.get("id", "")), body.get("action", "")
+    if action == "toggle":
+        return {"said": rules.set_enabled(rid, bool(body.get("on")))}
+    if action == "remove":
+        hit = next((r for r in rules.load() if r["id"] == rid), None)
+        if hit is None:
+            return {"said": "That automation no longer exists."}
+        rules._save([r for r in rules.load() if r["id"] != rid])
+        return {"said": f"Removed: {rules.describe(hit)}."}
+    return {"said": "Unknown action."}
+
+
 def run_routine(name: str) -> dict:
     from ..tools import routines
     return {"said": routines.run_routine(name)}
@@ -531,4 +567,4 @@ def alarm_state() -> dict:
 
 
 GET = {"alarm": alarm_state, "notify": notify, "store": store, "phone": phone, "codegraph": codegraph, "calendar": calendar, "memory": memory, "workflows": workflows,
-       "system": system, "tasks": tasks, "skills": skills, "brain": brain}
+       "automations": automations, "system": system, "tasks": tasks, "skills": skills, "brain": brain}

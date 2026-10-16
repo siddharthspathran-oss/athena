@@ -16,7 +16,11 @@ llm:
   # To go back to fully local: model: "athena:3b".
   model: "nvidia:nvidia/nemotron-3.5-lightning-30b-a3b"
   fallback_model: "athena:3b"
-  cloud_timeout_seconds: 20
+  # When the brain fails or stalls: Groq first (0.8 s where NVIDIA took 24-60 s
+  # on 16 Oct 2026), then the model on this PC. A model that times out is
+  # skipped for llm.bench_seconds. Private turns skip every hosted one.
+  fallbacks: ["groq:openai/gpt-oss-120b", "athena:3b"]
+  cloud_timeout_seconds: 12
   # The most one request waits on models before saying they're busy (15 Oct 2026: 208 s once).
   # Time spent inside tools (a WhatsApp call, a study page) doesn't count.
   budget_voice_seconds: 35

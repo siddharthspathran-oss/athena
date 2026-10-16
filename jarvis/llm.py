@@ -105,6 +105,22 @@ def heal_gpu(llm: "LLM") -> str:
     return f"Ollama had fallen back to the CPU; restarted it - now {llm.processor()}."
 
 
+# A hosted model that just timed out sits out for a while, so the next
+# request goes straight to llm.fallbacks instead of waiting out the timeout
+# again: NVIDIA's free Lightning stalled for 24-60 s a call on 16 Oct 2026
+# while Groq answered the same request in 0.8 s.
+_BENCH: dict[str, float] = {}
+
+
+def _benched(model: str) -> bool:
+    return _BENCH.get(model, 0) > time.time()
+
+
+def _bench_if_slow(model: str, err: Exception) -> None:
+    if re.search(r"time(?:d)?\s*out|timeout|unreachable|could not reach|connection", str(err), re.I):
+        _BENCH[model] = time.time() + float(cfg.get("llm.bench_seconds", 600))
+
+
 class LLM:
     def __init__(self, model: str | None = None, host: str | None = None):
         self.model = model or cfg.get("llm.model", "qwen2.5:7b")
@@ -221,15 +237,18 @@ class LLM:
     def _cloud_turn(self, messages, tools, temperature, max_tokens):
         """The hosted model's answer, or None (and a note) if it failed - the caller falls back."""
         from . import cloud
+        if _benched(self.model):                  # timed out recently: straight to the next model
+            return None
         try:
             return cloud.chat_tools(self.model, messages, tools,
                                     temperature=cfg.get("llm.temperature", 0.3) if temperature is None else temperature,
                                     max_tokens=int(max_tokens or cfg.get("llm.max_tokens", 600)),
                                     timeout=int(cfg.get("llm.cloud_timeout_seconds", 20)))
         except Exception as e:
+            _bench_if_slow(self.model, e)
             try:
                 from . import live
-                live.note(f"cloud model failed, using the local one: {str(e)[:120]}")
+                live.note(f"cloud model failed, using the next one: {str(e)[:120]}")
             except Exception:
                 pass
             return None
@@ -386,15 +405,18 @@ class LLM:
                     if sentence and not cloud._REASONING.match(sentence):
                         st["spoke"] = True
                         on_sentence(sentence)
+            if _benched(self.model):
+                return self._local()._chat_stream(messages, tools, on_sentence, stop, max_tokens)
             try:
                 msg = cloud.chat_tools_stream(self.model, messages, tools, piece, stop,
                                               temperature=cfg.get("llm.temperature", 0.3),
                                               max_tokens=int(max_tokens or cfg.get("llm.max_tokens", 600)),
                                               timeout=int(cfg.get("llm.cloud_timeout_seconds", 20)))
             except Exception as e:
+                _bench_if_slow(self.model, e)
                 try:
                     from . import live
-                    live.note(f"cloud model failed, using the local one: {str(e)[:120]}")
+                    live.note(f"cloud model failed, using the next one: {str(e)[:120]}")
                 except Exception:
                     pass
                 if st["spoke"]:                  # half an answer already said: don't start a second one

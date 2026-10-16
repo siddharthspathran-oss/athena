@@ -376,8 +376,8 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
      ["browser_open", "browser_read", "browser_fill", "browser_click", "download_file"]),
     ("places", re.compile(
         r"\b(?:book|reserv|table|appointment|restaurant|cafe|hotel|clinic|hospital|doctor|"
-        r"salon|shop|store|hours|open\s+now|opening|closing|address|near)" + _W, re.I),
-     ["place_info", "book_reservation", "call_number"]),
+        r"salon|shop|store|hours|open\s+now|opening|closing|address|near|maps?|places?|gym|bakery)" + _W, re.I),
+     ["place_info", "maps_search", "book_reservation", "call_number"]),
     ("memory", re.compile(
         r"\b(?:remember|forget|forgot|know\s+about\s+me|recall|conversation|talk|discuss|"
         r"decid|said|style|writing|profile|learn)" + _W, re.I),

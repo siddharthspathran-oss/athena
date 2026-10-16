@@ -67,7 +67,7 @@ def _update(mid: str, **fields) -> dict | None:
         return m
 
 
-WORKERS = {"claude": "Claude", "gemini": "Gemini", "argon": "Gemini Argon"}
+WORKERS = {"claude": "Claude", "gemini": "Gemini", "argon": "Gemini Argon", "maps": "Google Maps"}
 
 
 # ---------- Gemini Argon, through the Gemini desktop app ----------
@@ -98,6 +98,8 @@ def _wake_app(hwnd: int) -> None:
     from ctypes import wintypes
 
     from . import uia
+    if not hwnd:            # EnumChildWindows(None) walks every window on the desktop
+        return
     kids = []
     cb = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)(lambda h, _: kids.append(h) or True)
     ctypes.windll.user32.EnumChildWindows(hwnd, cb, 0)
@@ -265,9 +267,71 @@ def _run_argon(mid: str, prompt: str, resume: bool) -> None:
         return
     (folder / "answer.md").write_text(answer + "\n", encoding="utf-8")
     first = next((ln.strip(" *#-[]") for ln in answer.splitlines() if ln.strip(" *#-[]")), "")
+    pdf = ""
+    try:
+        pdf = _export_canvas(hwnd, folder)
+    except Exception as e:
+        _note(mid, f"couldn't export Argon's canvas ({str(e)[:80]})")
     _update(mid, status="done", ended=time.time(), preview=_preview(folder),
             turns=int(m.get("turns", 0) or 0) + 1,
-            result=f"Saved Argon's answer to answer.md. It starts: {first[:200]}")
+            result=f"Saved Argon's answer to answer.md{' and its document to ' + pdf if pdf else ''}. "
+                   f"It starts: {first[:200]}")
+
+
+def _export_canvas(hwnd: int, folder: Path) -> str:
+    """Argon's Canvas document (a typeset PDF) out of the app and into the
+    mission folder: Export -> PDF -> Save in the app's own dialog, then the new
+    PDF is moved out of Downloads. All by UI Automation, no screen clicks.
+    "" when this answer has no Canvas."""
+    from . import uia
+    exp = next((e for e in uia.elements(hwnd, uia.BUTTON) if e.name == "Export"), None)
+    if exp is None:
+        return ""
+    downloads = Path.home() / "Downloads"
+    before = {p.name for p in downloads.glob("*.pdf")}
+    _invoke(exp)
+    time.sleep(1.2)
+    _wake_app(hwnd)
+    item = next((e for e in uia.elements(hwnd, 50011) if e.name == "PDF"), None)    # MENUITEM
+    if item is None or not _invoke(item):
+        _collapse(exp)
+        return ""
+    for _ in range(20):                       # the app asks where to save: take what it offers
+        time.sleep(1)
+        dlg = _save_dialog()
+        if dlg:
+            save = next((e for e in uia.elements(dlg, uia.BUTTON) if e.name in ("Save", "&Save")), None)
+            if save:
+                _invoke(save)
+            break
+    for _ in range(30):
+        time.sleep(1)
+        new = [p for p in downloads.glob("*.pdf") if p.name not in before and p.stat().st_size > 1000]
+        if new:
+            dest = folder / "argon.pdf"
+            shutil.move(str(new[0]), dest)
+            return dest.name
+    return ""
+
+
+def _save_dialog() -> int | None:
+    """The Gemini app's Save As dialog (a standard #32770 window), if it is open."""
+    import ctypes
+
+    import psutil
+
+    from . import winapi
+    for h, _t, pid in winapi.windows_with_pids():
+        try:
+            if psutil.Process(pid).name().lower() != "gemini.exe":
+                continue
+        except Exception:
+            continue
+        buf = ctypes.create_unicode_buffer(64)
+        ctypes.windll.user32.GetClassNameW(h, buf, 64)
+        if buf.value == "#32770":
+            return h
+    return None
 
 
 def _exe(worker: str) -> str | None:
@@ -364,18 +428,21 @@ def _preview(folder: Path) -> str:
     .md (research and Argon's answers), so the phone can read the result."""
     if (folder / "index.html").exists():
         return "index.html"
-    for pattern in ("*.html", "*.md"):
+    for pattern in ("*.html", "*.pdf", "*.md"):
         files = sorted(folder.rglob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
         if files:
             return str(files[0].relative_to(folder)).replace("\\", "/")
     return ""
 
 
-def _run(mid: str, prompt: str, resume: bool, retried: bool = False) -> None:
+def _run(mid: str, prompt: str, resume: bool, retried: bool = False, review: bool = False) -> None:
     m = next(x for x in load() if x["id"] == mid)
     worker = m.get("worker", "claude")
+    t0 = time.time()
     if worker == "argon":
         return _run_argon(mid, prompt, resume)
+    if worker == "maps":
+        return _run_maps(mid, prompt)
     exe = _exe(worker)
     if not exe:
         _update(mid, status="failed", result=f"{WORKERS[worker]}'s agent isn't installed on this PC.", ended=time.time())
@@ -424,18 +491,110 @@ def _run(mid: str, prompt: str, resume: bool, retried: bool = False) -> None:
         _note(mid, "that attempt failed before starting - trying again")
         if m.get("worker", "claude") == "claude" and not resume:
             _update(mid, session=str(uuid.uuid4()))   # the failed run may have claimed the old session id
-        return _run(mid, prompt, resume, retried=True)
+        return _run(mid, prompt, resume, retried=True, review=review)
     result = str((final or {}).get("result") or "").strip() or " ".join(other)[:300]
-    m = _update(mid, status="done" if ok else "failed", ended=time.time(),
-                cost=round(float(m.get("cost", 0) or 0) + float((final or {}).get("cost") or 0), 3),
-                session=(final or {}).get("session") or m.get("session"),
-                result=result or ("It didn't finish." if not ok else "Done."), preview=_preview(folder),
-                turns=int(m.get("turns", 0) or 0) + int((final or {}).get("turns") or 0))
+    cost = round(float(m.get("cost", 0) or 0) + float((final or {}).get("cost") or 0), 3)
+    turns = int(m.get("turns", 0) or 0) + int((final or {}).get("turns") or 0)
+    session = (final or {}).get("session") or m.get("session")
+    page = folder / "index.html"
+    if (ok and not review and cfg.get("missions.review", True) and page.exists()
+            and page.stat().st_mtime >= t0 - 5):
+        # Built or changed a page: look at it in a real browser, and let the
+        # worker fix what it sees before the user does. Workers said "I haven't
+        # opened it in a browser", and the orb site's sections came up blank
+        # until scrolled (16 Oct 2026).
+        _update(mid, cost=cost, turns=turns, session=session, result=result)
+        _note(mid, "checking the page in a real browser")
+        try:
+            shots, errors = _snap(folder)
+        except Exception as e:
+            shots, errors = [], []
+            _note(mid, f"couldn't open it in a browser ({str(e)[:80]})")
+        if shots:
+            return _run(mid, _review_prompt(shots, errors), True, review=True)
+    if review:                                  # the result the user hears is the build's, plus the check
+        first = m.get("result") or ""
+        if ok:                                  # it has been opened in a browser now
+            first = re.sub(r"[^.\n]*\b(?:haven'?t|have not|didn'?t|did not)\s+(?:opened|tested|checked|viewed)\b[^.\n]*"
+                           r"(?:browser|untested)[^.\n]*\.", "", first, flags=re.I)
+            first = re.sub(r"[ \t]{2,}", " ", first).strip()
+        result = (f"{first} Checked in a browser: {result}" if ok and result else
+                  f"{first} (I couldn't double-check it in a browser.)").strip()
+        ok = True                               # a failed check doesn't undo a finished build
+    m = _update(mid, status="done" if ok else "failed", ended=time.time(), cost=cost, session=session,
+                result=result or ("It didn't finish." if not ok else "Done."), preview=_preview(folder), turns=turns)
     try:
         from . import rules
         rules.log(f"mission {'done' if ok else 'failed'}: {m['title']}", "missions")
     except Exception:
         pass
+
+
+def _run_maps(mid: str, query: str) -> None:
+    """A chain step that reads Google Maps (mapsearch.py) into maps.md - the
+    real local places, and which have no website of their own."""
+    import os
+    from . import mapsearch
+    folder = Path(_get(mid)["folder"])
+    _update(mid, status="running", pid=os.getpid())
+    _note(mid, f"searching Google Maps: {query[:80]}")
+    try:
+        rows = mapsearch.search(query, int(cfg.get("maps.chain_places", 12)))
+    except Exception as e:
+        _update(mid, status="failed", ended=time.time(), result=f"Couldn't read Google Maps: {str(e)[:120]}.")
+        return
+    if not rows:
+        _update(mid, status="failed", ended=time.time(), result=f"Google Maps found nothing for '{query}'.")
+        return
+    (folder / "maps.md").write_text(mapsearch.to_markdown(query, rows), encoding="utf-8")
+    without = [r["name"] for r in rows if not r["website"]]
+    _update(mid, status="done", ended=time.time(), turns=1, preview=_preview(folder),
+            result=(f"Saved {len(rows)} places from Google Maps to maps.md (ratings, addresses, phones, websites). "
+                    + (f"No website of their own: {', '.join(without[:8])}." if without else "All have websites.")))
+
+
+def _snap(folder: Path) -> tuple[list[str], list[str]]:
+    """index.html in a real browser (Playwright's Chromium): screenshots top to
+    bottom at desktop and phone width, after scrolling through so fade-in
+    sections have shown, plus any JavaScript errors. Saved in .review/ (never
+    published)."""
+    from playwright.sync_api import sync_playwright
+    out = folder / ".review"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir()
+    shots, errors = [], []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(channel="chrome", headless=True)     # the installed Chrome, like upes.py
+        try:
+            for name, w, h in (("desktop", 1280, 800), ("phone", 390, 844)):
+                pg = browser.new_page(viewport={"width": w, "height": h})
+                pg.on("console", lambda msg: errors.append(msg.text[:200]) if msg.type == "error" else None)
+                pg.on("pageerror", lambda e: errors.append(str(e)[:200]))
+                pg.goto((folder / "index.html").as_uri(), wait_until="load", timeout=30000)
+                pg.wait_for_timeout(1500)
+                total = int(pg.evaluate("document.documentElement.scrollHeight"))
+                for i, y in enumerate(range(0, max(total, 1), h)):
+                    if i >= int(cfg.get("missions.review_shots", 5)):
+                        break
+                    pg.evaluate(f"window.scrollTo(0, {y})")
+                    pg.wait_for_timeout(900)                 # reveal animations, lazy content
+                    f = out / f"{name}-{i + 1}.png"
+                    pg.screenshot(path=str(f))
+                    shots.append(f".review/{f.name}")
+                pg.close()
+        finally:
+            browser.close()
+    return shots, sorted(set(errors))[:10]
+
+
+def _review_prompt(shots: list[str], errors: list[str]) -> str:
+    return ("Check your work before the user sees it. index.html was opened in a real browser and screenshotted "
+            f"top to bottom, desktop (1280 px) and phone (390 px) width: {', '.join(shots)}. "
+            f"JavaScript errors: {'; '.join(errors) if errors else 'none'}. Open and look at every screenshot. "
+            "Fix anything broken, blank, unreadable, overlapping, cut off or clearly ugly, and any JavaScript error - "
+            "but don't redesign what already works, and if it all looks right change nothing. Don't touch .review/. "
+            "Reply with one short sentence: what you checked and what, if anything, you fixed.")
 
 
 def _note(mid: str, text: str) -> None:
@@ -495,6 +654,7 @@ Workers:
 - "gemini": research - web searches, reading websites, comparing options, finding facts, prices, places, writing reports and documents. Free on the user's Google plan: use it for research.
 - "claude": building - websites (plain HTML/CSS/JS with index.html), programs, scripts, data processing, editing and improving files. Use it for anything that is built or coded.
 - "argon": ONLY if the user explicitly asks for Argon.
+- "maps": Athena reads Google Maps herself - real local places with ratings, addresses, phone numbers and whether each has its own website. Use it FIRST, and only, when the goal is about actual places or businesses (cafes near somewhere, shops with no website) - never for products, prices or general research. Its task is ONLY the Maps search text with the area, e.g. "cafes near Rajpur Road Dehradun" - no instructions. It saves maps.md for later steps.
 
 Rules:
 - Use as few steps as the goal needs; a simple goal is ONE step.
@@ -510,7 +670,8 @@ def plan(goal: str) -> list[dict]:
     try:
         from . import planner
         reply, _ = planner._chat([{"role": "system", "content": PLAN_PROMPT},
-                                  {"role": "user", "content": goal}])
+                                  {"role": "user", "content": f"{goal}\n\n(The user lives in "
+                                                              f"{cfg.get('assistant.city', 'Dehradun')}.)"}])
         data = json.loads(re.search(r"\{[\s\S]*\}", reply).group(0))
         steps = [{"worker": str(s.get("worker", "claude")).lower(), "task": str(s.get("task", "")).strip()}
                  for s in data.get("steps", []) if str(s.get("task", "")).strip()][:4]
@@ -518,6 +679,9 @@ def plan(goal: str) -> list[dict]:
             for s in steps:
                 if s["worker"] not in WORKERS or (s["worker"] == "argon" and not re.search(r"\bargon\b", goal, re.I)):
                     s["worker"] = "gemini" if re.search(r"\b(research|find|compare|search|look up)\b", s["task"], re.I) else "claude"
+            for s in steps:
+                if s["worker"] == "maps":
+                    s["task"] = _maps_query(s["task"])
             return steps
     except Exception as e:
         print(f"[mission plan: {str(e)[:120]} - using the simple plan]")
@@ -527,6 +691,15 @@ def plan(goal: str) -> list[dict]:
         return [{"worker": "gemini", "task": f"Research what this needs and save your findings to research.md: {goal}"},
                 {"worker": "claude", "task": f"Using research.md in this folder, do the rest of this: {goal}"}]
     return [{"worker": "gemini" if research and not build else "claude", "task": goal}]
+
+
+def _maps_query(task: str) -> str:
+    """'Search Google Maps for cafes near Dehradun and list those without...'
+    -> 'cafes near Dehradun': Maps wants the search, not instructions."""
+    q = re.sub(r"^\s*(?:search|look\s+up|find|get|list)\s+(?:on\s+)?(?:google\s+)?(?:maps\s+)?(?:for\s+)?", "", task, flags=re.I)
+    q = re.split(r"[.;\n]|\s+(?:and|then|to|that|which|who|with(?:out)?)\s+(?:list|save|have|has|don'?t|do\s+not|no|find|note|"
+                 r"check|pick|write)\b|\s+(?:without|with\s+no|lacking)\b", q, maxsplit=1, flags=re.I)[0]
+    return q.strip(" ,:\"'")[:80] or task[:80]
 
 
 def _step_prompt(c: dict, i: int) -> str:
@@ -567,7 +740,8 @@ def _run_chain(cid: str, start_at: int = 0) -> None:
             if _get(cid)["status"] == "stopped":
                 return
             try:
-                child = start(_step_prompt(_get(cid), i), step["worker"], folder=c["folder"], parent=cid)
+                child = start(step["task"] if step["worker"] == "maps" else _step_prompt(_get(cid), i),
+                              step["worker"], folder=c["folder"], parent=cid)
             except RuntimeError as e:
                 if time.time() - waited > float(cfg.get("missions.max_minutes", 30)) * 60:
                     _update(cid, status="failed", ended=time.time(), result=f"Step {i + 1} never got started: {e}.")
@@ -647,7 +821,7 @@ def stop(mid: str) -> bool:
         for kid in [x for x in load() if x.get("parent") == mid and x["status"] in ("running", "starting")]:
             stop(kid["id"])
         return True
-    if m.get("worker") == "argon":      # its pid is Athena's own: the watch loop presses Stop response instead
+    if m.get("worker") in ("argon", "maps"):   # their pid is Athena's own: never killed
         return True
     proc = _procs.get(mid)
     pid = proc.pid if proc else m.get("pid")    # no proc here: the other process (voice / web) started it
@@ -800,7 +974,9 @@ def publish(mid: str) -> str:
     if dest.exists():
         shutil.rmtree(dest)
     for f in src.rglob("*"):
-        if f.is_file() and f.suffix.lower() in _WEB and "mission_logs" not in f.parts:
+        rel = f.relative_to(src).parts
+        if (f.is_file() and f.suffix.lower() in _WEB and "mission_logs" not in rel
+                and not any(part.startswith(".") for part in rel)):      # .review/ screenshots stay home
             (dest / f.relative_to(src)).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, dest / f.relative_to(src))
     _site_index(repo)
@@ -989,4 +1165,7 @@ if __name__ == "__main__":
         {"worker": "claude", "task": "build index.html from research.md"}]}, 1)
     assert "step 2 of 2" in p and "Found Brew Lab." in p and "Your step: build index.html" in p
     assert _title("Find a cafe near me with no website and build them one") == "A cafe near me with no website"
+    assert _maps_query("Search for cafes near Dehradun and list those that have no website. Save maps.md") == "cafes near Dehradun"
+    assert _maps_query("cafes near Rajpur Road Dehradun") == "cafes near Rajpur Road Dehradun"
+    assert _maps_query("Search Google Maps for gyms in Dehradun without a website") == "gyms in Dehradun"
     print("missions: checks pass")

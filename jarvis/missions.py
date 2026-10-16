@@ -767,6 +767,24 @@ def publish_target(m: dict) -> tuple[Path | None, str]:
     return folder, f"{base}/{_site_slug(m)}/"
 
 
+def _site_index(repo: Path) -> None:
+    """The repo's front page: a list of the sites published so far."""
+    import html
+    rows = []
+    for d in sorted((p for p in repo.iterdir() if p.is_dir() and (p / "index.html").exists()),
+                    key=lambda p: p.stat().st_mtime, reverse=True):
+        title = re.search(r"<title>(.*?)</title>", (d / "index.html").read_text(encoding="utf-8", errors="replace"),
+                          re.I | re.S)
+        name = html.escape((title.group(1).strip() if title else d.name)[:90])
+        rows.append(f'<li><a href="{html.escape(d.name)}/">{name}</a></li>')
+    (repo / "index.html").write_text(
+        "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Athena sites</title><style>body{font:16px/1.6 system-ui,sans-serif;max-width:640px;margin:48px auto;"
+        "padding:0 16px;color:#1d1b26;background:#faf9fd}a{color:#5b3fd6}h1{font-size:24px}</style>"
+        "<h1>Sites built with Athena</h1><ul>" + "".join(rows or ["<li>Nothing published yet.</li>"]) + "</ul>",
+        encoding="utf-8")
+
+
 def publish(mid: str) -> str:
     """Copy a mission's web files into the Pages repo and push. Returns the URL."""
     m = _get(mid)
@@ -785,6 +803,7 @@ def publish(mid: str) -> str:
         if f.is_file() and f.suffix.lower() in _WEB and "mission_logs" not in f.parts:
             (dest / f.relative_to(src)).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, dest / f.relative_to(src))
+    _site_index(repo)
     git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, timeout=120,
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     git("add", "-A")

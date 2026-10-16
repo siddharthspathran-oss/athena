@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 import secrets
 import threading
+import time
 import urllib.parse
 
 from .config import DATA, cfg
@@ -208,21 +209,41 @@ def call(message: str, user: str | None = None, timeout: float = 60) -> tuple[bo
 # ---------- the push (ntfy) ----------
 
 def push(message: str, topic: str | None = None, title: str = "Athena",
-         priority: str = "urgent") -> tuple[bool, str]:
-    """Send a push to the ntfy app. (ok, plain words)."""
+         priority: str = "urgent", _retry: bool = True, click: str = "", tags: str = "rotating_light") -> tuple[bool, str]:
+    """Send a push to the ntfy app. (ok, plain words). With no network it is
+    tried again in the background - an alert sent at boot, before Wi-Fi was
+    up, used to be lost (15 Oct 2026)."""
     import httpx
 
+    if cfg.get("alerts.web_push", True):        # the Athena app's own notification, when a phone subscribed
+        try:
+            from . import webpush
+            if webpush.subscribers():
+                import urllib.parse
+                u = urllib.parse.urlsplit(click) if click else None
+                where = (u.path or "/") + (f"#{u.fragment}" if u.fragment else "") if u else "/"
+                if webpush.send(title, message or "", where, urgent=(priority == "urgent")):
+                    return True, "Pushed to the Athena app."
+        except Exception as e:
+            print(f"[web push: {str(e)[:120]} - using ntfy]")
     topic = topic or contact().get("ntfy_topic", "")
     if not topic:
         return False, "no ntfy topic set up (python run.py alerts setup)."
     server = str(cfg.get("alerts.ntfy.server", "https://ntfy.sh")).rstrip("/")
     try:
         r = httpx.post(f"{server}/{topic}", content=(message or "").encode("utf-8"),
-                       headers={"Title": title, "Priority": priority,
-                                "Tags": "rotating_light"},
+                       headers={"Title": title, "Priority": priority, "Tags": tags,
+                                **({"Click": click} if click else {})},   # tapping it opens this (no token in it)
                        timeout=20)
     except httpx.HTTPError as e:
-        return False, f"could not reach ntfy ({str(e)[:120] or 'network error'})."
+        if _retry:
+            def again():
+                for wait in (30, 120, 300):
+                    time.sleep(wait)
+                    if push(message, topic, title, priority, _retry=False, click=click, tags=tags)[0]:
+                        return
+            threading.Thread(target=again, daemon=True, name="athena-push-retry").start()
+        return False, f"could not reach ntfy ({str(e)[:120] or 'network error'}) - will retry."
     if r.status_code == 429:
         return False, "ntfy is rate-limiting this PC; try again in a minute."
     if r.status_code >= 400:

@@ -76,7 +76,7 @@ def _smart_title(chat_id: str, first: list[dict[str, Any]]) -> None:
     try:
         from .llm import LLM
         ask = next((m for m in first if m["role"] == "user"), None)
-        if ask is None:
+        if ask is None or ask.get("private"):
             return
         reply = next((m for m in first[first.index(ask):] if m["role"] == "assistant"), {"content": ""})
         msg = LLM().chat([{"role": "user", "content":

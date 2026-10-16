@@ -311,7 +311,7 @@ def _samples(limit: int = 80) -> list[str]:
         msgs = d.get("messages") if isinstance(d, dict) else d
         when = path.stat().st_mtime
         for m in msgs or []:
-            if m.get("role") == "user":
+            if m.get("role") == "user" and not m.get("private"):
                 t = str(m.get("content") or "").strip()
                 # Commands to Athena are not writing. The first style built
                 # from them (25 Sep 2026) said "messages are one to three

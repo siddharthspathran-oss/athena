@@ -111,7 +111,8 @@ class LLM:
         self.host = host or cfg.get("llm.host", "http://127.0.0.1:11434")
         # A hard ceiling on one call: a runaway reply held Athena for 2+ minutes
         # and every command queued behind it (27 Sep 2026).
-        self.client = ollama.Client(host=self.host, timeout=float(cfg.get("llm.timeout_seconds", 180)))
+        from . import deadline
+        self.client = ollama.Client(host=self.host, timeout=deadline.cap(float(cfg.get("llm.timeout_seconds", 180))))
 
     # ---------- health ----------
 
@@ -207,7 +208,15 @@ class LLM:
         return cloud.split(self.model)[0] not in ("", "gemini")
 
     def _local(self) -> "LLM":
-        return LLM(cfg.get("llm.fallback_model", "athena:3b"), self.host)
+        """The next model when this one fails: llm.fallbacks in order (e.g. NVIDIA,
+        then the local model), ending at the local one."""
+        chain = [str(m) for m in (cfg.get("llm.fallbacks") or [cfg.get("llm.fallback_model", "athena:3b")])]
+        if self.model in chain:
+            i = chain.index(self.model) + 1
+            nxt = chain[i] if i < len(chain) else "athena:3b"
+        else:
+            nxt = chain[0]
+        return LLM(nxt if nxt != self.model else "athena:3b", self.host)
 
     def _cloud_turn(self, messages, tools, temperature, max_tokens):
         """The hosted model's answer, or None (and a note) if it failed - the caller falls back."""
@@ -354,16 +363,47 @@ class LLM:
         """
         from types import SimpleNamespace
         if self._cloud():
-            # Not streamed: a hosted reply is back in about a second, so it is
-            # spoken sentence by sentence once it arrives.
-            msg = self._cloud_turn(messages, tools, None, max_tokens)
-            if msg is None:
+            # Streamed (15 Oct 2026): each sentence is spoken as soon as it is
+            # complete, while the rest is still arriving. A reply that opens
+            # like JSON, or turns into a tool call, is never spoken; nor is the
+            # model thinking out loud ("The user wants...").
+            from . import cloud
+            st = {"buf": "", "quiet": False, "spoke": False}
+
+            def piece(t: str) -> None:
+                if st["quiet"] or stop():
+                    return
+                st["buf"] += t
+                if st["buf"].lstrip()[:1] in ("{", "[", "`"):
+                    st["quiet"] = True
+                    return
+                while True:
+                    cut = re.search(r"[.!?](?=\s)|\n", st["buf"][12:])
+                    if not cut:
+                        break
+                    end = 12 + cut.end()
+                    sentence, st["buf"] = st["buf"][:end].strip(), st["buf"][end:]
+                    if sentence and not cloud._REASONING.match(sentence):
+                        st["spoke"] = True
+                        on_sentence(sentence)
+            try:
+                msg = cloud.chat_tools_stream(self.model, messages, tools, piece, stop,
+                                              temperature=cfg.get("llm.temperature", 0.3),
+                                              max_tokens=int(max_tokens or cfg.get("llm.max_tokens", 600)),
+                                              timeout=int(cfg.get("llm.cloud_timeout_seconds", 20)))
+            except Exception as e:
+                try:
+                    from . import live
+                    live.note(f"cloud model failed, using the local one: {str(e)[:120]}")
+                except Exception:
+                    pass
+                if st["spoke"]:                  # half an answer already said: don't start a second one
+                    from types import SimpleNamespace
+                    return SimpleNamespace(role="assistant", content="", tool_calls=None)
                 return self._local()._chat_stream(messages, tools, on_sentence, stop, max_tokens)
-            text = (msg.content or "").strip()
-            if not msg.tool_calls and text and text[:1] not in ("{", "[", "`") and not stop():
-                for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
-                    if sentence.strip() and not stop():
-                        on_sentence(sentence.strip())
+            tail = st["buf"].strip()
+            if not msg.tool_calls and not st["quiet"] and tail and not stop() and not cloud._REASONING.match(tail):
+                on_sentence(tail)
             return msg
         content, calls, buf = [], [], ""
         quiet = False

@@ -521,6 +521,19 @@ def daily_brief(day: str = "today", full: bool = False) -> str:
         lines.append(f"{len(mail)} unread, addressed to you:")
         lines += [f"  {m}" for m in mail]
 
+    if label == "today":                # goals in progress (goals.py): progress and today's tasks
+        try:
+            from .. import goals
+            lines += goals.brief_lines()
+        except Exception:
+            pass
+        try:                            # spaced review of missed quiz questions (quiz.py)
+            from .. import quiz
+            if quiz.brief_line():
+                lines.append(quiz.brief_line())
+        except Exception:
+            pass
+
     if label == "today":                # last night's self-check, if it found anything
         try:
             from .. import health

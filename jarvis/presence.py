@@ -292,7 +292,10 @@ def _tick() -> None:
     """
     now = time.time()
     idle = _idle()
-    seen_at = max(now - idle, _state.get("face_at", 0.0))
+    # Talking to Athena counts as being here: from the bed, out of the camera's
+    # view, without touching the keyboard, you were marked away mid-conversation
+    # and the next sentence got a "welcome back" (16 Oct 2026, twice).
+    seen_at = max(now - idle, _state.get("face_at", 0.0), _state["talk"])
     camera = bool(cfg.get("presence.camera", True))
     away_after = float(cfg.get("presence.away_after_minutes", 3)) * 60
     if _state["here"]:

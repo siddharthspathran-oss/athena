@@ -197,18 +197,35 @@ def prompt_text() -> str:
     except OSError:
         return ""
     if mtime != _cache["mtime"]:
+        from .memory import personal
         live = [i for i in load() if i.live()]
         parts = []
+        local: list[str] = []
         for key, title in SECTIONS.items():
             rows = [f"- {i.text}" + (f" (until {i.until})" if i.until else "")
                     for i in live if i.section == key]
+            # Personal lines (people, relationships, numbers...) and the writing
+            # style (only for messages, now written on this PC) stay local.
+            mine = [r for r in rows if key == "style" or personal(r)]
+            rows = [r for r in rows if r not in mine]
+            if key == "style":
+                title = ("Writing style - follow it whenever you write a message, "
+                         "email or post on the user's behalf")
+            if mine:
+                local.append(f"{title}:\n" + "\n".join(mine))
             if rows:
-                if key == "style":
-                    title = ("Writing style - follow it whenever you write a message, "
-                             "email or post on the user's behalf")
                 parts.append(f"{title}:\n" + "\n".join(rows))
-        _cache.update(mtime=mtime, text="\n".join(parts))
+        text = "\n".join(parts)
+        if local:          # cloud.cloud_safe cuts this block out of anything sent to a hosted model
+            text += "\n[[local-only]]\n" + "\n".join(local) + "\n[[/local-only]]"
+        _cache.update(mtime=mtime, text=text, local=local)
     return _cache["text"]
+
+
+def private_lines() -> list[str]:
+    """The profile lines kept to the model on this PC (see prompt_text)."""
+    prompt_text()
+    return [ln for block in _cache.get("local", []) for ln in block.splitlines()[1:]]
 
 
 def show() -> str:
@@ -360,7 +377,7 @@ def learn_pending(quiet_minutes: float = 10) -> list[str]:
         if path.stat().st_mtime > cutoff:
             continue                                  # still going
         cid = path.stem
-        msgs = chats.load(cid)
+        msgs = [m for m in chats.load(cid) if not m.get("private")]
         done = int(prog["chats"].get(cid, 0))
         if len(msgs) <= done:
             continue

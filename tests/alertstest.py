@@ -43,8 +43,16 @@ def _fake_post(url, **kw):
 httpx.get = _fake_get
 httpx.post = _fake_post
 
-from jarvis import alerts, phone                               # noqa: E402
+from jarvis import alerts, phone, webpush                      # noqa: E402
 from jarvis.agent import _direct_phone_me                      # noqa: E402
+
+# The Athena app's own notifications (webpush.py, 16 Oct 2026) don't go through
+# httpx: with a phone subscribed, this test pushed its fake alerts to the real
+# phone. Off here, so phone.push() takes the faked ntfy path as before.
+webpush.subscribers = lambda: 0
+webpush.send = lambda *a, **k: 0
+from jarvis import upes                                         # noqa: E402
+upes.covers = lambda day: False          # the test's own weekly table, not the real semester timetable
 from jarvis.tools import brief                                 # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="jarvis-alertstest-"))

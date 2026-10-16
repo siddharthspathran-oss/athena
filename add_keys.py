@@ -3,7 +3,8 @@
     python add_keys.py
 
 Asks for a provider and its key (hidden while you type), checks the key with
-one tiny request, and saves it to data/api_keys.json. Blank provider = done.
+one tiny request, and saves it in Windows Credential Manager (Athena/<provider>).
+Blank provider = done.
 """
 from getpass import getpass
 
@@ -24,7 +25,8 @@ while True:
     try:
         model = {"groq": "groq:llama-3.1-8b-instant", "gemini": "gemini:gemini-2.0-flash",
                  "openrouter": "openrouter:meta-llama/llama-3.2-3b-instruct:free",
-                 "cerebras": "cerebras:llama3.1-8b", "nvidia": "nvidia:meta/llama-3.1-8b-instruct"}[p]
+                 "cerebras": "cerebras:llama3.1-8b", "nvidia": "nvidia:meta/llama-3.1-8b-instruct",
+                 "anthropic": "anthropic:claude-haiku-5-5"}[p]
         print("  saved -", "works" if cloud.chat(model, [{"role": "user", "content": "Say ok"}]) else "saved, but the test got no reply")
     except Exception as e:
         print(f"  saved, but the test failed: {str(e)[:150]}")

@@ -141,6 +141,9 @@ def read_text(path: str = "", whole_screen: bool = False) -> str:
     return words[:4000] if words else "I couldn't find any text there."
 
 
+_TEXTUAL = re.compile(r"\b(?:read|summari[sz]e|summary|says?|saying|written|text|error|message|warning|explain|"
+                      r"mean|meaning|translate|copy|words?|paragraph|email|article|page|code|question)\b", re.I)
+
 _SYSTEM = ("You are Athena, looking at the user's own computer screen because they asked you to. "
            "Answer their question about what is on it. Use the window text when it is given - it is "
            "exact, the screenshot is not. Be concrete and brief: two to five sentences unless they "
@@ -170,6 +173,21 @@ def look_at_screen(question: str = "What am I looking at?", whole_screen: bool =
         prompt += f"\nWindow in front: {title}\n"
     if text:
         prompt += f"\nText read from that window:\n---\n{text}\n---\n"
+    # About the words on screen, and OCR found plenty of them: a text model on
+    # this PC answers from the text, without swapping the vision model onto the
+    # GPU. Pictures, layouts and "what am I looking at" still get the vision model.
+    if len(text) >= 80 and _TEXTUAL.search(question or ""):
+        try:
+            reply = ollama.chat(model=str(cfg.get("screen.text_model", "athena:3b")),
+                                messages=[{"role": "system", "content": _SYSTEM},
+                                          {"role": "user", "content": prompt}],
+                                options={"num_predict": int(cfg.get("screen.max_tokens", 320)), "temperature": 0.2},
+                                keep_alive=cfg.get("vision.keep_alive", "2m"))
+            answer = (reply.message.content or "").strip()
+            if answer:
+                return answer
+        except Exception:
+            pass                             # the vision model below still answers
     from .. import vision
     vision._hold()                           # keep the swap-back timer off meanwhile
     try:

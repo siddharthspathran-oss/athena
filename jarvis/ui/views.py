@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import time
+from pathlib import Path
 
 import psutil
 
@@ -566,5 +567,113 @@ def alarm_state() -> dict:
     return {"ringing": alarm.ringing()}
 
 
+def goals() -> dict:
+    """The Goals page: each goal's progress, today's tasks and the plan by day."""
+    import datetime as _dt
+    from .. import chats
+    from .. import goals as G
+    today = _dt.date.today()
+    names = {p["id"]: p["name"] for p in chats.projects()}
+    out = []
+    for g in sorted(G.load(), key=lambda g: (g["status"] != "active", g["deadline"])):
+        done = sum(t["done"] for t in g["tasks"])
+        days = {}
+        for t in g["tasks"]:
+            days.setdefault(t["date"], []).append(t)
+        def label(d):
+            d = _dt.date.fromisoformat(d)
+            n = (d - today).days
+            return "Today" if n == 0 else "Tomorrow" if n == 1 else "Yesterday" if n == -1 else d.strftime("%a %d %b")
+        out.append({"id": g["id"], "title": g["title"], "status": g["status"], "deadline": g["deadline"],
+                    "project_id": g.get("project", ""),
+                    "deadline_label": label(g["deadline"]), "days_left": (_dt.date.fromisoformat(g["deadline"]) - today).days,
+                    "project": names.get(g.get("project", ""), ""), "done": done, "total": len(g["tasks"]),
+                    "missed": sum(1 for t in g["tasks"] if not t["done"] and t["date"] < today.isoformat()),
+                    "days": [{"date": d, "label": label(d), "past": d < today.isoformat(), "today": d == today.isoformat(),
+                              "tasks": [{k: t.get(k) for k in ("id", "task", "kind", "topic", "minutes", "done", "score", "moved")}
+                                        for t in ts]} for d, ts in sorted(days.items())]})
+    return {"goals": out}
+
+
+def goal_action(body: dict) -> dict:
+    import time as _t
+    from .. import goals as G
+    gid, action = str(body.get("goal", "")), body.get("action", "")
+    with G._lock:
+        gs = G.load()
+        g = next((x for x in gs if x["id"] == gid), None)
+        if g is None:
+            return {"said": "That goal no longer exists."}
+        if action == "toggle":
+            t = next((x for x in g["tasks"] if x["id"] == body.get("task")), None)
+            if t is None:
+                return {"said": "No such task."}
+            t["done"] = bool(body.get("on"))
+            t["done_at"] = _t.time() if t["done"] else None
+            G._save(gs)
+            return {"said": ("Ticked off: " if t["done"] else "Un-ticked: ") + t["task"]}
+        if action == "start":                     # the HUD opens a chat in the project and asks this
+            return {**(G.start_task(gid, str(body.get("task", ""))) or {}), "said": ""}
+        if action == "replan":
+            n = G.replan(g)
+            G._save(gs)
+            return {"said": f"Moved {n} missed task(s) into the days left." if n else "Nothing missed."}
+        if action == "drop":
+            g["status"] = "dropped"
+            G._save(gs)
+            return {"said": f"Dropped: {g['title']}."}
+        if action == "remove":
+            G._save([x for x in gs if x["id"] != gid])
+            return {"said": f"Removed: {g['title']}."}
+    return {"said": "Unknown action."}
+
+
+def missions() -> dict:
+    """The Missions page: what Claude is building, live progress, results."""
+    import time as _t
+    from .. import missions as M
+    out = []
+    for m in sorted((m for m in M.load() if not m.get("parent")), key=lambda m: -m["started"])[:30]:   # a chain's steps show inside it
+        out.append({k: m.get(k) for k in ("id", "title", "task", "worker", "status", "result", "cost", "turns", "preview",
+                                          "folder", "followups", "started", "ended")}
+                   | {"steps": [{k: s.get(k) for k in ("worker", "task", "status")} for s in m.get("steps") or []],
+                      "published": m.get("published", ""),
+                      "can_publish": bool(M.publish_target(m)[0]) and (Path(m["folder"]) / "index.html").exists(),
+                      "has_draft": bool(M.draft_file(m)),
+                      "progress": (m.get("progress") or [])[-12:],
+                      "minutes": round(((m.get("ended") or _t.time()) - m["started"]) / 60, 1)})
+    return {"missions": out, "spent": round(sum(float(m.get("cost") or 0) for m in M.load()), 2)}
+
+
+def mission_action(body: dict) -> dict:
+    import os
+    from .. import missions as M
+    action, mid = body.get("action", ""), str(body.get("id", ""))
+    try:
+        if action == "start":
+            if not str(body.get("task", "")).strip():
+                return {"said": "Type what Claude should do."}
+            who = str(body.get("worker") or "auto")
+            m = (M.start_chain(str(body.get("task", "")).strip()) if who == "auto"
+                 else M.start(str(body.get("task", "")).strip(), who))
+            return {"said": f"Started: {m['title']}.", "id": m["id"]}
+        if action == "stop":
+            return {"said": "Stopped." if M.stop(mid) else "It isn't running."}
+        if action == "follow":
+            M.follow_up(mid, str(body.get("text", "")))
+            return {"said": "Claude is on it."}
+        if action == "publish":                   # the HUD asks twice before it gets here
+            return {"said": f"Live at {M.publish(mid)} - it can take a minute to appear."}
+        if action == "draft":
+            return {"said": M.open_draft(mid)}
+        m = next((x for x in M.load() if x["id"] == mid), None)
+        if m and action == "folder":
+            os.startfile(m["folder"])
+            return {"said": ""}
+    except RuntimeError as e:
+        return {"said": f"Can't: {e}."}
+    return {"said": "Unknown action."}
+
+
 GET = {"alarm": alarm_state, "notify": notify, "store": store, "phone": phone, "codegraph": codegraph, "calendar": calendar, "memory": memory, "workflows": workflows,
-       "automations": automations, "system": system, "tasks": tasks, "skills": skills, "brain": brain}
+       "automations": automations, "goals": goals, "missions": missions, "system": system, "tasks": tasks, "skills": skills, "brain": brain}

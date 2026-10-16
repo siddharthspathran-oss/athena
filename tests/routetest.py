@@ -40,6 +40,33 @@ from jarvis.agent import route, split_simple  # noqa: E402
 # Only phrases whose routing does not depend on this PC's apps, files or
 # contacts, so the table holds on any machine.
 ROUTES = {
+    # missions: Claude Code does a big job in the background
+    "have claude build me a one page website for a cafe": ("mission_start", {"task": "build me a one page website for a cafe", "worker": "claude"}),
+    "athena, ask cloud to make me a snake game in python": ("mission_start", {"task": "make me a snake game in python", "worker": "claude"}),
+    "have gemini research the best esp32 microphones": ("mission_start", {"task": "research the best esp32 microphones", "worker": "gemini"}),
+    "ask argon to write a study plan for signals": ("mission_start", {"task": "write a study plan for signals", "worker": "argon"}),
+    "have gemini argon build a quiz on fourier series": ("mission_start", {"task": "build a quiz on fourier series", "worker": "argon"}),
+    "start a mission to write a study timetable": ("mission_chain", {"goal": "write a study timetable"}),
+    "athena, start a mission to find a cafe near me with no website and build them one":
+        ("mission_chain", {"goal": "find a cafe near me with no website and build them one"}),
+    "mission: compare three esp32 boards and make a buying guide":
+        ("mission_chain", {"goal": "compare three esp32 boards and make a buying guide"}),
+    "ask claude what time it is": None,
+    "how's the mission going": ("mission_status", {}),
+    "what is the status of my missions": ("mission_status", {}),
+    "stop the mission": ("mission_stop", {}),
+    "athena, is the emission done?": ("mission_status", {}),
+    "what is going on": None,
+    "athena, publish it": ("mission_publish", {"which": ""}),
+    "put the cafe site online": ("mission_publish", {"which": "cafe"}),
+    "make the website live": ("mission_publish", {"which": ""}),
+    "open the email draft": ("mission_draft", {}),
+    "athena, review my flashcards": ("review_flashcards", {"topic": ""}),
+    "athena, do you have any meetings today?": ("teams_meetings", {"day": "today"}),
+    "revise what i got wrong on fourier series": ("review_flashcards", {"topic": "fourier series"}),
+    "what is happening": None,
+    "is the machines done": ("mission_status", {}),
+    "are my missions finished": ("mission_status", {}),
     # power
     "shut down the pc": ("power_action", {"action": "shutdown"}),
     "cancel shutdown": ("power_action", {"action": "cancel"}),

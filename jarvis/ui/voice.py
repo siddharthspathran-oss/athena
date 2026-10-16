@@ -380,15 +380,54 @@ _COMMANDISH = re.compile(
 _JOINERS = re.compile(r"^\W*(?:(?:and|also|then|but|so|now|actually|ok|okay|oh|wait|right)\W+)+", re.I)
 
 
+# 15 Oct 2026: follow-ups (no "Athena") need a real command or question.
+# _COMMANDISH also lets in "please", "good", "can", "hey"... - fine after the
+# name, too loose for an open mic: "Please like, share, and subscribe" from a
+# video was answered.
+_FOLLOW_CMD = re.compile(
+    r"^\W*(?:please\s+|can\s+you\s+|could\s+you\s+|will\s+you\s+|would\s+you\s+)?"
+    r"(?:open|close|quit|exit|kill|play|pause|resume|stop|skip|next|previous|mute|unmute|volume|"
+    r"turn|set|call|ring|dial|text|message|send|whatsapp|email|mail|remind|add|remove|delete|"
+    r"tell\s+me|show\s+me|give\s+me|read|look\s+at|check|search|find|google|book|order|start|launch|"
+    r"run|lock|shut|shutdown|restart|take|explain|summari[sz]e|brief|list|write|type|create|make|"
+    r"schedule|switch|minimi[sz]e|maximi[sz]e|screenshot|note|save|copy|paste|hang\s+up|focus|"
+    r"study|quiz|teach|repeat|cancel|undo)\b"
+    r"|^\W*(?:what|what's|whats|who|who's|when|where|how|which|why)\b\W*\S+\W+\S+", re.I)
+
+# What videos and streams say, that is never meant for Athena.
+_MEDIA_TALK = re.compile(
+    r"\b(?:like(?:,)?\s+(?:share|and\s+subscribe)|subscribe|hit\s+the\s+bell|smash\s+(?:that|the)\s+like|"
+    r"thanks?\s+(?:you\s+)?for\s+watching|see\s+you\s+in\s+the\s+next|link\s+in\s+(?:the\s+)?(?:bio|description)|"
+    r"comment\s+(?:below|down)|welcome\s+back\s+to\s+(?:my|the)\s+channel|sponsored\s+by)\b", re.I)
+
+
 def _followish(text: str) -> bool:
     """Sounds like the next thing said to Athena, not room talk (9 Oct 2026):
-    a command or question once the joining words are off, a follow-up the
-    agent understands ("what about DSA", "and tomorrow"), "open it", or a
-    sentence Whisper punctuated as a question."""
+    a real command or a question of three words or more once the joining
+    words are off, a follow-up the agent understands ("what about DSA", "and
+    tomorrow"), "open it", or a question Whisper punctuated as one."""
     from ..agent import _OPEN_IT
+    if _MEDIA_TALK.search(text):
+        return False
     core = _JOINERS.sub("", text)
-    return bool(_COMMANDISH.match(core) or _ABOUT.match(text) or _OPEN_IT.match(text)
-                or (text.rstrip().endswith("?") and len(text.split()) >= 2))
+    return bool(_FOLLOW_CMD.match(core) or _ABOUT.match(text) or _OPEN_IT.match(text)
+                or (text.rstrip().endswith("?") and len(core.split()) >= 3))
+
+
+def _reply_ok(text: str) -> bool:
+    """After Athena asked something: the answer can be short ("yes", "the
+    second one", "Friday") but not a long sentence from the room."""
+    return not _MEDIA_TALK.search(text) and (_followish(text) or len(text.split()) <= 6)
+
+
+def _clear_speech(segments) -> bool:
+    """Whisper is sure this was clear, close speech - a video across the room
+    and mumbles come back less certain. Stricter than the wake check, since
+    there is no name to go on."""
+    lp = min((float(s.avg_logprob or 0) for s in segments), default=-9.0)
+    ns = max((float(s.no_speech_prob or 0) for s in segments), default=1.0)
+    return (lp >= float(cfg.get("voice.follow_min_logprob", -0.75))
+            and ns <= float(cfg.get("voice.follow_max_no_speech", 0.5)))
 
 
 # Not the agent's own _FOLLOW: its bare "and <anything>" let a lyric through
@@ -1309,9 +1348,10 @@ def _register_cuda_dlls() -> None:
     import os
     import site
 
-    roots = [Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama"
-             / "lib" / "ollama" / sub for sub in ("cuda_v12", "cuda_v13")]
-
+    # Athena's own NVIDIA libraries (pip) first, Ollama's last: an Ollama
+    # update swapped its CUDA 13 files for CUDA 12 on 14 Oct 2026 and the voice
+    # (onnxruntime) fell to the CPU, because it had been borrowing them.
+    roots: list[Path] = []
     packages = list(site.getsitepackages())
     user_site = site.getusersitepackages()
     packages += [user_site] if isinstance(user_site, str) else list(user_site)
@@ -1319,6 +1359,8 @@ def _register_cuda_dlls() -> None:
         nvidia = Path(base) / "nvidia"
         if nvidia.is_dir():
             roots += sorted(nvidia.glob("*/bin"))
+    roots += [Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama"
+              / "lib" / "ollama" / sub for sub in ("cuda_v12", "cuda_v13")]
 
     added = []
     for d in roots:
@@ -1418,6 +1460,54 @@ def _start_wake_shadow() -> None:
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except Exception as e:
         print(f"[wake test not started: {e}]")
+
+
+def _continuation(stt, audio, wake: str) -> str:
+    """What came right after a bare "Athena" said over her: the command, or ""
+    when it was noise, her own voice, or Whisper's primer."""
+    from ..agent import clean_speech
+    segs, _ = stt.transcribe(audio, language="en", beam_size=5, initial_prompt=PROMPT_BIAS,
+                             condition_on_previous_text=False, without_timestamps=True)
+    segs = list(segs)
+    text = clean_speech(fix_mishearings(" ".join(s.text for s in segs).strip()))
+    if wake:
+        named, rest = _strip_wake(text, wake, False)
+        text = rest if named else text
+    text = re.sub(r"^'s\b\s*", "", text).strip(" .,!?")      # "Athena's ..." heard for "Athena, ..."
+    if (not text or is_hallucination(text) or not _clear_speech(segs)
+            or _echoes_prompt(text, segs, len(audio) / SAMPLE_RATE, PROMPT_BIAS)):
+        return ""
+    return text
+
+
+def _serve_phone_voice(stt, speaker) -> None:
+    """Lend this process's warm models to the phone app (jarvis/phonevoice.py):
+    the same Whisper prompt and fixes as the desk mic, the same Kokoro voice
+    and per-sentence tone as Athena speaking here."""
+    import io
+
+    from .. import phonevoice
+
+    def hear(raw: bytes) -> str:
+        from faster_whisper.audio import decode_audio
+        audio = decode_audio(io.BytesIO(raw), sampling_rate=SAMPLE_RATE)
+        segs, _ = stt.transcribe(audio, language="en", beam_size=5, initial_prompt=PROMPT_BIAS,
+                                 condition_on_previous_text=False, without_timestamps=True)
+        return fix_mishearings(" ".join(s.text for s in segs).strip())
+
+    def say(text: str):
+        eng = speaker._neural
+        if eng is None:
+            raise RuntimeError("Athena's voice is still loading")
+        from .. import tts as _tts
+        parts = [p for p in re.split(r"(?<=[.!?])\s+", _for_speech(text)) if p.strip()] or [text]
+        if getattr(eng, "speaks_hindi", False):        # Kokoro: each sentence in its own tone
+            pieces = [eng.synth(p, mood=_tts.mood_of(p)) for p in parts]
+        else:
+            pieces = [eng.synth(p) for p in parts]
+        return np.concatenate(pieces), eng.sample_rate
+
+    phonevoice.serve(hear, say)
 
 
 def _voice_loop() -> None:
@@ -1533,6 +1623,11 @@ def _voice_loop() -> None:
     try:
         from ..tools import brief
         brief.start_evening(presence.interject)   # the day wrapped up, once each evening
+        from .. import goals
+        goals.start(presence.interject)           # long-running goals: re-plan, nudge, wrap up
+        from .. import missions
+        missions.start_watch(presence.interject)  # say when a Claude mission finishes
+        _serve_phone_voice(stt, speaker)          # the phone app hears and speaks through these models
         from .. import vault
         vault.start()                             # Obsidian notes kept searchable
         from .. import backup
@@ -1714,7 +1809,7 @@ def _voice_loop() -> None:
                           rf"[\s,.!?]*(.*)$", heard, re.I)
             if not m:
                 return None
-            rest = m.group(1).strip(" .!?,")
+            rest = re.sub(r"^'s\b\s*", "", m.group(1)).strip(" .!?,")    # "Athena's on" for "Athena, it's on"
             if not rest and said and wake.lower() in said.lower():
                 return None                  # Athena saying its own name
         else:
@@ -1895,9 +1990,11 @@ def _voice_loop() -> None:
                 # Without the name, only something that sounds like a command
                 # counts as a follow-up. Song lyrics came through as "We'll see
                 # you in a minute" and "And then the ocean..." (26 Sep 2026).
-                if still_awake and not heard_wake and not tapped and not invited \
-                        and not _followish(text):
-                    still_awake = False
+                if still_awake and not heard_wake and not tapped:
+                    if not (_reply_ok(text) if invited else _followish(text)) or not _clear_speech(segments):
+                        still_awake = False
+                        if log_ignored:
+                            print("   [follow-up ignored: not a clear request]")
                 # Not for an answer: "all" is mostly Athena's own "...a number,
                 # or all." and would be thrown away as her echo.
                 if still_awake and not heard_wake and not tapped and last_said["a"] \
@@ -2000,6 +2097,10 @@ def _voice_loop() -> None:
                 _orb_state("speaking")
                 speaker.say(sentence, hindi=_hi)
             agent.speak = _say_part
+            # Spoken conversations are kept as chats too, like the HUD's: a new
+            # one after chat.new_after_hours of quiet (memory.stale).
+            if agent.memory.chat_id is None or agent.memory.stale():
+                agent.memory.start_chat()
             box: dict = {}
             worker = threading.Thread(target=lambda: box.update(a=agent.ask(text)),
                                       daemon=True, name="jarvis-ask")
@@ -2079,6 +2180,18 @@ def _voice_loop() -> None:
                     # attention. It used to stop her and drop what you said
                     # next, so every question had to be asked twice (4 Oct 2026).
                     live.note("interrupted - listening")
+                    # "Athena, [pause] set the volume to fifty": the barge-in caught
+                    # only the name, and the drain below threw the command away -
+                    # "Yes?" twice to real commands on 16 Oct 2026. Listen a
+                    # moment first; only if nothing follows is it a bare "Athena".
+                    more = listener.record_utterance(timeout, max_wait=1.6)
+                    rest = _continuation(stt, more, wake) if more is not None else ""
+                    if rest:
+                        print(f"   [the rest after the name: {rest!r}]")
+                        live.note(f"interrupted - new command: {rest[:60]}")
+                        queued = rest
+                        _orb_state("thinking")
+                        continue
                     time.sleep(0.2)
                     listener.drain()
                     _orb_state("speaking")

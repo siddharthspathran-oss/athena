@@ -17,6 +17,10 @@ llm:
   model: "nvidia:nvidia/nemotron-3.5-lightning-30b-a3b"
   fallback_model: "athena:3b"
   cloud_timeout_seconds: 20
+  # The most one request waits on models before saying they're busy (15 Oct 2026: 208 s once).
+  # Time spent inside tools (a WhatsApp call, a study page) doesn't count.
+  budget_voice_seconds: 35
+  budget_typed_seconds: 75
   raw_models: ["athena"]
   host: "http://127.0.0.1:11434"
   temperature: 0.3
@@ -216,7 +220,7 @@ voice:
   wake_threshold: 0.5
   # Silent test of the trained detector (data/athena_wake.onnx) next to the
   # live wake word: times only, to data/wake_shadow.log. false when done.
-  wake_shadow: true
+  wake_shadow: false   # test over 16 Oct 2026: 41% caught, 20 false/hour at 0.7 - Whisper gate stays
   # Far-field (4 Oct 2026, mic effects off): the listening threshold is the
   # room's own level times gate_ratio; 2.5 (threshold ~0.030) caught all 8 test sentences up to
   # across the room with ~5% of room noise over it. A real "Athena, play the
@@ -594,7 +598,7 @@ phone_notify:
   quiet_start: "01:00"  # not read aloud between these (still shown in the HUD)
   quiet_end: "07:00"
 
-# RAGAZZA website (jarvis/tools/ragazza.py). The key is in data/api_keys.json,
+# RAGAZZA website (jarvis/tools/ragazza.py). The key is in Windows Credential Manager (Athena/ragazza),
 # saved with `python run.py store-key`. Change the url once the site is live.
 store:
   url: "http://localhost:3000"
@@ -681,3 +685,38 @@ backup:
   dest: "~/OneDrive/Athena Backup"
   after: "02:00"
   keep: 7                    # days of zips kept
+
+# Long-running goals (jarvis/goals.py): "prepare me for my Signals end-sem by Friday".
+# A day-by-day plan from the project's files; missed tasks move into the days left
+# each morning, and a nudge comes at nudge_at if today's tasks aren't done.
+goals:
+  enabled: true
+  daily_minutes: 120
+  nudge_at: "19:00"
+
+# Requests about messages, contacts, calls and email are answered by the model
+# on this PC (llm.fallbacks' last one), and kept out of everything sent to a
+# hosted model later: the brain, the planner, chat titles and summaries, and
+# the profile and writing-style learners (15 Oct 2026).
+privacy:
+  local_for_messages: true
+
+# Missions (jarvis/missions.py): "have Claude build me ..." - Claude Code does
+# the job in the background in its own folder and Athena says when it's done.
+# Each run uses your Claude plan; Sonnet and no connectors keep it light.
+missions:
+  folder: C:\claude code\athena-jobs
+  model: sonnet
+  max_minutes: 30
+  max_running: 1
+  # Gemini missions ("have Gemini build ..."): Google's Antigravity CLI on the
+  # user's Google AI Pro plan. `agy models` lists what the account has; Argon
+  # needs AI Ultra.
+  gemini_model: gemini-3.8-flash-high
+  # "Publish it": a mission's website goes on GitHub Pages - one public repo,
+  # a folder per site, pushed with this PC's git login. Only after you say yes
+  # (by voice she asks; in the HUD it's two taps). Set up once: the repo exists
+  # on GitHub with Pages on (branch main, root) and is cloned to `dir`.
+  publish:
+    dir: C:\claude code\athena-sites
+    url: https://siddharthspathran-oss.github.io/athena-sites

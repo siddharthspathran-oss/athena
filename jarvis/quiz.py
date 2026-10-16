@@ -23,6 +23,55 @@ from .registry import tool
 IDLE_MINUTES = 15
 _state: dict = {}
 
+# ---------- flashcards: what you missed comes back until you know it ----------
+# Missed questions were saved to Obsidian (16 Oct 2026) and never asked again.
+# Now they also go in a local deck, reviewed on a Leitner schedule: right moves
+# a card further out (1, 3, 7, 14, 30 days), wrong brings it back tomorrow.
+from .config import DATA                                    # noqa: E402
+from .store import load_json, save_json                     # noqa: E402
+
+DECK = DATA / "flashcards.json"
+GAPS = [1, 3, 7, 14, 30]
+
+
+def _today() -> str:
+    import datetime as dt
+    return dt.date.today().isoformat()
+
+
+def _add_cards(topic: str, missed: list[dict]) -> None:
+    import datetime as dt
+    deck = load_json(DECK, [])
+    have = {c["q"].strip().lower() for c in deck}
+    tomorrow = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    for q in missed:
+        if q["q"].strip().lower() not in have:
+            deck.append({"q": q["q"].strip(), "a": q["a"].strip(), "source": q.get("source", ""),
+                         "topic": topic, "box": 0, "due": tomorrow})
+    save_json(DECK, deck)
+
+
+def _mark_card(q: str, right: bool) -> None:
+    import datetime as dt
+    deck = load_json(DECK, [])
+    for c in deck:
+        if c["q"] == q:
+            c["box"] = min(c["box"] + 1, len(GAPS) - 1) if right else 0
+            c["due"] = (dt.date.today() + dt.timedelta(days=GAPS[c["box"]] if right else 1)).isoformat()
+    save_json(DECK, deck)
+
+
+def due_cards(topic: str = "") -> list[dict]:
+    words = set(re.findall(r"[a-z]{3,}", topic.lower()))
+    return [c for c in load_json(DECK, []) if c["due"] <= _today()
+            and (not words or words & set(re.findall(r"[a-z]{3,}", (c["topic"] + " " + c["q"]).lower())))]
+
+
+def brief_line() -> str:
+    """For the morning brief: how many cards are due."""
+    n = len(due_cards())
+    return f"{n} flashcard{'s' if n != 1 else ''} to review - say 'review my flashcards'." if n else ""
+
 STOP = re.compile(r"^\W*(?:athena\W+)?(?:stop|end|quit|finish|cancel)\s+(?:the\s+|this\s+)?(?:quiz|test)\W*$|"
                   r"^\W*(?:athena\W+)?(?:that'?s\s+enough|i'?m\s+done)\W*$", re.I)
 SKIP = re.compile(r"^\W*(?:athena\W+)?(?:skip(?:\s+it|\s+this(?:\s+one)?)?|next(?:\s+question)?|"
@@ -55,11 +104,19 @@ def _ask_current(lead: str = "") -> str:
 def _finish() -> str:
     topic, qs, right, missed = _state["topic"], _state["qs"], _state["right"], _state["missed"]
     asked = _state["i"]
+    _state_review = _state.get("review", False)
     _state.clear()
     if not asked:
         return "Quiz stopped."
     saved = ""
-    if missed:
+    if _state_review:
+        pass
+    elif missed:
+        try:
+            _add_cards(topic, missed)
+        except Exception:
+            pass
+    if missed and not _state_review:
         from . import vault
         base = vault.root()
         if base:
@@ -74,6 +131,14 @@ def _finish() -> str:
                     f.write(f"{q['q'].strip()}::{q['a'].strip()} *({q.get('source', '')})*\n")
             saved = f" I saved the {len(missed)} you missed as flashcards in Obsidian."
     score = f"You got {right:g} out of {asked} on {topic}."
+    if _state_review:
+        left = len(due_cards())
+        return score + (f" {left} still due today." if left else " That's all your flashcards for today.")
+    try:
+        from . import goals
+        saved += goals.quiz_finished(topic, right, asked)
+    except Exception:
+        pass
     return score + saved + (" Nice work." if right >= asked * 0.8 else "")
 
 
@@ -89,6 +154,8 @@ def handle(text: str) -> str | None:
     q = _state["qs"][_state["i"]]
     if SKIP.match(text):
         _state["missed"].append(q)
+        if _state.get("review"):
+            _mark_card(q["q"], False)
         verdict = f"The answer: {q['a']} "
     else:
         reply = _model(
@@ -105,6 +172,8 @@ def handle(text: str) -> str | None:
         _state["right"] += 1 if mark == "right" else 0.5 if mark == "partly" else 0
         if mark != "right":
             _state["missed"].append(q)
+        if _state.get("review"):
+            _mark_card(q["q"], mark == "right")
         verdict = {"right": "Right. ", "partly": "Partly. "}.get(mark, "Not quite. ") + \
             str(got.get("say", "") or f"The answer: {q['a']}").strip() + " "
     if q.get("source"):
@@ -128,14 +197,21 @@ def quiz_me(topic: str, questions: int = 5) -> str:
     from .tools.knowledge import _embed_query
     topic = topic.strip(" .?") or "my course"
     n = max(3, min(10, int(questions or 5)))
-    try:
-        hits = db.search("doc", topic, k=6, embed=_embed_query)
-    except Exception:
-        hits = []
-    if not hits:
-        return (f"I couldn't find anything on {topic} in your notes or course files. "
-                "Say 'get my LMS files', or add notes to your Obsidian vault.")
-    material = "\n\n".join(f"[{h['title']}]\n{h['text'][:1500]}" for h in hits)
+    # In a project (its chat, or a goal's task): its own files, OCR'd slides
+    # and scanned practice sets included. Else the document index.
+    from . import chats
+    material = ""
+    if chats.ACTIVE and chats.project_files(chats.ACTIVE["id"]):
+        material = chats.relevant(chats.ACTIVE["id"], topic, budget=9000)
+    if not material:
+        try:
+            hits = db.search("doc", topic, k=6, embed=_embed_query)
+        except Exception:
+            hits = []
+        if not hits:
+            return (f"I couldn't find anything on {topic} in your notes or course files. "
+                    "Say 'get my LMS files', or add notes to your Obsidian vault.")
+        material = "\n\n".join(f"[{h['title']}]\n{h['text'][:1500]}" for h in hits)
     reply = _model(
         f"Write {n} exam-style questions on {topic} for a university engineering student, answerable from "
         "the material below and nothing else. Mix: definitions, why/how, and a small calculation if the "
@@ -146,6 +222,14 @@ def quiz_me(topic: str, questions: int = 5) -> str:
         qs = [q for q in (_json(reply) or []) if isinstance(q, dict) and q.get("q") and q.get("a")][:n]
     except ValueError:
         qs = []
+    if not qs:                       # a busy model sometimes returns half an answer: ask once more
+        try:
+            qs = [q for q in (_json(_model(
+                f"Write {n} exam-style questions on {topic} from this material. JSON list only: "
+                f'[{{"q": "...", "a": "1-2 sentences", "source": "file"}}]\n\nMATERIAL:\n{material}')) or [])
+                  if isinstance(q, dict) and q.get("q") and q.get("a")][:n]
+        except ValueError:
+            qs = []
     for q in qs:
         q["source"] = str(q.get("source", "")).strip("[] ")
     if not qs:
@@ -158,6 +242,25 @@ def quiz_me(topic: str, questions: int = 5) -> str:
     return _ask_current(intro)
 
 
+@tool(tags=["study"], timeout=30)
+def review_flashcards(topic: str = "") -> str:
+    """Review the flashcards that are due: the quiz questions the user missed
+    before, asked again on a spaced schedule. Use for "review my flashcards",
+    "revise what I got wrong", "flashcards on Fourier".
+
+    topic: only cards about this, or empty for all that are due
+    """
+    cards = due_cards(topic)[:10]
+    if not cards:
+        upcoming = sorted(c["due"] for c in load_json(DECK, []))
+        return ("No flashcards due" + (f" on {topic}" if topic else "") + "." +
+                (f" The next ones are due {upcoming[0]}." if upcoming else " Missed quiz questions become flashcards."))
+    _state.clear()
+    _state.update(topic=topic or "your flashcards", qs=[dict(c) for c in cards], i=0, right=0, missed=[],
+                  t=time.time(), review=True)
+    return _ask_current(f"{len(cards)} flashcard{'s' if len(cards) > 1 else ''} due. Say skip, repeat, or stop the quiz. ")
+
+
 if __name__ == "__main__":
     assert STOP.match("stop the quiz") and STOP.match("Athena, end quiz") and not STOP.match("stop music")
     assert SKIP.match("skip") and SKIP.match("I don't know") and not SKIP.match("convolution is a sum")
@@ -165,6 +268,18 @@ if __name__ == "__main__":
     from . import vault
     vault.root = lambda: None                  # the self-check must not write flashcards
     _state.update(topic="t", qs=[{"q": "What is 2+2", "a": "4", "source": "a.pdf"}], i=0, right=0, missed=[], t=time.time())
+    import tempfile
+    from pathlib import Path as _P
+    DECK = _P(tempfile.gettempdir()) / "flashcards_selfcheck.json"
+    DECK.unlink(missing_ok=True)
     print(handle("skip"))
     assert not active()
+    assert load_json(DECK, [])[0]["q"] == "What is 2+2", "a missed question becomes a card"
+    deck = load_json(DECK, []); deck[0]["due"] = _today(); save_json(DECK, deck)
+    review_flashcards()
+    assert _state.get("review") and len(_state["qs"]) == 1
+    _mark_card("What is 2+2", True)
+    assert load_json(DECK, [])[0]["box"] == 1 and load_json(DECK, [])[0]["due"] > _today()
+    _state.clear()
+    DECK.unlink(missing_ok=True)
     print("ok")

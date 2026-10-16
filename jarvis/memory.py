@@ -26,6 +26,39 @@ MEM_FILE = DATA / "memory.json"
 _facts_cache: dict[str, Any] = {"mtime": None, "data": {}}
 
 
+# Personal memories: people, relationships, birthdays, numbers, addresses,
+# health, money. Kept to the model on this PC (15 Oct 2026, "keep personal
+# ones local"); general ones (a folder, a playlist link) still go to the brain.
+PERSONAL = re.compile(
+    r"\b(?:birthday|born|age|child|children|kids?|son|daughter|wife|husband|girlfriend|boyfriend|partner|"
+    r"mother|father|mom|mum|dad|daddy|maa|papa|brother|sister|bro|sis|uncle|aunt|cousin|grand\w*|friend|"
+    r"family|relative|other\s+name|nick\s*name|calls?\s+me|phone|mobile|number|address|lives?|home|flat|"
+    r"health|medic\w*|doctor|allerg\w*|illness|blood|password|pin|bank|account|card|aadhaa?r|pan|salary|"
+    r"crush|relationship|married|dating)\b|\+?\d[\d\s-]{8,}\d", re.I)
+
+
+def personal(key: str, value: str = "") -> bool:
+    return bool(PERSONAL.search(f"{key} {value}"))
+
+
+def private_words() -> set[str]:
+    """Names and words from personal memories ("riya", "birthday"): a request
+    that mentions one is answered by the model on this PC, which knows them."""
+    # From personal memories only: the profile's local lines include the
+    # writing style, whose words ("Fourier", "Analog") would send ordinary
+    # study questions to the slower local model.
+    words: set[str] = set()
+    for k, v in load_facts().items():
+        if personal(k, v):
+            words |= {w.lower() for w in re.findall(r"[A-Za-z]{3,}", f"{k} {v}")}
+    return words - {"the", "and", "for", "you", "your", "user", "with", "has", "his", "her", "him", "they",
+                    "from", "that", "this", "name", "other", "calls", "call", "lives", "home", "number",
+                    "phone", "my", "as", "not", "are", "was", "who", "what", "when",
+                    "january", "february", "march", "april", "may", "june", "july", "august", "september",
+                    "october", "november", "december", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep",
+                    "sept", "oct", "nov", "dec"}
+
+
 def load_facts() -> dict[str, str]:
     try:
         mtime = MEM_FILE.stat().st_mtime
@@ -114,6 +147,10 @@ class Memory:
         # The project a new chat is started in (chats.projects); saved with it.
         self.project = ""
         self._summarising = False
+        # A turn about messages, contacts, calls or email (Agent.ask): every
+        # message added while it runs is marked private, and cloud.cloud_safe
+        # leaves those out of anything sent to a hosted model (15 Oct 2026).
+        self.private_turn = False
         # What the model is shown, which is not what is kept. Trimming holds
         # the transcript inside the context window; the saved history is the
         # whole thing, so reopening a chat shows everything that was said.
@@ -145,6 +182,16 @@ class Memory:
 
     # ---------- short term ----------
 
+    def mark_private(self, since: int) -> None:
+        """Mark everything from index `since` of this chat private - a turn that
+        turned out to message or call someone (the tool told us, not the words)."""
+        changed = False
+        for m in self.full[since:]:
+            if isinstance(m, dict) and not m.get("private"):
+                m["private"] = changed = True
+        if changed:
+            self.persist()
+
     def stale(self) -> bool:
         """The open chat has been quiet for chat.new_after_hours: what comes
         next is a new conversation, as in ChatGPT. One chat had run on for 162
@@ -160,13 +207,18 @@ class Memory:
     def add(self, role: str, content: str, **extra: Any) -> None:
         if role == "user" and self.stale():
             self.start_chat()
-        if role == "user" and self.chat_id:
+        if role == "user":
             # Set before any tool runs: a study question goes straight to its
             # tool without build(), and its prompt reads the project's notes.
+            # Cleared for a message outside any project (voice, a plain chat):
+            # it used to linger from the last project chat (15 Oct 2026).
             from . import chats
-            chats.ACTIVE = chats.project(self.project or chats.meta(self.chat_id).get("project", ""))
+            chats.ACTIVE = (chats.project(self.project or chats.meta(self.chat_id).get("project", ""))
+                            if self.chat_id else None)
         msg = {"role": role, "content": content}
         msg.update(extra)
+        if self.private_turn:
+            msg["private"] = True
         if role == "user":
             self._sent[id(msg)] = _stamp()
         self.messages.append(msg)
@@ -175,14 +227,17 @@ class Memory:
         self.persist()
         if role == "assistant":
             self._summarise_older()
-        if not self.chat_id:
+        if not self.chat_id and not self.private_turn:
             # Voice and popup turns are not saved as chats; note them so the
-            # profile learner still hears what was said.
+            # profile learner still hears what was said (not private turns:
+            # the learner runs on a hosted model).
             from . import profile, recall
             profile.journal(role, content)
             recall.note_voice(role, content)
 
     def add_raw(self, msg: dict[str, Any]) -> None:
+        if self.private_turn:
+            msg["private"] = True
         self.messages.append(msg)
         self.full.append(msg)
         self._trim()
@@ -262,7 +317,8 @@ class Memory:
         if dropped - done < 12:
             return
         older = [m for m in self.full[done:dropped]
-                 if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)]
+                 if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)
+                 and not m.get("private")]
         if not older:
             return
         prev = chats.meta(self.chat_id).get("summary", "")
@@ -343,8 +399,14 @@ class Memory:
         sys = self.system_prompt
         facts = load_facts()
         if facts:
-            lines = "\n".join(f"- {k}: {v}" for k, v in facts.items())
-            sys += f"\n\nThings the user has asked you to remember:\n{lines}"
+            general = [f"- {k}: {v}" for k, v in facts.items() if not personal(k, v)]
+            mine = [f"- {k}: {v}" for k, v in facts.items() if personal(k, v)]
+            if general:
+                sys += "\n\nThings the user has asked you to remember:\n" + "\n".join(general)
+            if mine:
+                # Never sent to a hosted model (cloud.cloud_safe cuts this block out).
+                sys += ("\n\n[[local-only]]\nPersonal things the user has asked you to remember:\n"
+                        + "\n".join(mine) + "\n[[/local-only]]")
         # What has been learned across earlier chats. Re-read only when the
         # file changes (a few times a day at most), so the prefix stays put.
         from . import profile
@@ -361,6 +423,12 @@ class Memory:
                 sys += (f"\n\nThis chat is part of the user's project \"{proj['name']}\"."
                         + (f" Their notes for it (keep them in mind):\n{proj['notes']}" if proj.get("notes") else ""))
             if proj:
+                try:
+                    from . import goals
+                    g = goals.context(proj["id"])
+                    sys += f"\n\n{g}" if g else ""
+                except Exception:
+                    pass
                 q = next((str(x.get("content", "")) for x in reversed(self.messages) if x.get("role") == "user"), "")
                 ctx = chats.relevant(proj["id"], q)
                 if ctx:

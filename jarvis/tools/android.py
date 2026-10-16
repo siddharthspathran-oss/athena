@@ -49,6 +49,7 @@ def _run(*args: str, timeout: float = 15) -> subprocess.CompletedProcess:
 
 
 _fixed_at = {"t": 0.0}
+_away = {"until": 0.0}      # Tailscale connect timed out: skip it until then
 
 
 def _serial() -> str | None:
@@ -75,15 +76,24 @@ def _serial() -> str | None:
     local = next((s for s in found if "_adb-tls-connect" in s), None)
     if remote.startswith(":"):
         return local or (found[0] if found else None)
-    if remote not in found:
-        _run("connect", remote, timeout=8)
+    if remote not in found and time.time() > _away["until"]:
+        # Unreachable over Tailscale (phone asleep or offline): an 8 s timeout
+        # that crashed the tool, after which the model said "already open"
+        # (14 Oct 2026). Say we can't reach it, and don't wait again for a minute.
+        try:
+            _run("connect", remote, timeout=8)
+        except subprocess.TimeoutExpired:
+            _away["until"] = time.time() + 60
         found = listed()
     if remote not in found and local and time.time() - _fixed_at["t"] > 600:
         # Home, but the fixed port is gone (the phone restarted): set it again.
         _fixed_at["t"] = time.time()
         _run("-s", local, "tcpip", str(int(cfg.get("phone.adb_port", 5555))))
         time.sleep(4)
-        _run("connect", remote, timeout=8)
+        try:
+            _run("connect", remote, timeout=8)
+        except subprocess.TimeoutExpired:
+            _away["until"] = time.time() + 60
         found = listed()
     # Same Wi-Fi first (quicker), else Tailscale.
     return local if local in found else remote if remote in found else (found[0] if found else None)

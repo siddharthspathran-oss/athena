@@ -414,6 +414,14 @@ def _ask(llm: LLM, messages: list[dict], think: bool | None = None, max_wait: fl
     retried: dict[str, float] = {}       # seconds already spent waiting
     while queue:
         model = queue.pop(0)
+        from .. import deadline
+        if deadline.expired():
+            trouble.append("out of time")
+            break
+        remaining = deadline.left()
+        if remaining is not None and not cloud.is_cloud(model) and remaining < 45:
+            trouble.append(f"{model} skipped (too slow for the time left)")
+            continue
         try:
             if cloud.is_cloud(model):
                 text = cloud.chat(model, messages, temperature, max_tokens,
@@ -434,7 +442,8 @@ def _ask(llm: LLM, messages: list[dict], think: bool | None = None, max_wait: fl
             trouble.append(f"{model} failed ({first[:80]})")
             wait = _retry_after(str(e))
             waited = retried.get(model, 0.0)
-            if wait is not None and waited + wait <= max_wait:
+            if (wait is not None and waited + wait <= max_wait
+                    and (deadline.left() is None or wait < deadline.left() - 3)):
                 # A rate limit is the one failure that fixes itself. Free
                 # tiers count per minute and a worksheet fires eight
                 # questions in a row, so waiting the few seconds the provider
@@ -577,7 +586,7 @@ def _lead_line(answer: str, prefer_final: bool = False) -> str:
     final = _FINAL.search(answer) if prefer_final else None
     if final:
         line = _speakable(final.group(1).strip())
-        if line:
+        if line and "|" not in line:     # a table cell is no answer ("line | Summarises the key point...", 16 Oct)
             line = "Final answer: " + line
             return line[:177].rsplit(" ", 1)[0] + "..." if len(line) > 180 else line
     for line in answer.splitlines():
@@ -753,6 +762,12 @@ def project_answer(question: str, history: list[dict], project: dict) -> str:
     from .. import chats
     ctx = chats.relevant(project["id"], question, budget=int(cfg.get("study.project_context_chars", 12000)))
     notes = f"\nTheir notes for it: {project['notes']}" if project.get("notes") else ""
+    try:
+        from .. import goals
+        g = goals.context(project["id"])
+        notes += f"\n{g}" if g else ""
+    except Exception:
+        pass
     turns = [{"role": m["role"], "content": str(m.get("content", ""))[:3000]} for m in history
              if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)][-8:]
     messages = ([{"role": "system", "content": PROJECT_PROMPT.format(name=project["name"], notes=notes,
@@ -811,6 +826,9 @@ def explain(question: str) -> str:
     if not question.strip():
         return "ERROR: say what you would like explained."
     started = time.time()
+    reused = _reuse(question)
+    if reused:
+        return reused
 
     llm = _model()
     try:
@@ -834,6 +852,49 @@ def explain(question: str) -> str:
     # Spoken reply: the first real sentence, not the whole derivation.
     lead = _lead_line(answer, prefer_final=True)
     _finished(started)
+    _remember_answer(question, path, lead)
 
     opened = f"I've opened the full answer with the working. [{path.name}]"
     return f"{lead}\n\n{opened}" if lead else opened
+
+
+# ---------- the same question twice: the page that already exists ----------
+# 171 answer pages by 16 Oct 2026, and a repeated question waited 30 s for the
+# model to write the same derivation again. Keyed per project (its files shape
+# the answer); "again", "fresh", "redo" ask for a new one.
+
+_ANSWER_INDEX = DATA / "answer_index.json"
+_FILLER = {"please", "athena", "hey", "can", "could", "would", "you", "me", "for", "us", "now", "quickly"}
+
+
+def _answer_key(question: str) -> str:
+    from .. import chats
+    words = [w for w in re.findall(r"[a-z0-9]+", question.lower()) if w not in _FILLER]
+    project = (chats.ACTIVE or {}).get("id", "") if isinstance(chats.ACTIVE, dict) else ""
+    return f"{project}|{' '.join(words)}"
+
+
+def _reuse(question: str) -> str:
+    if re.search(r"\b(again|fresh|redo|new answer|regenerate|differently|another way)\b", question, re.I):
+        return ""
+    hit = load_json(_ANSWER_INDEX, {}).get(_answer_key(question))
+    path = render.ANSWERS / str((hit or {}).get("file", ""))
+    if not hit or not path.is_file():
+        return ""
+    if render.AUTO_OPEN:
+        try:
+            import webbrowser
+            webbrowser.open(path.as_uri())
+        except Exception:
+            pass
+    opened = f"Here's your answer from earlier - say \"answer it again\" for a fresh one. [{path.name}]"
+    return f"{hit.get('lead', '')}\n\n{opened}" if hit.get("lead") else opened
+
+
+def _remember_answer(question: str, path, lead: str) -> None:
+    try:
+        index = load_json(_ANSWER_INDEX, {})
+        index[_answer_key(question)] = {"file": path.name, "lead": lead, "t": time.time()}
+        save_json(_ANSWER_INDEX, index)
+    except Exception:
+        pass

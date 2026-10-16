@@ -11,8 +11,9 @@ worth it: the question and any attached document are sent to whichever
 provider you configure. So it is opt-in, scoped to `study.model` alone, and
 voice, apps, messages and files never come near it.
 
-Keys live in data/api_keys.json - never config.yaml, which is the file you
-would paste into a chat or commit to a repo. An environment variable
+Keys live in Windows Credential Manager ("Athena/<provider>", credstore.py;
+data/api_keys.json until 16 Oct 2026) - never config.yaml, which is the file
+you would paste into a chat or commit to a repo. An environment variable
 (GEMINI_API_KEY, GROQ_API_KEY, ...) is used in preference if one is set.
 
 Configure with a prefix on the model name:
@@ -65,6 +66,12 @@ PROVIDERS: dict[str, dict[str, str]] = {
         "signup": "https://build.nvidia.com/",
         "note": "NVIDIA NIM: big open models (Llama, Qwen, DeepSeek, Nemotron).",
     },
+    "anthropic": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "env": "ANTHROPIC_API_KEY",
+        "signup": "https://console.anthropic.com/settings/keys",
+        "note": "Claude (Haiku is fast and very good at picking tools). Paid per token.",
+    },
     "cerebras": {
         "url": "https://api.cerebras.ai/v1/chat/completions",
         "env": "CEREBRAS_API_KEY",
@@ -94,13 +101,38 @@ def is_cloud(model: str) -> bool:
 # ---------- keys ----------
 
 def get_key(provider: str) -> str:
+    """Environment first, then Windows Credential Manager (credstore.py), then
+    the old data/api_keys.json - which move_keys_to_vault() empties."""
+    from . import credstore
     env = PROVIDERS.get(provider, {}).get("env", "")
-    return (os.environ.get(env, "") or
+    return (os.environ.get(env, "") or credstore.get(provider) or
             load_json(KEYS_FILE, {}).get(provider, "")).strip()
 
 
-def set_key(provider: str, key: str) -> None:
+def move_keys_to_vault() -> tuple[int, int]:
+    """Move every key out of data/api_keys.json into Credential Manager, each
+    checked by reading it back before it leaves the file. (moved, left)."""
+    from . import credstore
     keys = load_json(KEYS_FILE, {})
+    moved = 0
+    for provider in list(keys):
+        value = str(keys[provider]).strip()
+        if value and credstore.put(provider, value) and credstore.get(provider) == value:
+            del keys[provider]
+            moved += 1
+    save_json(KEYS_FILE, keys)
+    return moved, len(keys)
+
+
+def set_key(provider: str, key: str) -> None:
+    from . import credstore
+    clean = "".join(c for c in key if c.isprintable()).strip()
+    if credstore.put(provider, clean) and credstore.get(provider) == clean:     # Credential Manager first
+        keys = load_json(KEYS_FILE, {})
+        if keys.pop(provider, None) is not None:
+            save_json(KEYS_FILE, keys)
+        return
+    keys = load_json(KEYS_FILE, {})                      # not Windows: the file, as before
     # Pasting into a hidden prompt can keep the Ctrl+V keystrokes () - drop control characters.
     keys[provider] = "".join(c for c in key if c.isprintable()).strip()
     save_json(KEYS_FILE, keys)
@@ -127,6 +159,10 @@ def how_to_get_one(provider: str) -> str:
 # ---------- talking to them ----------
 
 def _post(url: str, payload: dict, headers: dict, timeout: int) -> dict:
+    from . import deadline
+    if deadline.expired():
+        raise RuntimeError("out of time for this request")
+    timeout = deadline.cap(timeout)
     body = json.dumps(payload).encode()
     # A User-Agent is not optional. urllib sends "Python-urllib/3.13" by
     # default, and Groq sits behind Cloudflare, which answers that with 403
@@ -144,6 +180,10 @@ def _post(url: str, payload: dict, headers: dict, timeout: int) -> dict:
         raise RuntimeError(f"{e.code} from the provider: {detail}") from None
     except urllib.error.URLError as e:
         raise RuntimeError(f"could not reach the provider ({e.reason})") from None
+    except (TimeoutError, ConnectionError) as e:
+        # A reply that stalls mid-read is a bare TimeoutError, not a URLError:
+        # it slipped past every caller's fallback (16 Oct 2026, NVIDIA Ultra).
+        raise RuntimeError(f"the provider timed out ({type(e).__name__})") from None
 
 
 def _gemini(model: str, key: str, messages: list[dict], temperature: float,
@@ -214,8 +254,59 @@ def chat_tools(model: str, messages: list[dict], tools: list[dict] | None,
     key = get_key(provider)
     if not key:
         raise RuntimeError(how_to_get_one(provider))
-    out, pending, n = [], [], 0
+    if provider == "anthropic":
+        data = _anthropic(name, key, cloud_safe(messages), tools, temperature, max_tokens, timeout)
+        blocks = data.get("content") or []
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        calls = [SimpleNamespace(function=SimpleNamespace(name=b["name"], arguments=b.get("input") or {}))
+                 for b in blocks if b.get("type") == "tool_use"]
+        return SimpleNamespace(role="assistant", content=_no_reasoning(text), tool_calls=calls or None)
+    payload = _openai_payload(provider, name, messages, tools, temperature, max_tokens)
+    data = _post(PROVIDERS[provider]["url"], payload, {"Authorization": f"Bearer {key}"}, timeout)
+    try:
+        msg = data["choices"][0]["message"]
+    except (KeyError, IndexError):
+        raise RuntimeError("no answer returned") from None
+    return _as_message(msg.get("content") or "", [
+        (c["function"]["name"], c["function"].get("arguments") or {}) for c in msg.get("tool_calls") or []])
+
+
+LOCAL_ONLY = re.compile(r"\n?\[\[local-only\]\].*?\[\[/local-only\]\]\n?", re.S)
+
+
+def cloud_safe(messages: list[dict]) -> list[dict]:
+    """Messages that may leave this PC: turns marked private (WhatsApp texts,
+    contacts, calls, email - handled by the local model) are left out, so a
+    later question to a hosted model doesn't carry them along; and the
+    [[local-only]] block of the system prompt (personal memories - people,
+    birthdays, numbers) is cut out of it (15 Oct 2026)."""
+    out = []
     for m in messages:
+        if isinstance(m, dict) and m.get("private"):
+            continue
+        if isinstance(m, dict) and m.get("role") == "system" and "[[local-only]]" in str(m.get("content", "")):
+            m = {**m, "content": LOCAL_ONLY.sub("\n", str(m["content"]))}
+        out.append(m)
+    return out
+
+
+def _as_message(content: str, calls: list[tuple[str, Any]]):
+    from types import SimpleNamespace
+    out = []
+    for fn, args in calls:
+        if isinstance(args, str):
+            try:
+                args = json.loads(args or "{}")
+            except json.JSONDecodeError:
+                args = {}
+        out.append(SimpleNamespace(function=SimpleNamespace(name=fn, arguments=args)))
+    return SimpleNamespace(role="assistant", content=_no_reasoning(content), tool_calls=out or None)
+
+
+def _openai_payload(provider: str, name: str, messages: list[dict], tools: list[dict] | None,
+                    temperature: float, max_tokens: int) -> dict:
+    out, pending, n = [], [], 0
+    for m in cloud_safe(messages):
         role = m.get("role")
         if role == "assistant" and m.get("tool_calls"):
             calls = []
@@ -239,21 +330,64 @@ def chat_tools(model: str, messages: list[dict], tools: list[dict] | None,
         payload["chat_template_kwargs"] = {"enable_thinking": False}
     if tools:
         payload["tools"], payload["tool_choice"] = tools, "auto"
-    data = _post(PROVIDERS[provider]["url"], payload, {"Authorization": f"Bearer {key}"}, timeout)
+    return payload
+
+
+def chat_tools_stream(model: str, messages: list[dict], tools: list[dict] | None, on_text,
+                      stop=lambda: False, temperature: float = 0.3, max_tokens: int = 600, timeout: int = 30):
+    """chat_tools(), streamed: each piece of the reply goes to on_text as it
+    arrives, so the voice can start on the first sentence instead of waiting
+    for the whole answer (15 Oct 2026). Tool calls are put back together from
+    their pieces. Returns the same message as chat_tools()."""
+    from . import deadline
+    provider, name = split(model)
+    key = get_key(provider)
+    if not key:
+        raise RuntimeError(how_to_get_one(provider))
+    if provider in ("anthropic", "gemini"):          # not streamed here: whole reply, then spoken
+        msg = chat_tools(model, messages, tools, temperature, max_tokens, timeout)
+        if msg.content and not msg.tool_calls:
+            on_text(msg.content)
+        return msg
+    if deadline.expired():
+        raise RuntimeError("out of time for this request")
+    payload = _openai_payload(provider, name, messages, tools, temperature, max_tokens)
+    payload["stream"] = True
+    req = urllib.request.Request(PROVIDERS[provider]["url"], data=json.dumps(payload).encode(), headers={
+        "Content-Type": "application/json", "Accept": "text/event-stream",
+        "User-Agent": "Athena/1.0 (local assistant)", "Authorization": f"Bearer {key}"})
+    text: list[str] = []
+    calls: dict[int, list[str]] = {}
     try:
-        msg = data["choices"][0]["message"]
-    except (KeyError, IndexError):
-        raise RuntimeError("no answer returned") from None
-    calls = []
-    for c in msg.get("tool_calls") or []:
-        args = c["function"].get("arguments") or {}
-        if isinstance(args, str):
-            try:
-                args = json.loads(args or "{}")
-            except json.JSONDecodeError:
-                args = {}
-        calls.append(SimpleNamespace(function=SimpleNamespace(name=c["function"]["name"], arguments=args)))
-    return SimpleNamespace(role="assistant", content=_no_reasoning(msg.get("content") or ""), tool_calls=calls or None)
+        with urllib.request.urlopen(req, timeout=deadline.cap(timeout)) as r:
+            for raw in r:
+                if stop():
+                    break
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    continue
+                delta = ((chunk.get("choices") or [{}])[0] or {}).get("delta") or {}
+                if delta.get("content"):
+                    text.append(delta["content"])
+                    on_text(delta["content"])
+                for tc in delta.get("tool_calls") or []:
+                    slot = calls.setdefault(int(tc.get("index", 0)), ["", ""])
+                    f = tc.get("function") or {}
+                    if f.get("name") and not slot[0]:
+                        slot[0] = f["name"]
+                    slot[1] += f.get("arguments") or ""
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"{e.code} from the provider: {e.read().decode(errors='replace')[:300]}") from None
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"could not reach the provider ({e.reason})") from None
+    return _as_message("".join(text), [(c[0], c[1]) for _i, c in sorted(calls.items()) if c[0]])
 
 
 # The model thinking out loud, which was then spoken (13 Oct 2026: "The user
@@ -269,6 +403,74 @@ def _no_reasoning(text: str) -> str:
     parts = re.split(r"(?<=[.!?])\s+|\n+", text)
     kept = [s for s in parts if s.strip() and not _REASONING.match(s.strip())]
     return " ".join(kept) if len(kept) < len([s for s in parts if s.strip()]) else text
+
+
+def _anthropic(model: str, key: str, messages: list[dict], tools: list[dict] | None,
+               temperature: float, max_tokens: int, timeout: int) -> dict:
+    """Claude's Messages API. Athena's history is OpenAI-shaped: the system
+    prompt goes apart, a call becomes a tool_use block, its result a
+    tool_result block in the next user turn (same-role turns merged). The
+    system prompt and the tool list are marked for prompt caching - they are
+    most of every request and barely change between turns."""
+    system = "\n\n".join(str(m["content"]) for m in messages if m.get("role") == "system" and m.get("content"))
+    out: list[dict] = []
+    pending: list[str] = []
+    n = 0
+
+    def push(role: str, block: dict) -> None:
+        if out and out[-1]["role"] == role:
+            out[-1]["content"].append(block)
+        else:
+            out.append({"role": role, "content": [block]})
+
+    def settle() -> None:                      # a call that never got a result still needs one
+        while pending:
+            push("user", {"type": "tool_result", "tool_use_id": pending.pop(0), "content": "(no result)"})
+
+    for m in messages:
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            settle()
+            if m.get("content"):
+                push("assistant", {"type": "text", "text": str(m["content"])})
+            for c in m["tool_calls"]:
+                f = c["function"] if isinstance(c, dict) else c.function
+                fn, args = (f["name"], f["arguments"]) if isinstance(f, dict) else (f.name, f.arguments)
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                n += 1
+                push("assistant", {"type": "tool_use", "id": f"toolu_{n:04d}", "name": fn, "input": args or {}})
+                pending.append(f"toolu_{n:04d}")
+        elif role == "tool":
+            if pending:
+                push("user", {"type": "tool_result", "tool_use_id": pending.pop(0), "content": str(m.get("content", ""))})
+            else:
+                push("user", {"type": "text", "text": f"[{m.get('name', 'tool')} result] {m.get('content', '')}"})
+        elif role in ("user", "assistant") and m.get("content"):
+            settle()
+            push(role, {"type": "text", "text": str(m["content"])})
+    settle()
+    if not out or out[0]["role"] != "user":
+        out.insert(0, {"role": "user", "content": [{"type": "text", "text": "(continuing)"}]})
+    payload: dict[str, Any] = {"model": model, "max_tokens": max_tokens, "temperature": temperature, "messages": out}
+    if system:
+        payload["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+    if tools:
+        payload["tools"] = [{"name": t["function"]["name"], "description": t["function"].get("description", ""),
+                             "input_schema": t["function"].get("parameters") or {"type": "object", "properties": {}}}
+                            for t in tools]
+        payload["tools"][-1]["cache_control"] = {"type": "ephemeral"}
+    headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
+    try:
+        return _post(PROVIDERS["anthropic"]["url"], payload, headers, timeout)
+    except RuntimeError as e:
+        if "temperature" not in str(e):
+            raise
+        payload.pop("temperature")             # a model that sets its own
+        return _post(PROVIDERS["anthropic"]["url"], payload, headers, timeout)
 
 
 def list_models(provider: str) -> list[str]:
@@ -355,7 +557,11 @@ def chat(model: str, messages: list[dict], temperature: float = 0.1,
     if not key:
         raise RuntimeError(how_to_get_one(provider))
 
+    messages = cloud_safe(messages)
     if provider == "gemini":
         return _gemini(name, key, messages, temperature, max_tokens, timeout)
+    if provider == "anthropic":
+        data = _anthropic(name, key, messages, None, temperature, max_tokens, timeout)
+        return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
     return _openai_shape(provider, name, key, messages, temperature,
                          max_tokens, timeout)

@@ -376,7 +376,8 @@ def main() -> int:
     # "brief me" pointing at nothing, and it crashed (25 Sep 2026).
     import re as _re
     from jarvis import registry, tools  # noqa: F401
-    src = open(Path(__file__).resolve().parent.parent / "jarvis" / "agent.py", encoding="utf-8").read()
+    root = Path(__file__).resolve().parent.parent / "jarvis"       # routing moved to routes.py (16 Oct 2026)
+    src = "".join(open(root / f, encoding="utf-8").read() for f in ("agent.py", "routes.py"))
     named = set(_re.findall(r'return\s+\(?"([a-z_]+)",\s*\{', src)) | set(
         _re.findall(r'\),\s*"([a-z_]+)",\s*\{', src))
     missing = sorted(n for n in named if registry.get(n) is None)

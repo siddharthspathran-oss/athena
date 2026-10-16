@@ -138,7 +138,13 @@ def elements(hwnd: int, control_type: int | None = None,
     instead, which is enormously cheaper.
     """
     uia, uiac = _client()
-    root = uia.ElementFromHandle(hwnd)
+    try:
+        root = uia.ElementFromHandle(hwnd)
+    except Exception:
+        # A window that is still opening, or just closed, raises COMError
+        # ("An event was unable to invoke any of the subscribers") - it
+        # crashed play_my_playlist on 15 Oct 2026. No window, no controls.
+        return []
 
     conds = []
     if control_type is not None:
@@ -168,7 +174,10 @@ def elements(hwnd: int, control_type: int | None = None,
         found = root.FindAllBuildCache(uiac.TreeScope_Descendants, cond, req)
         cached = True
     except Exception:
-        found = root.FindAll(uiac.TreeScope_Descendants, cond)
+        try:
+            found = root.FindAll(uiac.TreeScope_Descendants, cond)
+        except Exception:
+            return []
 
     out = []
     for i in range(found.Length):

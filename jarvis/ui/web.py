@@ -588,6 +588,22 @@ MANIFEST = """{
      "purpose": "maskable"},
     {"src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png",
      "purpose": "maskable"}
+  ],
+  "share_target": {
+    "action": "/share-in", "method": "POST", "enctype": "multipart/form-data",
+    "params": {"title": "title", "text": "text", "url": "url",
+               "files": [{"name": "files", "accept": ["image/*", "application/pdf", ".pdf", ".docx", ".pptx",
+                                                       ".txt", ".md", ".csv", "text/*"]}]}
+  },
+  "shortcuts": [
+    {"name": "Talk to Athena", "short_name": "Talk", "url": "/?do=talk",
+     "icons": [{"src": "/icons/icon-192.png", "sizes": "192x192"}]},
+    {"name": "New mission", "short_name": "Mission", "url": "/?do=mission",
+     "icons": [{"src": "/icons/icon-192.png", "sizes": "192x192"}]},
+    {"name": "Today", "short_name": "Today", "url": "/?do=today",
+     "icons": [{"src": "/icons/icon-192.png", "sizes": "192x192"}]},
+    {"name": "Quiz me", "short_name": "Quiz", "url": "/?do=quiz",
+     "icons": [{"src": "/icons/icon-192.png", "sizes": "192x192"}]}
   ]
 }"""
 
@@ -596,7 +612,48 @@ MANIFEST = """{
 # stale shell would only disguise the PC being unreachable.
 SERVICE_WORKER = """self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(clients.claim()));
-self.addEventListener('fetch', () => {});
+// Share to Athena: the share arrives as a POST with no token, so it is parked
+// in a cache and the page - which has the token - picks it up and sends it on.
+self.addEventListener('fetch', e => {
+  const u = new URL(e.request.url);
+  if (e.request.method !== 'POST' || u.pathname !== '/share-in') return;
+  e.respondWith((async () => {
+    const f = await e.request.formData();
+    const c = await caches.open('athena-share');
+    const meta = {title: f.get('title') || '', text: f.get('text') || '', url: f.get('url') || '', files: []};
+    let i = 0;
+    for (const file of f.getAll('files')) {
+      if (!file || !file.name) continue;
+      const key = '/share-file/' + (i++);
+      await c.put(key, new Response(file, {headers: {'Content-Type': file.type || 'application/octet-stream',
+                                                     'X-Name': encodeURIComponent(file.name)}}));
+      meta.files.push(key);
+    }
+    await c.put('/share-meta', new Response(JSON.stringify(meta), {headers: {'Content-Type': 'application/json'}}));
+    return Response.redirect('/?shared=1', 303);
+  })());
+});
+// Athena's own notifications (jarvis/webpush.py); a tap opens the app at d.url.
+self.addEventListener('push', e => {
+  let d = {};
+  try { d = e.data.json(); } catch (_) { d = {title: 'Athena', body: e.data ? e.data.text() : ''}; }
+  e.waitUntil(self.registration.showNotification(d.title || 'Athena', {
+    body: d.body || '', icon: '/icons/icon-192.png', badge: '/icons/maskable-192.png',
+    tag: d.tag || undefined, renotify: !!d.tag, data: {url: d.url || '/'},
+    requireInteraction: !!d.urgent, vibrate: d.urgent ? [250, 120, 250, 120, 500] : [120]}));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = new URL((e.notification.data && e.notification.data.url) || '/', self.location.origin).href;
+  e.waitUntil(clients.matchAll({type: 'window', includeUncontrolled: true}).then(cs => {
+    for (const c of cs) {
+      if (c.url.startsWith(self.location.origin) && 'focus' in c) {
+        return c.focus().then(w => (w && w.navigate ? w.navigate(url) : w)).catch(() => clients.openWindow(url));
+      }
+    }
+    return clients.openWindow(url);
+  }));
+});
 """
 
 
@@ -827,6 +884,14 @@ def _overview() -> dict:
                                    and time.time() - data["upes_read"] > 20 * 3600)
     except Exception:
         pass
+    try:                                       # the phone's Today card: goal tasks left, missions at work
+        from .. import goals, missions
+        data["goal_today"] = [{"task": t["task"], "goal": g["title"]} for g in goals.load() if g["status"] == "active"
+                              for t in goals.today_tasks(g) if not t["done"]][:4]
+        data["missions"] = [{"title": m["title"], "status": m["status"]} for m in missions.load()
+                            if not m.get("parent") and m["status"] in ("running", "starting")]
+    except Exception:
+        pass
     return data
 
 
@@ -946,7 +1011,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass        # the page hung up first (Stop, a closed window): nothing to deliver to
 
     def _json(self, code: int, obj: dict) -> None:
         self._send(code, json.dumps(obj).encode(), "application/json")
@@ -1014,11 +1082,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/sw.js":
             self._send(200, SERVICE_WORKER.encode("utf-8"),
                        "application/javascript; charset=utf-8")
-        elif path == "/face.js":
-            # The particle face (no data in it, so no token): served from disk
-            # so editing face.js only needs a page reload.
-            self._send(200, (Path(__file__).parent / "face.js").read_bytes(),
-                       "application/javascript; charset=utf-8")
+        elif path in ("/face.js", "/hud.js", "/hud.css"):
+            # The HUD's code and styles (no data in them, so no token): served
+            # from disk, so an edit only needs a page reload. hud.js and hud.css
+            # came out of hud.html on 16 Oct 2026 (it had grown past 200 KB).
+            self._send(200, (Path(__file__).parent / path[1:]).read_bytes(),
+                       "text/css; charset=utf-8" if path.endswith(".css") else "application/javascript; charset=utf-8")
         elif path.startswith("/icons/"):
             self._serve_icon(path)
         elif path == "/models":
@@ -1054,6 +1123,8 @@ class Handler(BaseHTTPRequestHandler):
             self._open_chat(path[len("/chats/"):])
         elif path.startswith("/answers/"):
             self._serve_answer(path)
+        elif path.startswith("/mission/"):
+            self._serve_mission(path)
         elif path == "/shares":
             if not self._authorised():
                 self._json(401, {"error": "Bad or missing token."})
@@ -1379,6 +1450,48 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, target.read_bytes(), "text/html; charset=utf-8")
 
+    def _serve_mission(self, path: str) -> None:
+        """A file a mission made: /mission/<id>/<token>/<path in its folder>.
+
+        The token sits in the path, not the query, so a built site's relative
+        links (style.css, app.js) carry it too. Pages are served sandboxed - an
+        origin of their own - so code Claude wrote can't read the HUD's token
+        or call Athena's API.
+        """
+        import mimetypes
+        import urllib.parse
+
+        from .. import missions
+
+        parts = urllib.parse.unquote(path).split("/", 4)          # "", "mission", id, token, rest
+        if len(parts) < 4 or not secrets.compare_digest(parts[3], get_token()):
+            self._send(401, b"Bad or missing token.", "text/plain; charset=utf-8")
+            return
+        m = next((x for x in missions.load() if x["id"] == parts[2]), None)
+        if m is None:
+            self._send(404, b"No such mission.", "text/plain; charset=utf-8")
+            return
+        root = Path(m["folder"]).resolve()
+        target = (root / (parts[4] if len(parts) > 4 and parts[4] else (m.get("preview") or "index.html"))).resolve()
+        if root not in target.parents or not target.is_file():   # never outside the mission's folder
+            self._send(404, b"No such file.", "text/plain; charset=utf-8")
+            return
+        body = target.read_bytes()
+        self.send_response(200)
+        # .md and friends as plain text: readable on the phone instead of a download
+        ctype = ("text/plain; charset=utf-8" if target.suffix.lower() in (".md", ".txt", ".csv")
+                 else mimetypes.guess_type(target.name)[0] or "text/plain; charset=utf-8")
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-popups allow-modals")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass
+
     def do_DELETE(self) -> None:
         route = self.path.split("?")[0]
         if not route.startswith("/chats/"):
@@ -1485,6 +1598,10 @@ class Handler(BaseHTTPRequestHandler):
                     out = views.task_action(body)
                 elif page == "rules":                     # the Automations page: switch one off, remove one
                     out = views.rule_action(body)
+                elif page == "goals":                     # the Goals page: tick a task, replan, drop
+                    out = views.goal_action(body)
+                elif page == "missions":                  # the Missions page: start, stop, follow up, open folder
+                    out = views.mission_action(body)
                 elif page == "alarm":
                     from .. import alarm
                     out = {"said": alarm.snooze(int(body.get("minutes", 10))) if body.get("action") == "snooze"
@@ -1537,6 +1654,26 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/upload":
             self._receive_upload()
             return
+        if route in ("/push/key", "/push/subscribe", "/push/test"):     # the phone app's own notifications
+            if not self._authorised():
+                self._json(401, {"error": "Bad or missing token."})
+                return
+            from .. import webpush
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                if route == "/push/key":
+                    self._json(200, {"key": webpush.public_key()})
+                elif route == "/push/subscribe":
+                    n = webpush.subscribe(body.get("sub") or {}, str(body.get("label") or ""))
+                    self._json(200, {"ok": True, "phones": n})
+                else:
+                    n = webpush.send("Athena", "Notifications from the Athena app are on.", "/", tag="test")
+                    self._json(200, {"ok": bool(n), "sent": n})
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+            except Exception as e:
+                self._json(500, {"error": str(e)[:200]})
+            return
         if route == "/voice/start":
             if not self._authorised():
                 self._json(401, {"error": "Bad or missing token."})
@@ -1564,6 +1701,25 @@ class Handler(BaseHTTPRequestHandler):
             from ..tools import study
             self._json(200, {"said": study.set_model(wanted),
                              "model": study.current_model()})
+            return
+        if route in ("/phone/hear", "/phone/say"):      # phone voice: the voice process hears and speaks
+            if not self._authorised():
+                self._json(401, {"error": "Bad or missing token."})
+                return
+            from .. import phonevoice
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > phonevoice.MAX_AUDIO:
+                self._json(413, {"error": "That recording is too long."})
+                return
+            body = self.rfile.read(n)
+            try:
+                if route == "/phone/hear":
+                    self._send(200, phonevoice.call("/stt", body, self.headers.get("Content-Type", "")),
+                               "application/json")
+                else:
+                    self._send(200, phonevoice.call("/tts", body, "application/json"), "audio/wav")
+            except RuntimeError as e:
+                self._json(503, {"error": str(e)})
             return
         if route != "/ask":
             self._json(404, {"error": "not found"})
@@ -1643,7 +1799,14 @@ def _voice_pids() -> list[int]:
 
 def _projects() -> list[dict]:
     """Projects with their files, for the chat list."""
-    return [{**p, "files": chats.project_files(p["id"])} for p in chats.projects()]
+    from .. import goals
+    out = []
+    for p in chats.projects():
+        g = goals.for_project(p["id"])
+        out.append({**p, "files": chats.project_files(p["id"]), "goal": {
+            "title": g["title"], "pct": round(100 * sum(t["done"] for t in g["tasks"]) / max(1, len(g["tasks"]))),
+            "today_left": sum(1 for t in goals.today_tasks(g) if not t["done"])} if g else None})
+    return out
 
 
 def start_voice() -> str:

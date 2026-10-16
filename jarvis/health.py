@@ -56,9 +56,18 @@ def check(fix: bool = True) -> dict:
     from .llm import LLM, heal_gpu
     report: dict = {"t": time.time(), "problems": [], "fixed": [], "ok": []}
     # 1. The tests that pin down every bug fixed so far.
-    for name in ("routetest.py", "answerpagetest.py"):
+    for name in ("routetest.py", "answerpagetest.py", "voicetest.py", "importcheck.py", "mobiletest.py", "alertstest.py"):
         ok, tail = _run_test(name)
         (report["ok"] if ok else report["problems"]).append(f"{name}: {tail}")
+    # 1b. Yesterday's failed commands through today's routing (a dry run, data/replay.txt).
+    try:
+        from . import failures
+        r = failures.replay(1)
+        if r["total"]:
+            report["ok"].append(f"replayed {r['total']} failed command(s): {r['routed']} now go straight "
+                                "to a tool (data/replay.txt)")
+    except Exception as e:
+        report["problems"].append(f"failure replay: {str(e)[:90]}")
     # 2. The model on the GPU.
     try:
         said = heal_gpu(LLM()) if fix else ""
@@ -76,6 +85,37 @@ def check(fix: bool = True) -> dict:
             report["problems"].append("speech recognition fell back to the CPU - restart voice to fix")
         else:
             report["ok"].append("speech recognition on the GPU")
+    except Exception:
+        pass
+    # 3b. The models on this PC actually run, not just "a GPU is there". On 14 Oct
+    # 2026 an Ollama update lost llama-server.exe: every local model (the offline
+    # brain, document search, screen reading) failed for a day while this check
+    # said "ok". So each is asked for one token / one embedding.
+    try:
+        import ollama
+        client = ollama.Client(host=str(cfg.get("llm.host", "http://127.0.0.1:11434")), timeout=120)
+        local = str(cfg.get("llm.fallbacks", [cfg.get("llm.fallback_model", "athena:3b")])[-1]
+                    if cfg.get("llm.fallbacks") else cfg.get("llm.fallback_model", "athena:3b"))
+        client.generate(model=local, prompt="hi", options={"num_predict": 1})
+        report["ok"].append(f"local model {local} runs")
+    except Exception as e:
+        report["problems"].append(f"the local model on this PC won't run ({str(e)[:90]}) - "
+                                  "reinstall Ollama (winget install Ollama.Ollama)")
+    try:
+        import ollama
+        ollama.Client(host=str(cfg.get("llm.host", "http://127.0.0.1:11434")), timeout=60).embed(
+            model="nomic-embed-text", input="test")
+        report["ok"].append("document search embeddings run")
+    except Exception as e:
+        report["problems"].append(f"document search can't embed ({str(e)[:90]})")
+    # 3c. Athena's voice on the GPU (Kokoro): on the CPU it takes twice as long to start talking.
+    try:
+        log = (DATA / "voice.log").read_text(encoding="utf-8", errors="replace").rsplit("===== voice started", 1)[-1]
+        if "kokoro on the CPU" in log:
+            report["problems"].append("Athena's voice is running on the CPU (slower replies) - "
+                                      "the GPU library for it is missing (onnxruntime CUDA)")
+        elif "kokoro on the GPU" in log:
+            report["ok"].append("voice on the GPU")
     except Exception:
         pass
     # 4. Disk.

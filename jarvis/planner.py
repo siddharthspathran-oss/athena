@@ -142,13 +142,18 @@ def _chat(messages: list[dict], models: list[str] | None = None) -> tuple[str, s
     """
     chain = [str(m) for m in (models or [cfg.get("planner.model", "groq:openai/gpt-oss-120b"),
                                         *(cfg.get("planner.fallback") or [])]) if m]
+    chain = list(dict.fromkeys(chain))
+    # A model that just timed out sits out for a while: on 16 Oct 2026 NVIDIA's
+    # Ultra timed out on every call, and each request waited the whole budget
+    # for it before anything else was tried (median first word: 22 s).
+    up = [m for m in chain if _BENCH.get(m, 0) < time.time()]
     trouble = []
-    for model in dict.fromkeys(chain):
+    for model in up or chain:
         for attempt in range(4):
             try:
                 return cloud.chat(model, messages, temperature=0.0,
                                   max_tokens=int(cfg.get("planner.max_tokens", 1500)),
-                                  timeout=60), model
+                                  timeout=int(cfg.get("planner.timeout_seconds", 25))), model
             except RuntimeError as e:
                 msg = str(e)
                 # Gemini says "quota" for its per-minute limit too; only a
@@ -157,9 +162,19 @@ def _chat(messages: list[dict], models: list[str] | None = None) -> tuple[str, s
                 if "429" in msg and not daily and attempt < 3:
                     time.sleep(8 + 6 * attempt)   # per-minute limit: wait for it to refill
                     continue
+                if re.search(r"time(?:d)?\s*out|unreachable|connection|network", msg, re.I):
+                    _BENCH[model] = time.time() + _BENCH_SECONDS
                 trouble.append(f"{model}: {msg[:80]}")
                 break                             # daily quota gone: next model
+            except Exception as e:                # a timeout or a dropped connection is not a RuntimeError -
+                _BENCH[model] = time.time() + _BENCH_SECONDS     # it used to skip every fallback
+                trouble.append(f"{model}: {str(e)[:80] or type(e).__name__}")
+                break
     raise RuntimeError("; ".join(trouble) or "no planner model configured")
+
+
+_BENCH: dict[str, float] = {}       # model -> benched until (time.time())
+_BENCH_SECONDS = 600
 
 
 _MORE_TO_DO = re.compile(r"\b(?:let me|i(?:'ll| will)|next,? i|now i(?:'ll| will)|i am going to|i'm going to)\b", re.I)

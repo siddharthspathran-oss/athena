@@ -49,6 +49,35 @@ def load(days: float = 30) -> list[dict]:
     return [r for r in rows if r.get("t", 0) >= cutoff]
 
 
+def replay(days: float = 1) -> dict:
+    """Yesterday's failed commands, run through today's routing - a dry run:
+    nothing is executed, so no message is sent and no app opens. Says which
+    now go straight to a tool, and which still need the model (and what it is
+    shown). Written to data/replay.txt; the nightly health check reports it."""
+    from . import agent, registry
+    rows = [r for r in load(days) if r.get("said") and not r["kind"].startswith("slow")]
+    seen, fixed, still = set(), [], []
+    for r in rows:
+        said = r["said"].strip()
+        if said.lower() in seen:
+            continue
+        seen.add(said.lower())
+        try:
+            got = agent.route(said)
+        except Exception as e:
+            got = None
+            r = {**r, "kind": f"{r['kind']}; route crashed: {e}"}
+        if got:
+            fixed.append(f"  now -> {got[0]}: \"{said}\"  (was: {r['kind']})")
+        else:
+            shown = ", ".join(registry.select(said)[-6:])
+            still.append(f"  still the model: \"{said}\"  (was: {r['kind']}; tools offered ...{shown})")
+    text = (f"Replay of {len(seen)} failed command(s) from the last {days:g} day(s), "
+            f"{time.strftime('%d %b %Y %H:%M')}:\n" + "\n".join(fixed + still))
+    (FILE.parent / "replay.txt").write_text(text + "\n", encoding="utf-8")
+    return {"total": len(seen), "routed": len(fixed), "text": text}
+
+
 def report(days: float = 30, latest: int = 20) -> str:
     rows = load(days)
     if not rows:

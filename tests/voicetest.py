@@ -151,16 +151,52 @@ def check_follow_ups(bad):
               "why is that?", "same for probability", "then remind me at 5"):
         if not _followish(t):
             bad.append(f"follow-up not taken: {t!r}")
-    for t in ("and then the ocean", "we'll see you in a minute", "yeah", "the match was crazy man"):
+    for t in ("and then the ocean", "we'll see you in a minute", "yeah", "the match was crazy man",
+              # all heard and answered on 13-14 Oct 2026, before follow-ups were made strict
+              "Please like, share, and subscribe.", "This is Jack Kuchiyama.", "deal with her", "it's",
+              "you need to let", "Good morning everyone and welcome back to my channel", "can you believe it"):
         if _followish(t):
             bad.append(f"room talk taken as a follow-up: {t!r}")
+    from jarvis.ui.voice import _reply_ok
+    for t in ("yes", "the second one", "friday at 5"):
+        if not _reply_ok(t):
+            bad.append(f"short answer to a question refused: {t!r}")
+    if _reply_ok("This is Jack Kuchiyama and I am here with you today"):
+        bad.append("a long room sentence taken as an answer")
+
+
+def check_continuation(bad):
+    """'Athena, [pause] set the volume to fifty' said over her: the part after
+    the name is the command, not a reason to answer 'Yes?' (16 Oct 2026)."""
+    from types import SimpleNamespace
+    import numpy as np
+    from jarvis.ui.voice import _continuation
+
+    class FakeSTT:
+        def __init__(self, text, lp=-0.2, ns=0.05):
+            self.seg = SimpleNamespace(text=text, avg_logprob=lp, no_speech_prob=ns)
+
+        def transcribe(self, *_a, **_k):
+            return [self.seg], None
+
+    audio = np.zeros(16000 * 3, dtype=np.float32)        # ~3 s: a phrase and the pause after it
+    for heard, want in (("set the volume to fifty.", "set the volume to fifty"),
+                        ("Athena, is Alexa connected?", "is Alexa connected"),
+                        ("'s Bluetooth on", "Bluetooth on")):
+        got = _continuation(FakeSTT(heard), audio, "athena")
+        if got.lower() != want.lower():
+            bad.append(f"continuation {heard!r} -> {got!r}, want {want!r}")
+    if _continuation(FakeSTT("", ns=0.95), audio, "athena"):
+        bad.append("silence after the name taken as a command")
+    if _continuation(FakeSTT("set the volume", lp=-1.6, ns=0.8), audio, "athena"):
+        bad.append("mumbled noise after the name taken as a command")
 
 
 if __name__ == "__main__":
     bad: list[str] = []
-    for check in (check_player, check_fallback, check_text, check_failure_log, check_follow_ups):
+    for check in (check_player, check_fallback, check_text, check_failure_log, check_follow_ups, check_continuation):
         check(bad)
     for b in bad:
         print("FAIL", b)
-    print(f"5 groups of checks, {len(bad)} failure(s)")
+    print(f"6 groups of checks, {len(bad)} failure(s)")
     sys.exit(1 if bad else 0)

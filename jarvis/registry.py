@@ -18,6 +18,7 @@ from __future__ import annotations
 import inspect
 import re
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable, get_args, get_origin, get_type_hints
@@ -135,7 +136,15 @@ class Tool:
         if g is not None and not g.allowed(self, kwargs):
             return ("ERROR: not done - this needs the user's OK and they have not given it. "
                     "Do not try again; tell the user.")
-        result = self._run(**kwargs)
+        from . import deadline
+        saved, t0 = deadline.left(), time.time()
+        if saved is not None and (self.timeout == 0 or (self.timeout or 0) >= 120):
+            deadline.clear()                # a study page or a WhatsApp call is real work, not waiting
+        try:
+            result = self._run(**kwargs)
+        finally:
+            if saved is not None:           # the budget is for waiting on models, so tool time is given back
+                deadline.start(saved + (time.time() - t0))
         if g is not None and self.name in UNTRUSTED:
             g.saw_untrusted()
         return result
@@ -338,13 +347,14 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
       "health_check", "retrain_athena", "add_watch", "watch_for_changes", "backup_now"]),
     ("schedule", re.compile(
         r"\b(?:remind|alarm|timer|tasks?|to[- ]?dos?|deadline|assignment|due|schedul|calendar|"
-        r"timetable|class|lecture|meeting|teams|brief|today|tomorrow|tonight|week|agenda|exam|revis|primer|prepare|attend|bunk|skip|upes|portal|lms|due|alarm|snooze|"
-        r"time|date|day|free|busy|cancel)" + _W, re.I),
+        r"timetable|class|lecture|meeting|teams|brief|today|tomorrow|tonight|week|agenda|exam|revis|review|flash\s*cards?|primer|prepare|attend|bunk|skip|upes|portal|lms|due|alarm|snooze|"
+        r"time|date|day|free|busy|cancel|goals?|plan|finished|ticked?|end[- ]?sem|mid[- ]?sem)" + _W, re.I),
      ["list_reminders", "cancel_reminder", "add_task", "complete_task", "list_tasks",
       "check_deadlines", "daily_brief", "evening_summary", "get_datetime", "show_timetable", "set_timetable",
       "add_calendar_feed", "list_calendar_feeds", "connect_google",
-      "teams_meetings", "join_teams_meeting", "plan_my_assignments", "prepare_for_tomorrow", "exam_plan",
-      "my_attendance", "can_i_skip", "upes_classes", "open_upes_login", "lms_deadlines", "lms_files", "quiz_me", "lab_report", "open_lms",
+      "teams_meetings", "join_teams_meeting", "plan_my_assignments", "prepare_for_tomorrow",
+      "set_goal", "goal_status", "goal_done", "replan_goal", "drop_goal", "goal_start",
+      "my_attendance", "can_i_skip", "upes_classes", "open_upes_login", "lms_deadlines", "lms_files", "quiz_me", "review_flashcards", "lab_report", "open_lms",
       "stop_alarm", "snooze_alarm"]),
     ("messaging", re.compile(
         r"\b(?:whatsapp|messag|text|msg|call|ring|dial|phone|mobile|contacts?|e-?mail|mail|"
@@ -386,6 +396,9 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
         r"\b(?:powershell|command|terminal|cmd|script|process|kill|install|uninstall|"
         r"ip\s+address|ping|registry|service|environment)" + _W, re.I),
      ["run_powershell"]),
+    ("missions", re.compile(r"\b(?:missions?|claude|gemini|argon|build|website|web\s*site|app|program|script|"
+                            r"publish|online|live|draft)" + _W, re.I),
+     ["mission_chain", "mission_start", "mission_status", "mission_stop", "mission_follow_up", "mission_publish", "mission_draft"]),
     ("routines", re.compile(r"\b(?:routines?|workflows?|mode)\b", re.I),
      ["run_routine", "list_routines", "set_mode"]),
 ]
@@ -458,6 +471,81 @@ def related(request: str, have: list[str], k: int = 8) -> list[str]:
         if hit:
             scored.append((-hit, n))
     return [n for _, n in sorted(scored)[:k]]
+
+
+# ---------- tools by meaning, on top of the keyword groups (15 Oct 2026) ----------
+# On 30 requests phrased without the keywords ("turn the PC off in ten
+# minutes", "test me on convolution") the keyword groups found the right tool
+# 28 times, meaning alone 25, the two together 30. So a few nearest tools by
+# meaning are added; never instead. Descriptions are embedded once (local
+# nomic-embed, in the background) and kept in data/tool_embeds.npz.
+_SEM: dict[str, Any] = {"names": [], "M": None, "loading": False}
+
+
+def _sem_load() -> None:
+    import hashlib
+
+    import numpy as np
+    import ollama
+
+    from .config import DATA
+    try:
+        names = sorted(REGISTRY)
+        docs = [f"search_document: {n.replace('_', ' ')}: {(REGISTRY[n].schema['function'].get('description') or '')[:300]}"
+                for n in names]
+        key = hashlib.sha1("\n".join(docs).encode()).hexdigest()
+        path = DATA / "tool_embeds.npz"
+        if path.exists():
+            z = np.load(path, allow_pickle=True)
+            if str(z["key"]) == key:
+                _SEM.update(names=list(z["names"]), M=z["M"])
+                return
+        M = np.array(ollama.Client(timeout=300).embed(model="nomic-embed-text", input=docs).embeddings, dtype=np.float32)
+        M /= np.linalg.norm(M, axis=1, keepdims=True)
+        np.savez(path, key=key, names=np.array(names), M=M)
+        _SEM.update(names=names, M=M)
+    except Exception:
+        pass                                # no embeddings: the keyword groups alone, as before
+    finally:
+        _SEM["loading"] = False
+
+
+def warm_semantic() -> None:
+    """Embed the tool descriptions in the background (once; then from disk)."""
+    if _SEM["M"] is None and not _SEM["loading"]:
+        _SEM["loading"] = True
+        threading.Thread(target=_sem_load, daemon=True, name="athena-tool-embeds").start()
+
+
+def by_meaning(request: str, have: list[str], k: int = 6) -> list[str]:
+    """Up to k tools nearest the request by meaning that the keywords didn't
+    pick (and that this request may see). [] when the embeddings aren't ready."""
+    from .config import cfg
+    if _SEM["M"] is None or not request.strip() or not cfg.get("llm.tools_by_meaning", True):
+        warm_semantic()
+        return []
+    try:
+        import numpy as np
+        import ollama
+        if _SEM.get("client") is None:          # one connection, kept: a new one costs ~0.5 s each time
+            _SEM["client"] = ollama.Client(timeout=5)
+        q = np.array(_SEM["client"].embed(model="nomic-embed-text", input=[f"search_query: {request}"],
+                                          keep_alive="2h").embeddings[0], dtype=np.float32)
+        q /= np.linalg.norm(q)
+        shop = bool(_SHOP_WORDS.search(request))
+        out = []
+        for i in np.argsort(-(_SEM["M"] @ q)):
+            n = _SEM["names"][i]
+            t = REGISTRY.get(n)
+            # Risky tools only ever come from the keywords, never as a maybe.
+            if (t and n not in have and _visible(t, shop)
+                    and n not in set(cfg.get("safety.ask_first", []) or [])):
+                out.append(str(n))
+                if len(out) >= k:
+                    break
+        return out
+    except Exception:
+        return []
 
 
 def schemas(request: str = "", everything: bool = False) -> list[dict[str, Any]]:

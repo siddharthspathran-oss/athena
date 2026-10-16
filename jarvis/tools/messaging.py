@@ -566,14 +566,21 @@ def whatsapp_call(to: str, video: bool = False) -> str:
     # locating the button and pressing it - an element sweep in that gap is
     # seconds of work against a live UI, and the press is what matters.
     # One check, not two: each is a full walk of the window's controls.
-    time.sleep(1.6)
-    try:
-        names = {e.name.lower() for e in uia.elements(hwnd, uia.BUTTON)
-                 if e.on_screen and e.name}
-        if any(any(m.lower() in n for m in _IN_CALL) for n in names):
-            return f"Calling {header}."
-    except Exception:
-        pass
+    # The call opens in a window of its own; looking only at the chat window
+    # never saw "End call", so a real call was reported as unconfirmed
+    # (14 Oct 2026, "call Riya"). Every WhatsApp window is checked, twice.
+    from .. import winapi
+    for _ in range(2):
+        time.sleep(1.6)
+        try:
+            pid = next((p for h, _t, p in winapi.windows_with_pids() if h == hwnd), None)
+            wins = [h for h, _t, p in winapi.windows_with_pids() if pid is not None and p == pid] or [hwnd]
+            for w in wins:
+                names = {e.name.lower() for e in uia.elements(w, uia.BUTTON) if e.name}
+                if any(any(m.lower() in n for m in _IN_CALL) for n in names):
+                    return f"Calling {header}."
+        except Exception:
+            pass
     return (f"Pressed the {kind.lower()} button for {header}, but could not "
             f"confirm the call started - check the screen.")
 

@@ -144,7 +144,6 @@ def prepare_for_tomorrow() -> str:
     return primers()
 
 
-@tool(tags=["study"], timeout=300)
 def exam_plan(exam_date: str, subjects: str) -> str:
     """Make a day-by-day revision timetable up to an exam, as reminders.
 

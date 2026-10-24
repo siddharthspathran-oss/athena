@@ -153,5 +153,8 @@ def open_url(url: str) -> str:
 
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+    from .. import stage
+    if stage.web_card(url):                 # YouTube or a site on this PC: shown in the Stage, no window
+        return f"It's on your screen: {url}"
     webbrowser.open(url)
     return f"Opened {url} in your browser."

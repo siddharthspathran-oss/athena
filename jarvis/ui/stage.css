@@ -1,0 +1,103 @@
+/* The Stage: Athena's floating panel (24 Oct 2026). Single dark look, like the HUD it belongs to. */
+:root{
+  --bg:#0c0a13; --bg2:#14111f; --card:#100e18; --line:rgba(196,168,255,.16); --line2:rgba(196,168,255,.08);
+  --c:#c4a8ff; --c2:#ff6ec7; --txt:#f1effa; --dim:#8e8aa8; --faint:#4a4660;
+  --ok:#34f5a5; --warn:#f7b84b; --bad:#ff6b7a; --org:#ffa34d;
+  --ui:"Figtree","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono","Cascadia Mono",Consolas,monospace;
+  --spring:cubic-bezier(.16,1.18,.3,1); --ease:cubic-bezier(.16,1,.3,1);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+/* The window is exactly the panel (ui/stage_window.py): Windows rounds its corners and draws the edge and
+   shadow, so the page is solid - a "transparent" window left a light frame round it. */
+html,body{margin:0;height:100%;overflow:hidden;background:#0e0b16}
+body{font:14px/1.45 var(--ui);color:var(--txt);-webkit-font-smoothing:antialiased;user-select:none}
+
+#panel{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;gap:12px;
+  padding:16px 16px 18px;
+  background:radial-gradient(120% 70% at 50% 100%,rgba(196,168,255,.10),transparent 60%),
+             linear-gradient(180deg,#171326,#0e0b16 70%)}
+#panel::before{content:"";position:absolute;inset:0 0 auto;height:2px;opacity:0;transition:opacity .3s,background .3s;
+  background:linear-gradient(90deg,transparent,var(--org),transparent)}
+#panel.listening::before{opacity:.9}
+#panel.thinking::before{opacity:.9;background:linear-gradient(90deg,transparent,var(--c),transparent)}
+#panel > *{transition:transform .42s var(--spring),opacity .3s var(--ease)}
+#panel.out > *{transform:translateY(14px) scale(.97);opacity:0;transition:transform .26s var(--ease),opacity .2s var(--ease)}
+
+.x{position:absolute;top:10px;right:10px;width:26px;height:26px;border-radius:50%;border:0;z-index:3;cursor:pointer;
+  background:rgba(255,255,255,.05);color:var(--dim);font-size:12px;opacity:0;transition:opacity .2s,background .2s,color .2s}
+#panel:hover > .x{opacity:1}
+.x:hover{background:rgba(255,107,122,.16);color:var(--bad)}
+
+/* background jobs: one line each, time ticking */
+#chips{display:flex;flex-direction:column;gap:6px}
+#chips:empty{display:none}
+.chip{display:flex;align-items:center;gap:9px;padding:7px 12px;border-radius:12px;border:1px solid var(--line2);
+  background:rgba(255,255,255,.03);font-size:12.5px;cursor:pointer;animation:pop .45s var(--spring)}
+.chip i{flex:none;width:7px;height:7px;border-radius:50%;background:var(--org);box-shadow:0 0 9px var(--org);animation:breathe 1.4s ease-in-out infinite}
+.chip.needs i{background:var(--warn);box-shadow:0 0 9px var(--warn);animation:none}
+.chip b{flex:none;font-weight:700}
+.chip span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+.chip em{flex:none;font:12px var(--mono);font-style:normal;color:var(--dim);font-variant-numeric:tabular-nums}
+
+/* the card: what she did, popped up instead of a window */
+#card{border-radius:18px;border:1px solid var(--line);background:var(--card);overflow:hidden;
+  box-shadow:0 18px 40px -22px rgba(0,0,0,.9);animation:pop .5s var(--spring)}
+#card.leaving{animation:drop .22s var(--ease) forwards}
+.ch{display:flex;align-items:center;gap:9px;padding:10px 12px;border-bottom:1px solid var(--line2)}
+.ch .app{display:flex;align-items:center;gap:7px;font-weight:700;font-size:12.5px;letter-spacing:.2px}
+.ch .app i{width:18px;height:18px;border-radius:6px;display:grid;place-items:center;font-size:11px;font-style:normal;color:#0c0a13}
+.ch .t{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim);font-size:12.5px}
+.ch button,.ch a{flex:none;border:0;background:rgba(255,255,255,.05);color:var(--dim);border-radius:8px;padding:4px 9px;
+  font:600 11.5px var(--ui);cursor:pointer;text-decoration:none}
+.ch button:hover,.ch a:hover{color:var(--txt);background:rgba(196,168,255,.16)}
+.cb{padding:12px}
+
+.music{display:flex;gap:12px;align-items:center}
+.music .art{flex:none;width:72px;height:72px;border-radius:12px;background:linear-gradient(135deg,#2a1f45,#151022) center/cover;
+  box-shadow:0 10px 24px -10px rgba(0,0,0,.9)}
+.music .meta{min-width:0;flex:1}
+.music .song{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.music .by{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar{height:4px;border-radius:4px;background:rgba(255,255,255,.08);margin:9px 0 4px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;border-radius:4px;background:linear-gradient(90deg,var(--c),var(--c2));transition:width .9s linear}
+.music .row{display:flex;align-items:center;justify-content:space-between;font:11px var(--mono);color:var(--faint)}
+.ctl{display:flex;gap:6px;justify-content:center;margin-top:10px}
+.ctl button{width:38px;height:34px;border-radius:11px;border:1px solid var(--line2);background:rgba(255,255,255,.04);color:var(--txt);cursor:pointer;font-size:14px}
+.ctl button.big{width:52px;background:linear-gradient(135deg,#8f6bff,#c46bff);border-color:transparent}
+.ctl button:hover{filter:brightness(1.15)}
+
+.term{margin:0;height:220px;overflow:hidden;padding:10px 12px;background:#07060b;font:11px/1.42 var(--mono);color:#cfcbe6;
+  white-space:pre-wrap;word-break:break-word;display:flex;flex-direction:column;justify-content:flex-end}
+.pill{flex:none;font:600 10.5px var(--mono);letter-spacing:.6px;text-transform:uppercase;padding:3px 8px;border-radius:20px;
+  background:rgba(196,168,255,.12);color:var(--c)}
+.pill.working{background:rgba(52,245,165,.12);color:var(--ok)}.pill.needs{background:rgba(247,184,75,.15);color:var(--warn)}
+
+.web iframe{display:block;width:100%;border:0;aspect-ratio:16/9;background:#000}
+.web.site iframe{aspect-ratio:auto;height:300px;background:#fff}
+
+.answer{max-height:300px;overflow:auto;padding:12px 14px;font-size:13.5px;line-height:1.55;user-select:text}
+.answer p{margin:0 0 8px}.answer ul,.answer ol{margin:0 0 8px;padding-left:20px}.answer li{margin:2px 0}
+.answer b{color:#fff}
+.answer::-webkit-scrollbar{width:6px}.answer::-webkit-scrollbar-thumb{background:rgba(196,168,255,.2);border-radius:6px}
+
+/* the mascot and the words */
+#me{display:flex;flex-direction:column;align-items:center;text-align:center;gap:4px;padding:2px 8px 0}
+#blob{width:180px;height:150px;transition:width .45s var(--spring),height .45s var(--spring),margin .45s var(--spring)}
+#panel.has-card #blob{width:96px;height:80px;margin-top:-4px}
+#status{margin:0;min-height:16px;font:600 10.5px var(--mono);letter-spacing:1.6px;text-transform:uppercase;color:var(--dim)}
+#panel.listening #status{color:var(--org)}#panel.thinking #status{color:var(--c)}#panel.speaking #status{color:var(--c2)}
+#words{margin:0;min-height:24px;max-width:100%;font-size:18px;font-weight:600;line-height:1.3;color:var(--txt);text-wrap:balance;
+  overflow-wrap:anywhere}
+#words.live::after{content:"";display:inline-block;width:2px;height:1em;margin-left:3px;vertical-align:-2px;background:var(--org);
+  animation:caret 1s steps(1) infinite}
+#words.ghost{color:var(--faint);font-weight:500}
+#reply{margin:0;max-width:100%;font-size:13.5px;color:var(--dim);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+#reply:empty,#words:empty{display:none}
+
+@keyframes pop{from{transform:translateY(10px) scale(.94);opacity:0}to{transform:none;opacity:1}}
+@keyframes drop{to{transform:scale(.96);opacity:0}}
+@keyframes breathe{50%{opacity:.35}}
+@keyframes caret{50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

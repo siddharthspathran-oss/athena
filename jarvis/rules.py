@@ -134,10 +134,38 @@ _WATCH_NAMES = {"what's due on lms": "tell me about new or removed LMS deadlines
                 "what are my tasks": "tell me when my tasks change"}
 
 
+_DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def _days_text(days) -> str:
+    if not days or len(days) == 7:
+        return "every day"
+    if sorted(days, key=_DAY_NAMES.index) == _DAY_NAMES[:5]:
+        return "every weekday"
+    if sorted(days, key=_DAY_NAMES.index) == _DAY_NAMES[5:]:
+        return "every weekend"
+    full = {"mon": "Monday", "tue": "Tuesday", "wed": "Wednesday", "thu": "Thursday", "fri": "Friday",
+            "sat": "Saturday", "sun": "Sunday"}
+    return "every " + " and ".join(full[d] for d in sorted(days, key=_DAY_NAMES.index))
+
+
+def _weekdays(s: str) -> list[str]:
+    """'every monday', 'on sundays', 'weekdays', 'mon and thu' -> ['mon', ...]; [] = every day."""
+    if re.search(r"\bweekdays?\b", s):
+        return _DAY_NAMES[:5]
+    if re.search(r"\bweekends?\b", s):
+        return _DAY_NAMES[5:]
+    return [d for d in _DAY_NAMES if re.search(rf"\b{d}(?:day|nesday|sday|urday|rsday)?s?\b", s)]
+
+
+def _is_mission(r: dict) -> bool:
+    return any("mission" in str(c).lower() for c in r.get("do") or [])
+
+
 def describe(r: dict) -> str:
     w = r["when"]
     t = w["type"]
-    when = {"time": f"every day at {w.get('at')}", "every": _every(int(w.get("minutes") or 0)),
+    when = {"time": f"{_days_text(w.get('days'))} at {w.get('at')}", "every": _every(int(w.get("minutes") or 0)),
             "wifi": f"when Wi-Fi '{w.get('ssid')}' connects", "bluetooth": f"when {w.get('device')} connects",
             "app": f"when {w.get('name')} opens", "class": f"when {w.get('title')} class starts" if w.get('title') != "any"
             else "when a Teams class starts", "message": f"when {w.get('from')} messages you",
@@ -312,6 +340,10 @@ class Engine:
     def __init__(self):
         self.prev = {"wifi": _wifi(), "bt": _bt_connected(), "apps": _apps(), "battery": _battery()}
         self.fired_today: dict[str, str] = {}
+        # When each Wi-Fi was last seen. "Arriving" means it had been gone a while:
+        # one empty netsh reading, or a few seconds' drop, made "when I get home,
+        # play my playlist" open Spotify 6 times in 8 minutes (17 Oct 2026).
+        self.wifi_seen: dict[str, float] = {self.prev["wifi"].lower(): time.time()} if self.prev["wifi"] else {}
 
     def tick(self) -> None:
         if paused():
@@ -328,14 +360,24 @@ class Engine:
             t = w["type"]
             if t == "time":
                 key = r["id"] + now.date().isoformat()
-                fire = now.strftime("%H:%M") >= w["at"] and self.fired_today.get(r["id"]) != key \
-                    and now.strftime("%H:%M") < (dt.datetime.strptime(w["at"], "%H:%M") + dt.timedelta(minutes=10)).strftime("%H:%M")
+                # A scheduled mission runs later that day if the PC was asleep at its time
+                # (and only once - "last" survives restarts); other rules keep a 10-minute window.
+                window = 24 * 60 if _is_mission(r) else 10
+                end = (dt.datetime.strptime(w["at"], "%H:%M") + dt.timedelta(minutes=window)).strftime("%H:%M") \
+                    if window < 24 * 60 else "24:00"
+                ran_today = dt.date.fromtimestamp(float(r.get("last") or 0)) == now.date()
+                fire = (now.strftime("%H:%M") >= w["at"] and self.fired_today.get(r["id"]) != key and not ran_today
+                        and now.strftime("%H:%M") < end
+                        and (not w.get("days") or _DAY_NAMES[now.weekday()] in w["days"]))
                 if fire:
                     self.fired_today[r["id"]] = key
             elif t == "every":
                 fire = time.time() - float(r.get("last") or 0) >= float(w["minutes"]) * 60
             elif t == "wifi":
-                fire = wifi.lower() == w["ssid"].lower() and self.prev["wifi"].lower() != wifi.lower()
+                gone = time.time() - self.wifi_seen.get(w["ssid"].lower(), 0)
+                fire = (wifi.lower() == w["ssid"].lower()
+                        and gone >= float(cfg.get("rules.wifi_away_minutes", 10)) * 60
+                        and time.time() - float(r.get("last") or 0) >= float(cfg.get("rules.arrive_cooldown_minutes", 60)) * 60)
             elif t == "bluetooth":
                 want = w["device"].lower()
                 fire = any(want in d for d in bt) and not any(want in d for d in self.prev["bt"])
@@ -352,6 +394,8 @@ class Engine:
                 changed = True
                 threading.Thread(target=run_commands, args=(r["do"], describe(r)), daemon=True).start()
         self.prev = {"wifi": wifi, "bt": bt, "apps": apps, "battery": batt}
+        if wifi:
+            self.wifi_seen[wifi.lower()] = time.time()
         if changed:
             stored = load()
             for s in stored:
@@ -415,7 +459,9 @@ def parse_when(text: str) -> dict | None:
             h += 12
         if ap == "am" and h == 12:
             h = 0
-        return {"type": "time", "at": f"{h:02d}:{mi:02d}"}
+        return {"type": "time", "at": f"{h:02d}:{mi:02d}", **({"days": _weekdays(s)} if _weekdays(s) else {})}
+    if _weekdays(s) and re.search(r"\b(?:every|on|each)\b", s):
+        return {"type": "time", "at": "07:00", "days": _weekdays(s)}
     if re.search(r"\bevery\s+(?:morning)\b", s):
         return {"type": "time", "at": "07:00"}
     if re.search(r"\bevery\s+(?:night|evening)\b", s):
@@ -470,6 +516,8 @@ def add_rule(when: str, do: str) -> str:
         return (f"I didn't understand when to do it ('{when}'). Try 'every day at 11pm', 'when I get home', "
                 "'when echo connects', 'when I open Spotify', 'when my class starts' or 'every 2 hours'.")
     steps = [c.strip(" .") for c in _SPLIT_DO.split(do.strip()) if c.strip(" .")]
+    if re.match(r"\s*(?:start|run|launch|begin|do)\s+an?\s+(?:big\s+|new\s+)?mission\b", do, re.I):
+        steps = [do.strip(" .")]       # one mission: its "and"s are part of the goal, not separate actions
     if not steps:
         return "What should I do then?"
     rule = {"id": uuid.uuid4().hex[:6], "when": w, "do": steps, "enabled": True,

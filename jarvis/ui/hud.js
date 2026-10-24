@@ -262,13 +262,13 @@ const TITLES={calendar:['CALENDAR','Next 7 days · UPES timetable + Google Calen
 // moved, not copied: the same live elements keep updating, and they go back
 // (hidden) into <main> when the page closes so $('rings') etc. always exist.
 function parkPanels(){const m=document.querySelector('main');[$('monCard'),$('llmCard')].forEach(c=>{if(c.parentNode!==m)m.appendChild(c)})}
-function openPage(name,btn){setTimeout(()=>{if(typeof markTab==='function')markTab()});parkPanels();pageName=name;closeVeils();document.body.classList.remove('fullchat');document.body.classList.add('pageview');
+function openPage(name,btn){if(name!=='missions'&&PAGES._brainObj){try{PAGES._brainObj.destroy()}catch(e){}PAGES._brainObj=null;PAGES._brainEl=null}setTimeout(()=>{if(typeof markTab==='function')markTab()});parkPanels();pageName=name;closeVeils();document.body.classList.remove('fullchat');document.body.classList.add('pageview');
   document.querySelectorAll('aside nav button').forEach(x=>x.classList.toggle('on',x===btn||x.dataset.page===name));
   $('pgTitle').textContent=TITLES[name][0];$('pgNote').textContent=TITLES[name][1];clearInterval(pageTimer);
   if(name==='models'){$('pgBody').innerHTML='';$('pgBody').appendChild($('llmCard'));return}
   $('pgBody').innerHTML='<div class="muted">Loading…</div>';renderPage();
   pageTimer=setInterval(()=>{if(['workflows','automations','goals','missions','system','phone','store','calendar'].includes(pageName))renderPage(true)},name==='workflows'?2000:name==='store'||name==='calendar'?30000:5000)}
-function closePage(){setTimeout(()=>{if(typeof markTab==='function')markTab()});pageName='';clearInterval(pageTimer);parkPanels();document.body.classList.remove('pageview');
+function closePage(){try{if(PAGES._brainObj){PAGES._brainObj.destroy();PAGES._brainObj=null;PAGES._brainEl=null}}catch(e){}setTimeout(()=>{if(typeof markTab==='function')markTab()});pageName='';clearInterval(pageTimer);parkPanels();document.body.classList.remove('pageview');
   document.querySelectorAll('aside nav button').forEach(x=>x.classList.toggle('on',x.dataset.view===lastView))}
 $('pgBack').onclick=closePage;
 async function renderPage(quiet){const name=pageName;if(!name)return;
@@ -279,6 +279,131 @@ async function renderPage(quiet){const name=pageName;if(!name)return;
   catch(e){if(!quiet)$('pgBody').innerHTML='<div class="muted">Could not load: '+esc2(e.message)+'</div>'}}
 async function act(page,body){try{const j=await api('/view/'+page,{method:'POST',body:JSON.stringify(body)});return j.said||''}catch(e){return 'Failed: '+e.message}}
 const fmt=s=>{s=Math.max(0,Math.round(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
+// ---------- Needs you · Loops · Usage on the Missions page (20 Oct 2026, ideas from Symvibe) ----------
+const agoT=ts=>{const s=Math.max(0,Date.now()/1000-ts);return s<60?'just now':s<3600?Math.round(s/60)+' min ago':s<86400?Math.round(s/3600)+' h ago':Math.round(s/86400)+' d ago'};
+const NEED_ICON={blocked:'⏸',breaker:'⚡',ask:'?',question:'✉',failed:'!',loop:'↻',console:'\u25A3'};
+function needsPanel(d){
+  const n=d.needs||[];if(!n.length)return null;
+  const el=document.createElement('section');el.className='needs';el.setAttribute('aria-label','Needs you');
+  el.innerHTML='<div class="needs-h"><span class="needs-dot"></span><b>NEEDS YOU</b><span class="needs-n">'+n.length+'</span><small>only you can unblock these</small></div>'+
+    n.map(i=>'<div class="need k-'+esc2(i.kind)+'" data-key="'+esc2(i.key)+'">'+
+      '<div class="need-av"><span>'+esc2(String(i.who||'?').trim().charAt(0).toUpperCase())+'</span><i>'+(NEED_ICON[i.kind]||'!')+'</i></div>'+
+      '<div class="need-b"><div class="need-t"><b>'+esc2(i.who)+'</b> '+esc2(i.title)+' <small>· '+agoT(i.since)+'</small></div>'+
+      (i.text?'<div class="need-x">'+esc2(i.text)+'</div>':'')+
+      '<div class="need-a">'+(i.can_reply?'<input class="minp" data-nin placeholder="Your answer…"><button class="mbtn go" data-nsend>Reply</button>':'')+
+        (i.can_retry?'<button class="mbtn go" data-nretry>Try again</button>':'')+
+        (i.kind==='console'?'<button class="mbtn" data-ndeck="'+esc2(i.console)+'">Open in Deck</button>':'')+
+        '<button class="mbtn" data-ndis>Dismiss</button></div></div></div>').join('');
+  const key=b=>b.closest('.need').dataset.key;
+  const done=async body=>{const said=await act('missions',body);const e=$('mSaid');if(e&&said)e.textContent=said;PAGES._mSig='';renderPage(true)};
+  el.querySelectorAll('[data-nsend]').forEach(b=>b.onclick=()=>{const i=b.closest('.need').querySelector('[data-nin]');if(!i.value.trim()){i.focus();return}
+    b.disabled=true;done({action:'need_reply',key:key(b),text:i.value.trim()})});
+  el.querySelectorAll('[data-nin]').forEach(i=>i.onkeydown=e=>{if(e.key==='Enter')i.closest('.need').querySelector('[data-nsend]').click()});
+  el.querySelectorAll('[data-nretry]').forEach(b=>b.onclick=()=>{b.disabled=true;done({action:'need_retry',key:key(b)})});
+  el.querySelectorAll('[data-ndeck]').forEach(b=>b.onclick=()=>act('missions',{action:'deck_show',console:b.dataset.ndeck}));
+  el.querySelectorAll('[data-ndis]').forEach(b=>b.onclick=()=>{b.closest('.need').style.opacity=.35;done({action:'need_dismiss',key:key(b)})});
+  return el}
+// Athena Deck (deck/): the board of live agent consoles - what's on it, and a way in.
+function deckBox(d){
+  const k=d.deck||{},cs=k.consoles||[],word={needs:'needs you',working:'working',resting:'resting',starting:'starting',exited:'stopped'};
+  return '<div class="pbox deckbox" style="margin-bottom:16px"><div class="sec-h"><b>ATHENA DECK</b><small>'+
+    (k.running?cs.length+' console'+(cs.length===1?'':'s')+' on the board':'your board of live Claude, Gemini and PowerShell consoles')+'</small></div>'+
+    (k.running&&cs.length?'<div class="deck-cons">'+cs.map(c=>'<button class="deck-con s-'+esc2(c.state)+'" data-dcon="'+esc2(c.id)+'" title="'+esc2(c.detail||word[c.state]||c.state)+'">'+
+      '<i></i><b>'+c.n+'</b>'+esc2(c.title)+'<small>'+esc2(word[c.state]||c.state)+'</small></button>').join('')+'</div>':'')+
+    '<div class="deck-foot"><span class="muted">Say \u201copen two Claude consoles on the orb site\u201d or \u201cwhat are my consoles doing\u201d.</span>'+
+    '<button class="mbtn go" id="deckOpen">'+(k.running?'Show Deck':'Open Deck')+'</button></div></div>'}
+function wireDeck(say){
+  if($('deckOpen'))$('deckOpen').onclick=async()=>{const b=$('deckOpen');b.disabled=true;b.textContent='Opening\u2026';say(await act('missions',{action:'deck_open'}));PAGES._mSig='';renderPage(true)};
+  $('pgBody').querySelectorAll('[data-dcon]').forEach(b=>b.onclick=()=>act('missions',{action:'deck_show',console:b.dataset.dcon}))}
+const everyTxt=m=>m>=1440&&m%1440===0?'daily':m%60===0?(m===60?'hourly':'every '+m/60+' h'):'every '+Math.round(m)+' min';
+const inTxt=s=>s<90?'in a moment':s<3600?'in '+Math.round(s/60)+' min':'in '+(s/3600).toFixed(1).replace(/\.0$/,'')+' h';
+setInterval(()=>document.querySelectorAll('[data-next]').forEach(e=>{e.textContent='next '+inTxt(+e.dataset.next-Date.now()/1000)}),30000);
+function loopsBox(d){
+  const ls=d.loops||[],now=Date.now()/1000;
+  const pill={active:['WATCHING','on'],met:['GOAL MET ✓','met'],gave_up:['GAVE UP','bad'],paused:['PAUSED','bad'],stopped:['STOPPED','off']};
+  const dots=lp=>{const h=lp.history||[],out=[];for(let i=0;i<lp.max_runs;i++){let c='',t='Run '+(i+1);
+      if(i<lp.runs){const r=h[h.length-lp.runs+i]||{};c=r.met===true?'met':r.met===false?'no':'unk';t+=': '+(r.note||'')}
+      else if(i===lp.runs&&lp.mission){c='now';t+=': checking now'}
+      out.push('<i class="'+c+'" title="'+esc2(t)+'"></i>')}return out.join('')};
+  return '<div class="pbox" style="margin-bottom:16px"><div class="sec-h"><b>LOOPS</b><small>repeat a job until its goal is met — then it stops by itself</small></div>'+
+    (ls.length?ls.map(lp=>{const p=pill[lp.status]||[String(lp.status).toUpperCase(),'off'];
+      const when=lp.status!=='active'?'':lp.mission?'checking now':'<span data-next="'+lp.next+'">next '+inTxt(lp.next-now)+'</span>';
+      return '<div class="loop s-'+esc2(lp.status)+'"><div class="loop-top"><div class="loop-main"><div class="loop-task">'+esc2(lp.task)+'</div>'+
+        '<div class="loop-until">until '+esc2(lp.until)+'</div></div><span class="lpill '+p[1]+'">'+p[0]+'</span></div>'+
+        '<div class="loop-dots">'+dots(lp)+'<small>'+lp.runs+'/'+lp.max_runs+' runs · '+everyTxt(lp.every)+(when?' · '+when:'')+' · '+(lp.worker==='gemini'?'Gemini':'Claude')+'</small></div>'+
+        (lp.note?'<div class="loop-note">'+esc2(lp.note)+'</div>':'')+
+        '<div class="loop-act">'+(lp.status==='active'?'<button class="mbtn stop" data-lstop="'+lp.id+'">Stop</button>':'<button class="mbtn" data-lrm="'+lp.id+'">Clear</button>')+'</div></div>'}).join(''):
+      '<div class="muted" style="padding:2px 0 4px">None yet. Say “every 30 minutes, check the orb site on phones until nothing scrolls sideways”, or start one here.</div>')+
+    '<div class="loop-form"><select id="lpEvery" class="minp" aria-label="How often">'+[[10,'every 10 min'],[15,'every 15 min'],[30,'every 30 min'],[60,'every hour'],[120,'every 2 hours'],[360,'every 6 hours'],[1440,'daily']]
+      .map(([v,t])=>'<option value="'+v+'"'+(v===30?' selected':'')+'>'+t+'</option>').join('')+'</select>'+
+    '<input id="lpTask" class="minp" placeholder="each run: e.g. check the orb landing page at 360px">'+
+    '<input id="lpUntil" class="minp" placeholder="until: e.g. nothing scrolls sideways">'+
+    '<select id="lpWho" class="minp" aria-label="Worker"><option value="claude">Claude</option><option value="gemini">Gemini</option></select>'+
+    '<button class="mbtn go" id="lpGo" title="Each run is a mission - Claude runs use your limits">Start loop</button></div></div>'}
+function wireLoops(say){
+  if($('lpGo'))$('lpGo').onclick=async()=>{const b=$('lpGo'),t=$('lpTask').value.trim(),u=$('lpUntil').value.trim();if(!t||!u){say('Say what each run does, and when to stop.');return}
+    if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again — runs until it’s met';setTimeout(()=>{if(b.isConnected){delete b.dataset.sure;b.textContent='Start loop'}},5000);return}
+    b.disabled=true;say(await act('missions',{action:'loop_add',task:t,until:u,every:$('lpEvery').value,worker:$('lpWho').value}));PAGES._mSig='';document.activeElement.blur();renderPage(true)};
+  $('pgBody').querySelectorAll('[data-lstop]').forEach(b=>b.onclick=async()=>{b.disabled=true;say(await act('missions',{action:'loop_stop',id:b.dataset.lstop}));PAGES._mSig='';renderPage(true)});
+  $('pgBody').querySelectorAll('[data-lrm]').forEach(b=>b.onclick=async()=>{await act('missions',{action:'loop_remove',id:b.dataset.lrm});PAGES._mSig='';renderPage(true)})}
+const fmt$=v=>'$'+(v>=100?v.toFixed(0):v>=10?v.toFixed(1):v.toFixed(2));
+const UCOL={athena:'var(--u1)',code:'var(--u3)'};
+const niceMax=m=>{const p=Math.pow(10,Math.floor(Math.log10(m)));for(const f of [1,2,2.5,5,10])if(f*p>=m)return f*p;return 10*p};
+function spark(vals,color){const W=120,H=26,mx=Math.max(...vals,1e-9),bw=W/vals.length;
+  return '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" aria-hidden="true">'+vals.map((v,i)=>{const h=v?Math.max(2,v/mx*(H-3)):0;
+    return h?'<rect x="'+(i*bw+1).toFixed(1)+'" y="'+(H-1-h).toFixed(1)+'" width="'+Math.max(1,bw-2).toFixed(1)+'" height="'+h.toFixed(1)+'" rx="1.5" fill="'+color+'"/>':''}).join('')+
+    '<line x1="0" x2="'+W+'" y1="'+(H-.5)+'" y2="'+(H-.5)+'" stroke="rgba(150,170,205,.22)"/></svg>'}
+function usageChart(u,W){                 // drawn at the panel's real width: labels stay 10.5px on any screen
+  const S=u.series,days=u.days,n=days.length,tot=days.map((_,i)=>S.reduce((a,s)=>a+s.values[i],0)),max=niceMax(Math.max(...tot,0.5));
+  const H=W<500?170:220,L=W<500?36:46,R=4,T=10,B=24,ph=H-T-B,cw=(W-L-R)/n,bw=Math.min(30,cw*.62),y=v=>T+ph-v/max*ph,every=W<500?3:2;
+  let g='';[0,.5,1].forEach(f=>{const yy=y(max*f).toFixed(1);g+='<line class="'+(f?'u-grid':'u-base')+'" x1="'+L+'" x2="'+(W-R)+'" y1="'+yy+'" y2="'+yy+'"/>'+
+    '<text class="u-axis" x="'+(L-8)+'" y="'+(+yy+3.5)+'" text-anchor="end">'+(f?fmt$(max*f).replace(/\.0+$/,''):'$0')+'</text>'});
+  let bars='';
+  days.forEach((ds,i)=>{const x=+(L+i*cw+(cw-bw)/2).toFixed(1),nz=S.filter(s=>s.values[i]>0);let base=T+ph,segs='';
+    nz.forEach((s,k)=>{const h=s.values[i]/max*ph,gap=k?2:0,hh=Math.max(1,h-gap),yy=+(base-gap-hh).toFixed(1);   // 2px surface gap between segments
+      segs+=k===nz.length-1&&hh>5?'<path class="seg" fill="'+UCOL[s.key]+'" d="M'+x+','+(yy+hh).toFixed(1)+'V'+(yy+4)+'Q'+x+','+yy+' '+(x+4)+','+yy+'H'+(x+bw-4).toFixed(1)+'Q'+(x+bw).toFixed(1)+','+yy+' '+(x+bw).toFixed(1)+','+(yy+4)+'V'+(yy+hh).toFixed(1)+'Z"/>'
+        :'<rect class="seg" fill="'+UCOL[s.key]+'" x="'+x+'" y="'+yy+'" width="'+bw.toFixed(1)+'" height="'+hh.toFixed(1)+'"/>';base=yy});
+    const day=new Date(ds+'T12:00:00'),lab=i===n-1?'today':((n-1-i)%every===0&&n-1-i>=every?String(day.getDate()):'');
+    bars+='<g class="u-col" data-i="'+i+'" data-top="'+base.toFixed(1)+'" tabindex="0" aria-label="'+esc2(ds)+': '+fmt$(tot[i])+'">'+segs+
+      '<rect class="u-hit" x="'+(L+i*cw).toFixed(1)+'" y="'+T+'" width="'+cw.toFixed(1)+'" height="'+ph+'"/>'+
+      (lab?'<text class="u-axis" x="'+(L+i*cw+cw/2).toFixed(1)+'" y="'+(H-7)+'" text-anchor="middle">'+lab+'</text>':'')+'</g>'});
+  return '<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Claude spend per day for the last 14 days, by source">'+g+bars+'</svg>'}
+function usageBox(d){
+  const u=d.usage||{};if(!u.series)return '';
+  const S=u.series,days=u.days,tot=days.map((_,i)=>S.reduce((a,s)=>a+s.values[i],0));
+  const cap=u.cap||15,pct=Math.min(100,(u.athena_month||0)/cap*100);
+  const hero='<div class="u-hero"><div class="u-ringwrap" title="Athena missions against the monthly cap"><div class="u-ring" style="background:conic-gradient(var(--u1) '+pct.toFixed(1)+'%,rgba(150,170,205,.14) 0)"></div><b>'+Math.round(pct)+'%</b></div>'+
+    '<div style="min-width:0"><div class="u-lbl">'+esc2(u.month_name||'')+' so far</div><div class="u-big">'+fmt$(u.month_total||0)+'</div><div class="u-sub">missions '+fmt$(u.athena_month||0)+' of the $'+cap+' cap</div></div></div>';
+  const tiles=S.map(s=>'<div class="u-tile"><div class="u-lbl"><span class="u-key" style="background:'+UCOL[s.key]+'"></span>'+esc2(s.label)+'</div><div class="u-val">'+fmt$(s.month)+'</div><div class="u-sub">today '+fmt$(s.today)+'</div></div>').join('');
+  const rows=(u.rows||[]).map(r=>'<div class="u-row"><div class="n">'+esc2(r.label)+'<small>'+esc2(r.sub)+'</small></div>'+spark(r.values,r.key==='runs'?'rgba(150,170,205,.55)':UCOL[r.key])+
+    '<div class="v">'+(r.key==='runs'?r.runs+' run'+(r.runs===1?'':'s'):fmt$(r.month))+'</div></div>').join('');
+  const table='<div class="u-tablewrap" hidden id="uTable"><table class="u-table"><thead><tr><th>Day</th>'+S.map(s=>'<th>'+esc2(s.label)+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+
+    days.map((ds,i)=>'<tr><td>'+ds+'</td>'+S.map(s=>'<td>'+fmt$(s.values[i])+'</td>').join('')+'<td>'+fmt$(tot[i])+'</td></tr>').reverse().join('')+'</tbody></table></div>';
+  return '<div class="pbox usage" style="margin-bottom:16px"><div class="sec-h"><b>USAGE</b><small>where your Claude limits go · last 14 days</small></div>'+
+    '<div class="u-top">'+hero+tiles+'</div>'+
+    '<div class="u-leg">'+S.map(s=>'<span><i style="background:'+UCOL[s.key]+'"></i>'+esc2(s.label)+' <b>'+fmt$(s.month)+'</b></span>').join('')+'</div>'+
+    '<div class="u-chart" id="uChart"><div class="u-tip" id="uTip" hidden></div></div>'+
+    '<div class="u-rows">'+rows+'</div>'+table+
+    '<div class="u-foot"><span>API-price estimates — on your subscriptions this is limit use, not a bill. Gemini and Argon run on the Google plan.</span><button class="mbtn" id="uTbl">Table</button></div></div>'}
+function wireUsage(d){
+  const u=d.usage||{},c=$('uChart'),tip=$('uTip');if(!c||!u.series)return;
+  const row=(color,val,label)=>{const r=document.createElement('div');r.className='r';const k=document.createElement('i');if(color)k.style.background=color;
+    const b=document.createElement('b');b.textContent=val;const l=document.createElement('span');l.textContent=label;r.append(k,b,l);return r};
+  const show=g=>{const i=+g.dataset.i,svg=c.querySelector('svg');c.querySelectorAll('.u-col.hov').forEach(x=>x.classList.remove('hov'));g.classList.add('hov');tip.replaceChildren();
+    const t=document.createElement('div');t.className='t';t.textContent=new Date(u.days[i]+'T12:00:00').toLocaleDateString([],{weekday:'short',day:'numeric',month:'short'});tip.append(t);
+    let sum=0;u.series.slice().reverse().forEach(s=>{sum+=s.values[i];tip.append(row(UCOL[s.key],fmt$(s.values[i]),s.label))});
+    const tr=row('',fmt$(sum),'total');tr.style.marginTop='6px';tip.append(tr);
+    const hit=g.querySelector('.u-hit'),cx=+hit.getAttribute('x')+(+hit.getAttribute('width'))/2,top=+g.dataset.top;tip.hidden=false;
+    const above=top-tip.offsetHeight-10>=0;                  // just above the bar; below its top when there's no room
+    tip.style.left=Math.min(svg.clientWidth-tip.offsetWidth/2-4,Math.max(tip.offsetWidth/2+4,cx))+'px';
+    tip.style.top=(above?top-8:top+10)+'px';tip.style.transform=above?'translate(-50%,-100%)':'translate(-50%,0)'};
+  const hide=g=>{g.classList.remove('hov');tip.hidden=true};
+  const draw=()=>{const w=Math.floor(c.clientWidth);if(!w||w===c._w)return;c._w=w;const old=c.querySelector('svg');if(old)old.remove();
+    c.insertAdjacentHTML('afterbegin',usageChart(u,w));
+    c.querySelectorAll('.u-col').forEach(g=>{g.addEventListener('pointerenter',()=>show(g));g.addEventListener('pointerleave',()=>hide(g));
+      g.addEventListener('focus',()=>show(g));g.addEventListener('blur',()=>hide(g))})};
+  draw();if(window.ResizeObserver){if(PAGES._uRO)PAGES._uRO.disconnect();PAGES._uRO=new ResizeObserver(draw);PAGES._uRO.observe(c)}
+  if($('uTbl'))$('uTbl').onclick=()=>{const t=$('uTable');t.hidden=!t.hidden;$('uTbl').textContent=t.hidden?'Table':'Hide table'}}
 // vis-network, the same graph library graphify draws with; fetched only
 // when the Brain page is first opened.
 let visLoad=null;const needVis=()=>visLoad||(visLoad=new Promise((ok,no)=>{const s=document.createElement('script');
@@ -416,20 +541,60 @@ const PAGES={
    $('pgBody').querySelectorAll('[data-drop]').forEach(b=>b.onclick=async()=>{
      if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again';setTimeout(()=>{if(b.isConnected){delete b.dataset.sure;b.textContent=b.dataset.st==='active'?'Drop':'Remove'}},4000);return}
      b.disabled=true;await act('goals',{goal:b.dataset.drop,action:b.dataset.st==='active'?'drop':'remove'});renderPage(true)})},
+ // The live brain over the Missions page (neuron-brain.js, built by a Claude mission on 17 Oct 2026):
+ // a region fires while its worker has a job; the cards are the real missions.
+ _brain(d){
+   if(typeof NeuronBrain!=='function')return null;
+   if(!PAGES._brainEl){const el=document.createElement('div');el.id='brainBoard';
+     
+     PAGES._brainEl=el;PAGES._brainObj=new NeuronBrain(el,{regions:[
+       {id:'claude',label:'Builder',color:'#a78bfa'},{id:'gemini',label:'Research',color:'#22d3ee'},
+       {id:'argon',label:'Deep work',color:'#f59e0b'},{id:'maps',label:'Places',color:'#4ade80'},
+       {id:'voice',label:'Voice',color:'#f472b6'},{id:'memory',label:'Memory',color:'#60a5fa'},
+       {id:'study',label:'Study',color:'#fb923c'},{id:'schedule',label:'Schedules',color:'#2dd4bf'}]})}
+   const live=s=>s==='running'||s==='starting',busy={};
+   d.missions.forEach(m=>{const ws=m.worker==='chain'?(m.steps||[]).filter(s=>live(s.status)).map(s=>s.worker):live(m.status)?[m.worker]:[];
+     ws.forEach(w=>{(busy[w]=busy[w]||[]).push(m)})});
+   const regions={};
+   ['claude','gemini','argon','maps'].forEach(w=>{const n=(busy[w]||[]).length;
+     regions[w]={active:n>0,firing:n?Math.min(1,.35+.25*n):0,sub:n?(n>1?n+' jobs':(busy[w][0].progress.slice(-1)[0]||{}).text||'working').slice(0,34):'idle'}});
+   const sch=(d.scheduled||[]).length;
+   regions.schedule={active:false,firing:0,sub:sch?sch+' scheduled':'none yet'};
+   ['voice','memory','study'].forEach(w=>regions[w]={active:false,firing:0,sub:'idle'});
+   const order=[...d.missions].sort((a,b)=>live(b.status)-live(a.status)).slice(0,6);
+   const cards=order.map(m=>({title:m.title,worker:m.worker==='chain'?'Planned · '+(m.steps||[]).length+' steps':({claude:'Claude',gemini:'Gemini',argon:'Gemini Argon',maps:'Google Maps'}[m.worker]||m.worker),
+     status:live(m.status)?'running':m.status==='done'?'done':'failed',note:live(m.status)?((m.progress.slice(-1)[0]||{}).text||'getting started'):m.status==='stopped'?'stopped':(m.minutes+' min'+(m.cost?' · $'+Number(m.cost).toFixed(2):''))}));
+   try{PAGES._brainObj.update({regions,cards})}catch(e){}
+   return PAGES._brainEl},
  missions(d,quiet){
-   const run=d.missions.filter(m=>m.status==='running'||m.status==='starting');$('nMissions').textContent=run.length||'-';
-   const sig=JSON.stringify(d);if(quiet&&(sig===PAGES._mSig||document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#pgBody')))return;
+   const run=d.missions.filter(m=>m.status==='running'||m.status==='starting'),need=(d.needs||[]).length,nb=$('nMissions');
+   nb.textContent=need?'!'+need:(run.length||'-');nb.classList.toggle('alert',!!need);
+   const sig=JSON.stringify(d);if(quiet&&(sig===PAGES._mSig||document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#pgBody')||[...document.querySelectorAll('#pgBody video')].some(v=>!v.paused))){PAGES._brain(d);return}
    PAGES._mSig=sig;const open=PAGES._mOpen||{};
    const link=m=>'/mission/'+m.id+'/'+encodeURIComponent(token())+'/'+(m.preview||'').split('/').map(encodeURIComponent).join('/');
    const col={running:'var(--c)',starting:'var(--c)',done:'var(--ok,#4fd18b)',failed:'var(--warn)',stopped:'var(--warn)'};
    let html='<div class="pbox" style="margin-bottom:16px"><div class="muted" style="margin-bottom:8px">Give Athena a job - she plans the steps and picks Gemini to research and Claude to build - or pick one yourself. It works in its own folder, can’t send, post or buy anything, and Athena tells you when it’s done.'+
-     (d.spent?' Used so far: about $'+d.spent.toFixed(2)+' of your Claude plan.':'')+'</div>'+
+     ' Claude missions this month: $'+(d.spent||0).toFixed(2)+' of $'+(d.cap||15).toFixed(0)+' (max $'+(d.per_mission||1.5).toFixed(2)+' each); Gemini is free.'+'</div>'+
      '<textarea id="mTask" class="minp" rows="2" placeholder="e.g. Build a one-page website for my desk orb project, dark theme, with a parts list" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>'+
      '<div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap"><select id="mWho" class="minp" style="padding:6px 8px">'+
        '<option value="auto">Auto - plan the steps</option>'+
        '<option value="claude"'+(PAGES._mWho==='claude'?' selected':'')+'>Claude</option><option value="gemini"'+(PAGES._mWho==='gemini'?' selected':'')+'>Gemini Flash (background)</option>'+
        '<option value="argon"'+(PAGES._mWho==='argon'?' selected':'')+'>Gemini Argon (in the Gemini app)</option></select>'+
        '<button class="mbtn go" id="mGo">Start mission</button><small class="muted" id="mSaid"></small></div></div>';
+   const sch=d.scheduled||[];
+   html+='<div class="pbox" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">'+
+     '<b style="font:600 12px var(--mono);letter-spacing:2px;color:var(--c)">SCHEDULED</b><small class="muted">runs on its own - while you sleep too; results land here and on your phone</small></div>'+
+     (sch.length?sch.map(s=>'<div style="display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2)">'+
+       '<span style="flex:none;font:600 12px var(--mono);color:var(--c)">'+esc2(s.when)+'</span><span style="flex:1;min-width:0">'+esc2(s.what)+'</span>'+
+       (s.last?'<small class="muted" style="flex:none">last '+new Date(s.last*1000).toLocaleDateString()+'</small>':'')+
+       '<button class="mbtn" data-unsch="'+s.id+'" title="Stop running it">\u2715</button></div>').join(''):
+       '<div class="muted" style="padding:6px 0">None yet. Say \u201cevery Monday at 7am, start a mission to scan new AI tools and write me a rollup\u201d, or add one here.</div>')+
+     '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><input id="schWhen" class="minp" placeholder="every Monday at 7am" style="flex:0 1 190px;min-width:0">'+
+     '<input id="schWhat" class="minp" placeholder="what to do, e.g. read my LMS files and update my study plan" style="flex:1 1 260px;min-width:0">'+
+     '<button class="mbtn go" id="schAdd">Schedule</button></div></div>';
+   html+=loopsBox(d);
+   html+=deckBox(d);
+   html+=usageBox(d);
    if(!d.missions.length)html+='<div class="muted">No missions yet. You can also say: “Athena, have Claude build me a one-page site for my orb”.</div>';
    d.missions.forEach(m=>{const live=m.status==='running'||m.status==='starting';
      html+='<div class="pbox" style="margin-bottom:14px">'+
@@ -437,7 +602,7 @@ const PAGES={
        '<div class="muted"><b style="color:'+(col[m.status]||'inherit')+'">'+esc2(m.status.toUpperCase())+'</b> · '+m.minutes+' min'+' · '+(m.worker==='chain'?(m.steps.length?m.steps.length+' step'+(m.steps.length>1?'s':''):'planning'):({gemini:'Gemini',argon:'Gemini Argon'}[m.worker]||'Claude'))+(m.cost?' · $'+Number(m.cost).toFixed(2):'')+(m.turns?' · '+m.turns+' steps':'')+'</div>'+
        '<div class="big" style="font-size:20px;margin-top:4px;overflow-wrap:anywhere">'+esc2(m.title)+'</div></div>'+
        '<div style="display:flex;gap:8px;flex-wrap:wrap">'+(live?'<button class="mbtn stop" data-mstop="'+m.id+'">Stop</button>':'')+
-       (m.preview?'<button class="mbtn" data-mprev="'+m.id+'">'+(open[m.id]?'Hide':/\.md$/i.test(m.preview)?'Read':'Preview')+'</button><a class="mbtn" href="'+link(m)+'" target="_blank" rel="noopener">Open ↗</a>':'')+
+       (m.preview?(/\.mp4$/i.test(m.preview)?'':'<button class="mbtn" data-mprev="'+m.id+'">'+(open[m.id]?'Hide':/\.md$/i.test(m.preview)?'Read':'Preview')+'</button>')+'<a class="mbtn" href="'+link(m)+'" target="_blank" rel="noopener">Open ↗</a>':'')+
        (!live&&m.can_publish?'<button class="mbtn" data-mpub="'+m.id+'" title="Puts the site on the public internet">'+(m.published?'Update live site':'Publish')+'</button>':'')+
        (!live&&m.has_draft?'<button class="mbtn" data-mdraft="'+m.id+'" title="Opens it in your mail app - you send it">Open draft</button>':'')+
        '<button class="mbtn mfold" data-mfold="'+m.id+'">Folder</button></div></div>'+
@@ -449,14 +614,23 @@ const PAGES={
          '<div style="margin-top:10px;white-space:pre-wrap">'+esc2(m.result)+'</div>')+
        (m.followups&&m.followups.length?'<small class="muted" style="display:block;margin-top:6px">Changes asked: '+m.followups.map(esc2).join(' · ')+'</small>':'')+
        (open[m.id]&&/\.md$/i.test(m.preview||'')?'<div class="mdview" data-mmd="'+link(m)+'" style="margin-top:12px;max-height:60vh;overflow:auto;padding:12px 14px;border:1px solid var(--line);border-radius:10px;white-space:pre-wrap;line-height:1.5">Loading…</div>':'')+
-       (open[m.id]&&m.preview&&!/\.md$/i.test(m.preview)?'<iframe sandbox="allow-scripts allow-forms allow-popups allow-modals" src="'+link(m)+'" style="width:100%;height:460px;border:1px solid rgba(150,170,205,.25);border-radius:10px;margin-top:12px;background:#fff"></iframe>':'')+
+       (/\.mp4$/i.test(m.preview||'')?'<video src="'+link(m)+'" controls playsinline preload="metadata" style="width:100%;max-height:70vh;margin-top:12px;border-radius:10px;background:#000"></video>':'')+
+       (open[m.id]&&m.preview&&!/\.(md|mp4)$/i.test(m.preview)?'<iframe sandbox="allow-scripts allow-forms allow-popups allow-modals" src="'+link(m)+'" style="width:100%;height:460px;border:1px solid rgba(150,170,205,.25);border-radius:10px;margin-top:12px;background:#fff"></iframe>':'')+
        (!live&&m.status!=='stopped'?'<div style="display:flex;gap:8px;margin-top:10px"><input class="minp" data-mtext="'+m.id+'" placeholder="Ask for a change… e.g. make the header darker" style="flex:1;min-width:0"><button class="mbtn go" data-mfollow="'+m.id+'">Send</button></div>':'')+
        '</div>'});
    $('pgBody').innerHTML=html;
+   const brain=PAGES._brain(d);if(brain)$('pgBody').prepend(brain);
+   const needs=needsPanel(d);if(needs)$('pgBody').prepend(needs);        // above everything: only you can unblock these
    const say=t=>{const e=$('mSaid');if(e)e.textContent=t};
+   wireLoops(say);wireUsage(d);wireDeck(say);
    $('pgBody').querySelectorAll('[data-mmd]').forEach(async d=>{try{d.innerHTML=md(await (await fetch(d.dataset.mmd)).text());decorate(d)}catch(e){d.textContent='Could not load it.'}});
    $('mGo').onclick=async()=>{const t=$('mTask').value.trim();if(!t){say('Type what Claude should do.');return}
      $('mGo').disabled=true;PAGES._mWho=$('mWho').value;say(await act('missions',{action:'start',task:t,worker:$('mWho').value}));$('mGo').disabled=false;PAGES._mSig='';document.activeElement.blur();renderPage(true)};
+   $('schAdd').onclick=async()=>{const w=$('schWhen').value.trim(),t=$('schWhat').value.trim();if(!w||!t){say('Say when, and what to do.');return}
+     say(await act('missions',{action:'schedule',when:w,task:t}));PAGES._mSig='';document.activeElement.blur();renderPage(true)};
+   $('pgBody').querySelectorAll('[data-unsch]').forEach(b=>b.onclick=async()=>{
+     if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Remove?';setTimeout(()=>{if(b.isConnected){delete b.dataset.sure;b.textContent='\u2715'}},4000);return}
+     await act('missions',{action:'unschedule',id:b.dataset.unsch});PAGES._mSig='';renderPage(true)});
    $('pgBody').querySelectorAll('[data-mstop]').forEach(b=>b.onclick=async()=>{b.disabled=true;await act('missions',{action:'stop',id:b.dataset.mstop});renderPage(true)});
    $('pgBody').querySelectorAll('[data-mfold]').forEach(b=>b.onclick=()=>act('missions',{action:'folder',id:b.dataset.mfold}));
    // Publish is public: the first tap only explains, the second does it.
@@ -854,9 +1028,19 @@ async function pollLive(){
         document.querySelectorAll('.stpills span').forEach(x=>x.classList.toggle('on',x.dataset.s===fs))}}
     if(j.heard&&j.heard!==lastHeard){line(j.heard,'me voice');lastHeard=j.heard;$('txYou').textContent=j.heard;faceSay(j.heard,FACE_COL.listening,170)}
     if(j.reply&&j.reply!==lastReply){if(/\[share:/.test(j.reply))loadShares();answer(j.reply);lastReply=j.reply;$('txAth').textContent=j.reply;faceSay(j.reply,FACE_COL.speaking,300)}
-    feed(j.log);agents();
+    feed(j.log);agents();jobChips(j.jobs||[]);
   }catch(e){$('stat').textContent='LINK LOST';$('sdot').className='dot warn'}
 }
+// Background jobs (web.py _jobs): a chip each - who, what, and the time ticking.
+// A Deck console's opens it on the Deck; a mission's opens the Missions page.
+function jobChips(js){const box=$('jobChips');if(!box)return;
+  const sig=js.map(x=>(x.console||x.mission)+':'+x.state).join('|');
+  if(box.dataset.sig!==sig){box.dataset.sig=sig;
+    box.innerHTML=js.map(x=>'<button class="jobchip'+(x.state==='needs'?' needs':'')+'" data-jc="'+esc2(x.console||'')+'" data-since="'+(+x.since||0)+'" title="'+
+      (x.console?'Show it on the Deck':'Open Missions')+'"><i></i><b>'+esc2(x.who)+'</b><span>'+esc2(x.title)+(x.state==='needs'?' · needs you':'')+'</span><em></em></button>').join('');
+    box.querySelectorAll('.jobchip').forEach(b=>b.onclick=()=>b.dataset.jc?act('missions',{action:'deck_show',console:b.dataset.jc}):openPage('missions',null))}
+  box.querySelectorAll('.jobchip').forEach(b=>{const s=Math.max(0,Math.floor(Date.now()/1000-(+b.dataset.since)));
+    b.querySelector('em').textContent=s<60?s+'s':Math.floor(s/60)+':'+String(s%60).padStart(2,'0')})}
 async function primeLive(){try{const j=await api('/live');lastHeard=j.heard||'';lastReply=j.reply||''}catch(e){}}
 
 // ---------- system monitor ----------
@@ -897,6 +1081,8 @@ document.querySelectorAll('footer .tab').forEach(b=>b.onclick=()=>{const t=b.dat
   if(t==='missions')openPage('missions',null);else setView(t);markTab()});
 function todayCard(o){
   const el=$('today');if(!el)return;const rows=[];const add=(ic,html,go)=>rows.push('<div data-go="'+(go||'')+'"><span>'+ic+'</span><span>'+html+'</span></div>');
+  const nd=o.needs||[],nb=$('nMissions');if(nb){nb.classList.toggle('alert',!!nd.length);if(nd.length)nb.textContent='!'+nd.length}
+  if(nd.length)add('\u26A0\uFE0F','<b>'+esc2(nd[0].who)+'</b> '+esc2(nd[0].title)+(nd.length>1?' <small>\u00b7 +'+(nd.length-1)+' more</small>':''),'missions');
   const sc=o.schedule||[],next=sc.find(e=>e.state!=='done');
   if(next)add('\u{1F4DA}','<b>'+esc2(next.what)+'</b> '+(next.state==='now'?'now':'at '+esc2(next.at))+(next.where?' <small>\u00b7 '+esc2(next.where)+'</small>':''),'calendar');
   else if(o.tomorrow)add('\u{1F4DA}','Done for today <small>\u00b7 tomorrow '+esc2(o.tomorrow.at)+' '+esc2(o.tomorrow.what)+'</small>','calendar');

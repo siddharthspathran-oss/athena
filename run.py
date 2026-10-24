@@ -20,7 +20,15 @@
 """
 from __future__ import annotations
 
+import os
+import re
 import sys
+
+# Started from inside a Claude Code session, Athena inherited its markers (CLAUDE_CODE_CHILD_SESSION,
+# the session id, its messaging pipe), and everything she launched - Claude missions, Deck consoles -
+# then ran as that session's child: no transcripts, so no --resume (20 Oct 2026).
+for _k in [k for k in os.environ if re.match(r"CLAUDECODE|CLAUDE_CODE_|CLAUDE_AGENT_SDK|CLAUDE_PID$|CLAUDE_EFFORT$|CLAUDE_PREVIEW_", k)]:
+    del os.environ[_k]
 
 # Windows consoles still default to a legacy codepage, which mangles any
 # non-ASCII the model produces (degree signs, accents, dashes).
@@ -227,7 +235,7 @@ def _log_to_file(mode: str) -> None:
 
 def main() -> int:
     mode = (sys.argv[1] if len(sys.argv) > 1 else "cli").lower().lstrip("-")
-    if mode in ("voice", "web", "hotkey"):
+    if mode in ("voice", "web", "hotkey", "stage"):
         import ctypes
         # One copy of each: a manual start racing the web server's watchdog
         # ran voice twice (26 Sep 2026) - Whisper loaded twice, ~1 GB of VRAM,
@@ -406,6 +414,11 @@ def main() -> int:
         from jarvis.ui import hotkey
 
         hotkey.run()
+    elif mode == "stage":
+        # The floating panel that comes up while you talk (jarvis/stage.py); started by voice.
+        from jarvis.ui import stage_window
+
+        stage_window.run()
     elif mode == "voice":
         from jarvis.ui import voice
 

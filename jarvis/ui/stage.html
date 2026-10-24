@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Athena Stage</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/stage.css">
+</head><body>
+<!-- The Stage (jarvis/stage.py, ui/stage_window.py): a floating panel while you talk to Athena -
+     your words as you say them, a mascot, and what she did as a card. Drawn from /live. -->
+<main id="panel" class="out" aria-live="polite">
+  <button id="close" class="x" aria-label="Put the panel away" title="Put away">✕</button>
+  <div id="chips"></div>
+  <section id="card" hidden></section>
+  <div id="me">
+    <canvas id="blob" width="180" height="150" aria-hidden="true"></canvas>
+    <p id="status"></p>
+    <p id="words"></p>
+    <p id="reply"></p>
+  </div>
+</main>
+<script src="/stage.js"></script>
+</body></html>

@@ -8,6 +8,7 @@ except the calendar (Google), which is cached for a few minutes.
 from __future__ import annotations
 
 import base64
+import re
 import datetime as dt
 import time
 from pathlib import Path
@@ -642,7 +643,25 @@ def missions() -> dict:
                       "has_draft": bool(M.draft_file(m)),
                       "progress": (m.get("progress") or [])[-12:],
                       "minutes": round(((m.get("ended") or _t.time()) - m["started"]) / 60, 1)})
-    return {"missions": out, "spent": round(sum(float(m.get("cost") or 0) for m in M.load()), 2)}
+    from ..config import cfg
+    from .. import rules as R
+    scheduled = [{"id": r["id"], "when": R.describe(r).split(":")[0], "what": re.sub(r"^\s*(?:start|run|launch|begin|do)\s+an?\s+"
+                  r"(?:big\s+|new\s+)?mission\s+(?:to\s+)?", "", r["do"][0], flags=re.I),
+                  "enabled": r.get("enabled", True), "last": r.get("last")}
+                 for r in R.load() if R._is_mission(r)]
+    from .. import attention, loops, usage
+    extra = {}
+    from .. import deck_link
+    for key, fn in (("needs", attention.items), ("usage", usage.summary), ("deck", deck_link.brief),
+                    ("loops", lambda: sorted(loops.load(), key=lambda lp: (lp["status"] != "active", -lp["created"]))[:8])):
+        try:
+            extra[key] = fn()
+        except Exception as e:                # one panel failing never blanks the page
+            extra[key] = [] if key != "usage" else {}
+            print(f"[missions page: {key}: {e}]")
+    return {"missions": out, "scheduled": scheduled, "spent": M.month_spend(), **extra,
+            "cap": float(cfg.get("missions.monthly_cap_usd", 15)),
+            "per_mission": float(cfg.get("missions.max_cost_usd", 1.5))}
 
 
 def mission_action(body: dict) -> dict:
@@ -662,6 +681,42 @@ def mission_action(body: dict) -> dict:
         if action == "follow":
             M.follow_up(mid, str(body.get("text", "")))
             return {"said": "Claude is on it."}
+        if action == "schedule":                  # "every monday at 7am" + what to do
+            from .. import rules as R
+            when, what = str(body.get("when", "")).strip(), str(body.get("task", "")).strip()
+            if not when or not what:
+                return {"said": "Say when, and what the mission should do."}
+            return {"said": R.add_rule(when, "start a mission to " + what)}
+        if action == "unschedule":
+            from .. import rules as R
+            R._save([r for r in R.load() if r["id"] != mid])
+            return {"said": "Removed that scheduled mission."}
+        if action in ("deck_open", "deck_show"):  # Athena Deck: open it, or fly it to a console
+            from .. import deck_link
+            if action == "deck_open":
+                return {"said": deck_link.deck_open()}
+            deck_link.launch()
+            deck_link.api("POST", "/api/focus", {"id": str(body.get("console", ""))})
+            return {"said": ""}
+        if action in ("loop_add", "loop_stop", "loop_remove", "need_dismiss", "need_reply", "need_retry"):
+            from .. import attention, loops
+            if action == "loop_add":              # the HUD asks twice before it gets here (each run uses limits)
+                lp = loops.add(str(body.get("task", "")), str(body.get("until", "")),
+                               float(body.get("every") or 30), str(body.get("worker") or "claude"))
+                return {"said": f"Loop on - every {int(lp['every'])} min, up to {lp['max_runs']} runs. First run starting."}
+            if action == "loop_stop":
+                loops.stop(mid)
+                return {"said": "Loop stopped."}
+            if action == "loop_remove":
+                with loops._lock:
+                    loops._save([lp for lp in loops.load() if lp["id"] != mid or lp["status"] == "active"])
+                return {"said": ""}
+            if action == "need_dismiss":
+                attention.dismiss(str(body.get("key", "")))
+                return {"said": ""}
+            if action == "need_reply":
+                return {"said": attention.answer(str(body.get("key", "")), str(body.get("text", "")))}
+            return {"said": attention.retry(str(body.get("key", "")))}
         if action == "publish":                   # the HUD asks twice before it gets here
             return {"said": f"Live at {M.publish(mid)} - it can take a minute to appear."}
         if action == "draft":
@@ -675,5 +730,23 @@ def mission_action(body: dict) -> dict:
     return {"said": "Unknown action."}
 
 
+def stage() -> dict:
+    """What the Stage's card needs besides /live (jarvis/stage.py): the music
+    playing, or the screen of the Deck console it shows."""
+    from .. import live
+    card = live.read_voice().get("card") or {}
+    if card.get("type") == "music":
+        return {"music": _media_session()}
+    if card.get("type") == "console" and card.get("console"):
+        from .. import deck_link
+        try:
+            s = deck_link.api("GET", f"/api/consoles/{card['console']}/screen", timeout=4)
+            return {"screen": s.get("text", ""), "state": s.get("state", ""), "detail": s.get("detail", "")}
+        except Exception as e:
+            return {"screen": "", "state": "gone", "detail": str(e)[:120]}
+    return {}
+
+
 GET = {"alarm": alarm_state, "notify": notify, "store": store, "phone": phone, "codegraph": codegraph, "calendar": calendar, "memory": memory, "workflows": workflows,
-       "automations": automations, "goals": goals, "missions": missions, "system": system, "tasks": tasks, "skills": skills, "brain": brain}
+       "automations": automations, "goals": goals, "missions": missions, "system": system, "tasks": tasks, "skills": skills, "brain": brain,
+       "stage": stage}

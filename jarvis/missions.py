@@ -67,7 +67,7 @@ def _update(mid: str, **fields) -> dict | None:
         return m
 
 
-WORKERS = {"claude": "Claude", "gemini": "Gemini", "argon": "Gemini Argon", "maps": "Google Maps"}
+WORKERS = {"claude": "Claude", "gemini": "Gemini", "argon": "Gemini Argon", "maps": "Google Maps", "video": "Video"}
 
 
 # ---------- Gemini Argon, through the Gemini desktop app ----------
@@ -201,19 +201,30 @@ def _run_argon(mid: str, prompt: str, resume: bool) -> None:
         new = find("New chat", exact=True)
         if new and _invoke(new):
             time.sleep(2)
-        pick = find("Open mode picker")
-        if pick and "Argon" not in pick.name and _invoke(pick):
-            time.sleep(1)
-            item = next((e for e in uia.elements(hwnd, 50011) if "4 Argon" in e.name), None)   # MENUITEM
-            limit = re.search(r"Limit resets (.+)$", item.name if item else "")
-            if limit:               # Google AI Pro's Argon quota is used up (16 Oct: after a 15-min Task)
-                _collapse(pick)
-                raise RuntimeError(f"your Argon limit on Google AI Pro is used up - it resets {limit.group(1)}")
-            if item and _invoke(item):
+        def argon_on():
+            p = find("Open mode picker")
+            return p, bool(p and "Argon" in p.name)
+
+        pick, on = argon_on()
+        for _attempt in range(2):     # the label catches up a moment after the pick - one check failed it (18 Oct 2026)
+            if on:
+                break
+            if pick and _invoke(pick):
                 time.sleep(1)
-            _collapse(pick)
-        pick = find("Open mode picker")
-        if not pick or "Argon" not in pick.name:
+                item = next((e for e in uia.elements(hwnd, 50011) if "4 Argon" in e.name), None)   # MENUITEM
+                limit = re.search(r"Limit resets (.+)$", item.name if item else "")
+                if limit:               # Google AI Pro's Argon quota is used up (16 Oct: after a 15-min Task)
+                    _collapse(pick)
+                    raise RuntimeError(f"your Argon limit on Google AI Pro is used up - it resets {limit.group(1)}")
+                if item and _invoke(item):
+                    time.sleep(1)
+                _collapse(pick)
+            for _ in range(10):
+                time.sleep(0.5)
+                pick, on = argon_on()
+                if on:
+                    break
+        if not on:
             raise RuntimeError("couldn't pick Argon in the Gemini app")
         mode = find("Task", exact=True)
         if mode and _invoke(mode):
@@ -238,6 +249,9 @@ def _run_argon(mid: str, prompt: str, resume: bool) -> None:
     while time.time() < limit:
         time.sleep(5)
         m = next(x for x in load() if x["id"] == mid)
+        import ctypes
+        if ctypes.windll.user32.IsIconic(hwnd):     # minimised, the app stops drawing - the answer never shows (18 Oct 2026)
+            ctypes.windll.user32.ShowWindow(hwnd, 4)    # SW_SHOWNOACTIVATE: back on screen without stealing focus
         names = {e.name for e in uia.elements(hwnd, uia.BUTTON)}
         if m["status"] == "stopped":
             stop_btn = find("Stop response", exact=True)
@@ -364,7 +378,8 @@ def _cmd(m: dict, exe: str, prompt: str, resume: bool) -> list[str]:
            "--allowedTools", " ".join(cfg.get("missions.tools", ["Read", "Write", "Edit", "Glob", "Grep",
                                                                  "WebSearch", "WebFetch",
                                                                  "Bash(python *)", "Bash(node *)"])),
-           "--append-system-prompt", WORKER_RULES]
+           "--append-system-prompt", WORKER_RULES,
+           "--max-budget-usd", f"{float(cfg.get('missions.max_cost_usd', 1.5)):.2f}"]    # Claude Code stops itself there
     return cmd + (["--resume", m["session"]] if resume else ["--session-id", m["session"]])
 
 
@@ -392,8 +407,11 @@ def _parse(worker: str, e: dict) -> tuple[list[str], dict | None]:
         return [_describe(b.get("name", ""), b.get("input") or {})
                 for b in (e.get("message") or {}).get("content") or [] if b.get("type") == "tool_use"], None
     if e.get("type") == "result":
+        capped = "budget" in str(e.get("subtype", ""))
         return [], {"ok": not e.get("is_error") and e.get("subtype") == "success",
-                    "result": re.sub(r"\n+Some connectors.*", "", str(e.get("result") or ""), flags=re.S),
+                    "result": (f"Stopped at the ${float(cfg.get('missions.max_cost_usd', 1.5)):.2f} limit for one mission "
+                               "(missions.max_cost_usd). Say what to finish, or raise the limit." if capped else
+                               re.sub(r"\n+Some connectors.*", "", str(e.get("result") or ""), flags=re.S)),
                     "cost": float(e.get("total_cost_usd") or 0), "turns": int(e.get("num_turns") or 0), "session": None}
     return [], None
 
@@ -426,6 +444,9 @@ def _describe(name: str, inp: dict) -> str:
 def _preview(folder: Path) -> str:
     """The file to show: index.html, else the newest .html, else the newest
     .md (research and Argon's answers), so the phone can read the result."""
+    videos = sorted(folder.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if videos:
+        return videos[0].name
     if (folder / "index.html").exists():
         return "index.html"
     for pattern in ("*.html", "*.pdf", "*.md"):
@@ -443,6 +464,8 @@ def _run(mid: str, prompt: str, resume: bool, retried: bool = False, review: boo
         return _run_argon(mid, prompt, resume)
     if worker == "maps":
         return _run_maps(mid, prompt)
+    if worker == "video":
+        return _run_video(mid, prompt)
     exe = _exe(worker)
     if not exe:
         _update(mid, status="failed", result=f"{WORKERS[worker]}'s agent isn't installed on this PC.", ended=time.time())
@@ -497,8 +520,10 @@ def _run(mid: str, prompt: str, resume: bool, retried: bool = False, review: boo
     turns = int(m.get("turns", 0) or 0) + int((final or {}).get("turns") or 0)
     session = (final or {}).get("session") or m.get("session")
     page = folder / "index.html"
-    if (ok and not review and cfg.get("missions.review", True) and page.exists()
-            and page.stat().st_mtime >= t0 - 5):
+    changed = page.exists() and any(            # the page or anything it loads: a fix to app.js counts (17 Oct 2026)
+        f.stat().st_mtime >= t0 - 5 for f in folder.rglob("*")
+        if f.suffix.lower() in (".html", ".js", ".css") and ".review" not in f.parts)
+    if ok and not review and cfg.get("missions.review", True) and changed:
         # Built or changed a page: look at it in a real browser, and let the
         # worker fix what it sees before the user does. Workers said "I haven't
         # opened it in a browser", and the orb site's sections came up blank
@@ -528,6 +553,26 @@ def _run(mid: str, prompt: str, resume: bool, retried: bool = False, review: boo
         rules.log(f"mission {'done' if ok else 'failed'}: {m['title']}", "missions")
     except Exception:
         pass
+
+
+def _run_video(mid: str, ask: str) -> None:
+    """A chain step that films the animation page an earlier step built into
+    video.mp4 (videorender.py) - the user asked for a video, so they get one."""
+    import os
+    from . import videorender
+    folder = Path(_get(mid)["folder"])
+    _update(mid, status="running", pid=os.getpid())
+    secs = re.search(r"(\d+(?:\.\d+)?)\s*(?:s\b|sec|second)", ask or "", re.I)
+    _note(mid, "filming the animation into an MP4")
+    try:
+        info = videorender.render(folder, seconds=float(secs.group(1)) if secs else None,
+                                  progress=lambda line: _note(mid, line))
+    except Exception as e:
+        _update(mid, status="failed", ended=time.time(), result=f"Couldn't film it: {str(e)[:150]}.")
+        return
+    _update(mid, status="done", ended=time.time(), turns=1, preview=_preview(folder),
+            result=(f"Filmed {info['file']}: {info['seconds']:g} seconds, {info['width']}x{info['height']} at "
+                    f"{info['fps']} fps" + ("" if info["exact"] else " (recorded live - the page had no renderFrame)") + "."))
 
 
 def _run_maps(mid: str, query: str) -> None:
@@ -618,9 +663,26 @@ def _title(task: str) -> str:
     return title[:1].upper() + title[1:] if title else "Mission"
 
 
-def start(task: str, worker: str = "claude", folder: str = "", parent: str = "") -> dict:
-    """One worker on one job. folder and parent: a step of a chain, in the chain's folder."""
+def month_spend() -> float:
+    """What missions have cost on the Claude plan this calendar month (Gemini, Argon and Maps are free)."""
+    first = dt.datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+    # a chain's own cost only adds up its steps - counting both doubled it and tripped the cap early (20 Oct 2026)
+    return round(sum(float(m.get("cost") or 0) for m in load()
+                     if m.get("started", 0) >= first and m.get("worker") != "chain"), 2)
+
+
+def _check_budget(worker: str) -> None:
+    cap = float(cfg.get("missions.monthly_cap_usd", 15))
+    if worker == "claude" and month_spend() >= cap:
+        raise RuntimeError(f"this month's mission budget is used up (${month_spend():.2f} of ${cap:.0f}) - "
+                           "Gemini still works, or raise missions.monthly_cap_usd")
+
+
+def start(task: str, worker: str = "claude", folder: str = "", parent: str = "", loop: str = "") -> dict:
+    """One worker on one job. folder and parent: a step of a chain, in the chain's folder.
+    loop: a run of a loop (loops.py) - quiet; only the loop's outcome is told."""
     worker = worker if worker in WORKERS else "claude"
+    _check_budget(worker)
     running = [m for m in load() if m["status"] in ("running", "starting") and m.get("worker", "claude") == worker]
     if len(running) >= int(cfg.get("missions.max_running", 1)):         # per worker: Claude and Gemini can run side by side
         raise RuntimeError(f"{WORKERS[worker]} is already on a mission ({running[0]['title']}) - wait for it or stop it")
@@ -631,7 +693,7 @@ def start(task: str, worker: str = "claude", folder: str = "", parent: str = "")
     m = {"id": mid, "title": title, "task": task, "folder": str(path), "worker": worker, "parent": parent,
          "session": str(uuid.uuid4()) if worker == "claude" else "",      # Gemini's id arrives with its result
          "status": "starting", "started": time.time(), "ended": None, "progress": [], "result": "",
-         "cost": 0.0, "turns": 0, "preview": "", "followups": []}
+         "cost": 0.0, "turns": 0, "preview": "", "followups": [], "loop": loop}
     with _lock:
         ms = load()
         ms.append(m)
@@ -654,6 +716,7 @@ Workers:
 - "gemini": research - web searches, reading websites, comparing options, finding facts, prices, places, writing reports and documents. Free on the user's Google plan: use it for research.
 - "claude": building - websites (plain HTML/CSS/JS with index.html), programs, scripts, data processing, editing and improving files. Use it for anything that is built or coded.
 - "argon": ONLY if the user explicitly asks for Argon.
+- "video": Athena films an animation page into video.mp4 herself. For ANY video, animation, motion graphic, reel or intro: one "claude" step builds the animation as index.html (it is given the exact video rules automatically - describe the content, look, length and shape), then a last "video" step whose task is only the length and shape, e.g. "15 seconds, 1920x1080". Never ask a worker to write a program or script that renders a video.
 - "maps": Athena reads Google Maps herself - real local places with ratings, addresses, phone numbers and whether each has its own website. Use it FIRST, and only, when the goal is about actual places or businesses (cafes near somewhere, shops with no website) - never for products, prices or general research. Its task is ONLY the Maps search text with the area, e.g. "cafes near Rajpur Road Dehradun" - no instructions. It saves maps.md for later steps.
 
 Rules:
@@ -682,6 +745,12 @@ def plan(goal: str) -> list[dict]:
             for s in steps:
                 if s["worker"] == "maps":
                     s["task"] = _maps_query(s["task"])
+            if (re.search(r"\b(video|animation|motion\s*graphics?|reel|intro|mp4)\b", goal, re.I)
+                    and not any(s["worker"] == "video" for s in steps)):
+                secs = re.search(r"(\d+)\s*(?:s\b|sec|second)", goal, re.I)
+                steps = [s for s in steps if s["worker"] != "claude"][:2] + \
+                        [{"worker": "claude", "task": f"Build the animation for: {goal}"},
+                         {"worker": "video", "task": f"{secs.group(1) if secs else 15} seconds"}]
             return steps
     except Exception as e:
         print(f"[mission plan: {str(e)[:120]} - using the simple plan]")
@@ -704,6 +773,10 @@ def _maps_query(task: str) -> str:
 
 def _step_prompt(c: dict, i: int) -> str:
     steps = c["steps"]
+    if steps[i]["worker"] in ("claude", "gemini", "argon") and any(s["worker"] == "video" for s in steps[i + 1:]):
+        from .videorender import VIDEO_RULES
+        steps = [dict(s) for s in steps]
+        steps[i]["task"] = steps[i]["task"] + "\n\n" + VIDEO_RULES
     done = "\n".join(f"- Step {n + 1} ({WORKERS[s['worker']]}): {s['task']}\n  Result: {(s.get('result') or '')[:600]}"
                      for n, s in enumerate(steps[:i]))
     return (f"This is step {i + 1} of {len(steps)} of a bigger job. The whole goal: {c['task']}\n\n"
@@ -740,7 +813,7 @@ def _run_chain(cid: str, start_at: int = 0) -> None:
             if _get(cid)["status"] == "stopped":
                 return
             try:
-                child = start(step["task"] if step["worker"] == "maps" else _step_prompt(_get(cid), i),
+                child = start(step["task"] if step["worker"] in ("maps", "video") else _step_prompt(_get(cid), i),
                               step["worker"], folder=c["folder"], parent=cid)
             except RuntimeError as e:
                 if time.time() - waited > float(cfg.get("missions.max_minutes", 30)) * 60:
@@ -801,6 +874,7 @@ def follow_up(mid: str, text: str, worker: str = "") -> dict:
         raise RuntimeError("no such mission")
     if m["status"] in ("running", "starting"):
         raise RuntimeError("it's still working - wait for it to finish first")
+    _check_budget(m.get("worker", "claude") if m.get("worker") != "chain" else worker or "claude")
     if m.get("worker") == "chain":      # one more step, by the worker named or the last one
         w = worker if worker in WORKERS else (m["steps"][-1]["worker"] if m.get("steps") else "claude")
         _update(mid, status="starting", ended=None, followups=m.get("followups", []) + [text],
@@ -821,7 +895,7 @@ def stop(mid: str) -> bool:
         for kid in [x for x in load() if x.get("parent") == mid and x["status"] in ("running", "starting")]:
             stop(kid["id"])
         return True
-    if m.get("worker") in ("argon", "maps"):   # their pid is Athena's own: never killed
+    if m.get("worker") in ("argon", "maps", "video"):   # their pid is Athena's own: never killed
         return True
     proc = _procs.get(mid)
     pid = proc.pid if proc else m.get("pid")    # no proc here: the other process (voice / web) started it
@@ -847,6 +921,39 @@ def _latest(which: str = "", worker: str = "") -> dict | None:
         hit = [m for m in ms if words & set(re.findall(r"[a-z]{3,}", (m["title"] + " " + m["task"]).lower()))]
         ms = hit or ms
     return max(ms, key=lambda m: m["started"]) if ms else None
+
+
+_SITE_FILLER = {"the", "my", "our", "website", "site", "page", "landing", "web", "home", "homepage", "webpage", "new", "one",
+                "video", "clip", "animation", "reel", "movie", "that", "made"}
+
+
+def find_site(which: str) -> tuple[str, str] | None:
+    """(title, link or file) of the user's own site that matches every word of
+    `which` - a finished mission (its published link, else its page) or a
+    folder in athena-sites (a video there wins over its page) - the newest wins."""
+    words = set(re.findall(r"[a-z0-9]{3,}", which.lower())) - _SITE_FILLER
+    if not words:
+        return None
+    hits = []                                  # (when, title, where)
+    for m in load():
+        text = set(re.findall(r"[a-z0-9]{3,}", (m["title"] + " " + m["task"]).lower()))
+        if m.get("parent") or m["status"] != "done" or not words <= text:
+            continue
+        page = Path(m["folder"]) / (m.get("preview") or "index.html")
+        where = m.get("published") or (str(page) if page.suffix.lower() in (".html", ".htm") and page.exists() else "")
+        if where:
+            hits.append((m.get("ended") or m["started"], m["title"], where))
+    sites = Path(r"C:\claude code\athena-sites")
+    for d in (p for p in sites.iterdir() if p.is_dir() and not p.name.startswith(".")) if sites.is_dir() else []:
+        if not words <= set(re.findall(r"[a-z0-9]{3,}", d.name.lower())):
+            continue
+        made = sorted(d.glob("*.mp4"), key=lambda p: p.stat().st_mtime) or [p for p in (d / "index.html",) if p.exists()]
+        if made:
+            hits.append((made[-1].stat().st_mtime, d.name.replace("-", " "), str(made[-1])))
+    if not hits:
+        return None
+    _, title, where = max(hits)
+    return title, where
 
 
 def _finished_line(m: dict) -> str:
@@ -893,7 +1000,7 @@ def start_watch(announce) -> None:
             time.sleep(5)
             try:
                 new = [m for m in load() if m["status"] in ("done", "failed") and key(m) not in told
-                       and not m.get("parent")]                  # a chain's steps: only the chain is announced
+                       and not m.get("parent") and not m.get("loop")]   # a chain's steps, a loop's runs: only the whole is told
                 for m in new:
                     told.add(key(m))
                     pass_on(m)
@@ -1091,6 +1198,26 @@ def mission_draft(which: str = "") -> str:
 
 
 @tool(tags=["missions"])
+def site_open(which: str) -> str:
+    """Open one of the user's own websites or videos - one a mission built or
+    published, or a page or video in athena-sites. Use for "open my orb
+    website", "show me the landing page", "play my LOQ video".
+
+    which: the site's name, e.g. "orb" or "desk orb"
+    """
+    import os
+    hit = find_site(which)
+    if not hit:
+        return f"I don't have a site of yours called {which}."
+    title, where = hit
+    if not where.startswith("http") and Path(where).suffix.lower() not in (
+            ".html", ".htm", ".mp4", ".webm", ".mov", ".pdf", ".png", ".jpg", ".jpeg", ".gif"):
+        return f"That one is a {Path(where).suffix} file - open it from its folder: {Path(where).parent}"
+    os.startfile(where)
+    return f"Opened {title}" + (" - your live site." if where.startswith("http") else " - it's only on this PC, not published.")
+
+
+@tool(tags=["missions"])
 def mission_status(which: str = "") -> str:
     """How a mission is going: running or done, what it's doing now, the result.
 
@@ -1167,5 +1294,8 @@ if __name__ == "__main__":
     assert _title("Find a cafe near me with no website and build them one") == "A cafe near me with no website"
     assert _maps_query("Search for cafes near Dehradun and list those that have no website. Save maps.md") == "cafes near Dehradun"
     assert _maps_query("cafes near Rajpur Road Dehradun") == "cafes near Rajpur Road Dehradun"
+    assert "--max-budget-usd" in _cmd({"worker": "claude", "session": "s"}, "claude", "x", False)
+    got = _parse("claude", {"type": "result", "subtype": "error_max_budget_usd", "is_error": True, "result": ""})[1]
+    assert not got["ok"] and "limit for one mission" in got["result"]
     assert _maps_query("Search Google Maps for gyms in Dehradun without a website") == "gyms in Dehradun"
     print("missions: checks pass")

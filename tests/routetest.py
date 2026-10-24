@@ -41,8 +41,19 @@ from jarvis.agent import route, split_simple  # noqa: E402
 # contacts, so the table holds on any machine.
 ROUTES = {
     # missions: Claude Code does a big job in the background
-    "have claude build me a one page website for a cafe": ("mission_start", {"task": "build me a one page website for a cafe", "worker": "claude"}),
-    "athena, ask cloud to make me a snake game in python": ("mission_start", {"task": "make me a snake game in python", "worker": "claude"}),
+    # Claude builds open a live console on the Deck (Hedwig-style, 23 Oct 2026); research and other workers stay missions
+    "have claude build me a one page website for a cafe":
+        ("deck_spawn", {"kind": "claude", "count": 1, "folder": "", "task": "build me a one page website for a cafe"}),
+    "athena, ask cloud to make me a snake game in python":
+        ("deck_spawn", {"kind": "claude", "count": 1, "folder": "", "task": "make me a snake game in python"}),
+    "jarvis start a clod code for my friend's peptide shop website":
+        ("deck_spawn", {"kind": "claude", "count": 1, "folder": "", "task": "build my friend's peptide shop website"}),
+    "build a todo app with claude code": ("deck_spawn", {"kind": "claude", "count": 1, "folder": "", "task": "build a todo app"}),
+    "open claude code and make a snake game": ("deck_spawn", {"kind": "claude", "count": 1, "folder": "", "task": "make a snake game"}),
+    "have claude research the best laptops": ("mission_start", {"task": "research the best laptops", "worker": "claude"}),
+    # flows on the Deck (deck/flows.py), run by name; "workflow" stays a routine
+    "athena, run the weekly summary flow": ("deck_flow_run", {"name": "weekly summary"}),
+    "run flow called release notes": ("deck_flow_run", {"name": "release notes"}),
     "have gemini research the best esp32 microphones": ("mission_start", {"task": "research the best esp32 microphones", "worker": "gemini"}),
     "ask argon to write a study plan for signals": ("mission_start", {"task": "write a study plan for signals", "worker": "argon"}),
     "have gemini argon build a quiz on fourier series": ("mission_start", {"task": "build a quiz on fourier series", "worker": "argon"}),
@@ -53,6 +64,36 @@ ROUTES = {
         ("mission_chain", {"goal": "compare three esp32 boards and make a buying guide"}),
     "ask claude what time it is": None,
     "how's the mission going": ("mission_status", {}),
+    "every 30 minutes, check whether the orb site works on phones until it does":
+        ("loop_start", {"task": "check whether the orb site works on phones", "until": "it does", "every_minutes": 30.0}),
+    "check the orb landing page on phones every hour until the cards fit":
+        ("loop_start", {"task": "check the orb landing page on phones", "until": "the cards fit", "every_minutes": 60.0}),
+    "every half an hour check my LMS for new marks till they are posted":
+        ("loop_start", {"task": "check my LMS for new marks", "until": "they are posted", "every_minutes": 30.0}),
+    "stop the orb loop": ("loop_stop", {"which": "orb"}),
+    "how are my loops": ("loop_status", {}),
+    "does anything need me": ("needs_me", {}),
+    "open the deck": ("deck_open", {"folder": ""}),
+    "open the deck on the orb landing": ("deck_open", {"folder": "orb landing"}),
+    "open two claude consoles on the orb site": ("deck_spawn", {"kind": "claude", "count": 2, "folder": "orb site", "task": ""}),
+    "open two codex consoles on the orb site": ("deck_spawn", {"kind": "codex", "count": 2, "folder": "orb site", "task": ""}),
+    "hand off console 1 to codex: finish the docs": ("deck_handoff", {"frm": "console 1", "to": "codex", "task": "finish the docs"}),
+    "hand console 2 over to a new claude and have it write the tests":
+        ("deck_handoff", {"frm": "console 2", "to": "claude", "task": "write the tests"}),
+    "hand off console 3 to console 1": ("deck_handoff", {"frm": "console 3", "to": "console 1", "task": ""}),
+    "loop console 2 every 10 minutes: run the tests until they all pass":
+        ("deck_loop", {"to": "console 2", "text": "run the tests", "every": 10, "goal": "they all pass"}),
+    "every 5 minutes tell the codex console to check the build": ("deck_loop", {"to": "the codex console", "text": "check the build", "every": 5, "goal": ""}),
+    "stop the loop on console 2": ("deck_loop_stop", {"to": "console 2"}),
+    "open a chat gpt console": ("deck_spawn", {"kind": "chatgpt", "count": 1, "folder": "", "task": ""}),
+    "spin up a gemini agent on athena sites to research esp32 boards":
+        ("deck_spawn", {"kind": "gemini", "count": 1, "folder": "athena sites", "task": "research esp32 boards"}),
+    "what are my consoles doing": ("deck_status", {}),
+    "tell console 2 to run the tests": ("deck_send", {"text": "run the tests", "to": "console 2"}),
+    "tell the gemini console yes": ("deck_send", {"text": "yes", "to": "the gemini console"}),
+    "what does console 1 say": ("deck_read", {"to": "console 1"}),
+    "show me console 2": ("deck_focus", {"to": "console 2"}),
+    "who needs me": ("needs_me", {}),
     "what is the status of my missions": ("mission_status", {}),
     "stop the mission": ("mission_stop", {}),
     "athena, is the emission done?": ("mission_status", {}),
@@ -63,6 +104,10 @@ ROUTES = {
     "open the email draft": ("mission_draft", {}),
     "athena, review my flashcards": ("review_flashcards", {"topic": ""}),
     "athena, do you have any meetings today?": ("teams_meetings", {"day": "today"}),
+    "every monday at 7am, start a mission to scan new AI tools and write me a rollup":
+        ("add_rule", {"when": "every monday at 7am", "do": "start a mission to scan new AI tools and write me a rollup"}),
+    "every sunday at 10pm start a mission to read my LMS files and update my study plan":
+        ("add_rule", {"when": "every sunday at 10pm", "do": "start a mission to read my LMS files and update my study plan"}),
     "revise what i got wrong on fourier series": ("review_flashcards", {"topic": "fourier series"}),
     "what is happening": None,
     "is the machines done": ("mission_status", {}),
@@ -326,6 +371,8 @@ SELECTION = [
     ("i need the physics notes on my mobile", ["send_to_phone"], []),
     ("did my phone send anything", ["open_from_phone"], []),
     ("what can you do", [], ["store_orders", "free_gpu"]),
+    ("how are you", [], ["look_at_screen"]),
+    ("can you see this error", ["look_at_screen"], []),
 ]
 
 
@@ -356,6 +403,17 @@ def check_routes() -> list[str]:
 
 
 def check_selection() -> list[str]:
+    # As in general mode: a mode the user left on (data/mode.json, "study" on 23 Oct)
+    # adds its own tools ahead of the request's and moved the fixed prefix.
+    from jarvis import modes
+    real, modes.groups = modes.groups, lambda: []
+    try:
+        return _check_selection()
+    finally:
+        modes.groups = real
+
+
+def _check_selection() -> list[str]:
     bad = []
     everything = registry.select("", everything=True)
     core = registry.select("")

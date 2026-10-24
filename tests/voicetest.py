@@ -80,6 +80,16 @@ def check_player(bad):
         sp.say("Next answer.")
         if not sp.wait_until_done(3) or not played:
             bad.append("nothing spoken after a stop")
+        # The short lines are made once at load and played without a synthesis.
+        deadline = time.time() + 3
+        while len(sp._clips) < len(voice.CLIPS) and time.time() < deadline:
+            time.sleep(0.02)
+        made = []
+        sp._neural.synth = lambda text, **k: made.append(text) or np.zeros(10, dtype=np.float32)
+        played.clear()
+        sp.say("On it.")
+        if not sp.wait_until_done(3) or len(played) != 1 or made:
+            bad.append(f"a saved clip was made again ({made}) or not played ({len(played)})")
     finally:
         tts.load = real_load
 
@@ -192,11 +202,53 @@ def check_continuation(bad):
         bad.append("mumbled noise after the name taken as a command")
 
 
+def check_hold_to_talk(bad):
+    """The key held for 1 s of near-silence: exactly that span comes back,
+    marked as meant for her - no loudness gate, no silence wait. A key
+    pressed with it (a shortcut) throws the recording away."""
+    import queue as _queue
+    voice._orb_state = voice._orb_level = lambda *_: None
+    block = np.full((voice.BLOCK, 1), 0.001, dtype=np.float32)     # under any loudness gate
+
+    def listen(held_from, held_to, abort_at=None):
+        lis = voice.Listener()
+        lis._ensure_stream = lambda: None
+        n = [0]
+
+        class Blocks:
+            def get(self, timeout=None):
+                n[0] += 1
+                if n[0] > held_to + 3:
+                    raise _queue.Empty
+                lis.held = held_from <= n[0] < held_to
+                if n[0] == abort_at:
+                    lis.aborted = True
+                return block
+
+            def get_nowait(self):
+                raise _queue.Empty
+
+        lis.blocks = Blocks()
+        voice._vad()                           # loaded at start-up in real use; here it would eat max_wait
+        return lis, lis.record_utterance(0.65, max_wait=2.0)
+
+    lis, audio = listen(5, 15)                 # held for blocks 5-14 (1.0 s), 0.3 s before it kept
+    if audio is None or not lis.pushed:
+        bad.append(f"hold-to-talk: nothing returned for a 1 s hold (pushed={lis.pushed})")
+    elif not 1.0 <= len(audio) / voice.SAMPLE_RATE <= 1.5:
+        bad.append(f"hold-to-talk: {len(audio) / voice.SAMPLE_RATE:.1f} s returned for a 1 s hold")
+    lis, audio = listen(5, 15, abort_at=8)
+    if audio is not None:
+        bad.append("hold-to-talk: a shortcut (another key with it) was taken as a sentence")
+
+
 if __name__ == "__main__":
     bad: list[str] = []
-    for check in (check_player, check_fallback, check_text, check_failure_log, check_follow_ups, check_continuation):
+    checks = (check_player, check_fallback, check_text, check_failure_log, check_follow_ups, check_continuation,
+              check_hold_to_talk)
+    for check in checks:
         check(bad)
     for b in bad:
         print("FAIL", b)
-    print(f"6 groups of checks, {len(bad)} failure(s)")
+    print(f"{len(checks)} groups of checks, {len(bad)} failure(s)")
     sys.exit(1 if bad else 0)

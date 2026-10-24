@@ -13,3 +13,8 @@ venv/
 
 # Generated voice samples (say your name, your deadlines)
 voice_samples/
+
+# Athena Deck: its token, board and webview profile; npm packages
+deck/data/
+deck/web/node_modules/
+deck/shell/node_modules/

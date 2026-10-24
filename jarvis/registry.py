@@ -319,9 +319,15 @@ CORE_TOOLS = [
     "open_app", "close_app", "open_file", "open_folder", "find_files",
     "web_search", "read_webpage", "open_url", "get_weather",
     "remember", "recall", "add_reminder", "music", "set_volume",
-    "battery", "system_info", "take_screenshot", "look_at_screen", "read_text", "explain",
+    "battery", "system_info", "take_screenshot", "read_text", "explain",
     "list_skills",
 ]
+
+# Offered only when the request's own words call for them - never as a core
+# tool, a "maybe" by meaning, or a retry extra. look_at_screen is a vision
+# call of 30-110 s, and the model reached for it whenever it was unsure:
+# "how are you?", "please", a mis-heard "Midge, Valorant" (failures, Oct 2026).
+KEYWORD_ONLY = {"look_at_screen"}
 
 _W = r"(?:\w*)"         # any ending: "remind" covers reminder, reminders, reminded
 TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
@@ -398,9 +404,21 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
      ["run_powershell"]),
     ("missions", re.compile(r"\b(?:missions?|claude|gemini|argon|build|website|web\s*site|app|program|script|"
                             r"publish|online|live|draft)" + _W, re.I),
-     ["mission_chain", "mission_start", "mission_status", "mission_stop", "mission_follow_up", "mission_publish", "mission_draft"]),
+     ["mission_chain", "mission_start", "mission_status", "mission_stop", "mission_follow_up", "mission_publish", "mission_draft", "site_open"]),
+    ("deck", re.compile(r"\b(?:deck|board|codex|chat\s*gpt|consoles?|terminals?|agents?|flows?\b)" + _W, re.I),
+     ["deck_open", "deck_spawn", "deck_browse", "deck_status", "deck_send", "deck_read", "deck_focus",
+      "deck_handoff", "deck_loop", "deck_loop_stop", "deck_flow_run"]),
+    ("loops", re.compile(r"\b(?:loops?|looping|until|keep\s+checking|repeat)" + _W, re.I),
+     ["loop_start", "loop_stop", "loop_status"]),
+    ("attention", re.compile(r"\b(?:needs?\s+(?:me|you)|waiting\s+(?:for|on)\s+me|stuck)" + _W, re.I),
+     ["needs_me"]),
     ("routines", re.compile(r"\b(?:routines?|workflows?|mode)\b", re.I),
      ["run_routine", "list_routines", "set_mode"]),
+    ("screen", re.compile(
+        r"\b(?:screens?|monitors?|display|looking\s+at|(?:can\s+you|do\s+you)\s+see|see\s+(?:this|that|what)|"
+        r"(?:this|that)\s+(?:page|tab|window|error|image|picture|photo|chart|graph|diagram|code|message|popup|dialog))\b",
+        re.I),
+     ["look_at_screen"]),
 ]
 
 
@@ -465,7 +483,7 @@ def related(request: str, have: list[str], k: int = 8) -> list[str]:
     shop = bool(_SHOP_WORDS.search(request or ""))
     scored = []
     for n, t in REGISTRY.items():
-        if n in have or not _visible(t, shop):
+        if n in have or n in KEYWORD_ONLY or not _visible(t, shop):
             continue
         hit = len(words & _terms(n.replace("_", " ") + " " + t.description))
         if hit:
@@ -538,7 +556,7 @@ def by_meaning(request: str, have: list[str], k: int = 6) -> list[str]:
             n = _SEM["names"][i]
             t = REGISTRY.get(n)
             # Risky tools only ever come from the keywords, never as a maybe.
-            if (t and n not in have and _visible(t, shop)
+            if (t and n not in have and n not in KEYWORD_ONLY and _visible(t, shop)
                     and n not in set(cfg.get("safety.ask_first", []) or [])):
                 out.append(str(n))
                 if len(out) >= k:

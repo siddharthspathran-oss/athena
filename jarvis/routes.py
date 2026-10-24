@@ -820,7 +820,12 @@ _R_RESUME = re.compile(_R_LEAD + r"(?:resume|restart|enable|turn\s+on|start)\s+(
 _R_LIST = re.compile(_R_LEAD + r"(?:list|show|what\s+are)\s+(?:me\s+)?(?:my\s+|your\s+|all\s+)?(?:automations|rules)\W*$", re.I)
 _R_DID = re.compile(_R_LEAD + r"what\s+(?:did|have)\s+you\s+(?:done|do)\s+(?:on\s+your\s+own|by\s+yourself|"
                     r"automatically)(?:\s+today)?\W*$", re.I)
-_R_TRIGGER = r"(?:every\s*time|whenever|each\s+time|when|every\s+(?:day|morning|night|evening|\d+\s+\w+|hour|minute)|daily|hourly|at\s+\d)"
+_R_DAYS = r"(?:mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?s?|week(?:day|end)s?"
+_R_TRIGGER = (r"(?:every\s*time|whenever|each\s+time|when|every\s+(?:day|morning|night|evening|\d+\s+\w+|hour|minute)|"
+              r"(?:every|on|each)\s+(?:" + _R_DAYS + r")|daily|hourly|at\s+\d)")
+# "every Monday at 7am start a mission to ..." - a scheduled mission (rules.py runs it; missions.py does it)
+_R_SCHEDULED_MISSION = re.compile(r"^\W*(?:(?:athena|hey|ok|okay|please)\W+)*(?P<when>(?:every|on|each)\s+.{2,50}?)\s*,?\s*"
+                                  r"(?P<do>(?:start|run|launch|begin|do)\s+an?\s+(?:big\s+|new\s+)?mission\b.{5,})$", re.I)
 _R_WHEN_FIRST = re.compile(_R_LEAD + r"(?P<when>" + _R_TRIGGER + r"[^,]{2,60}?)\s*,\s*(?P<do>.{3,})$", re.I)
 _R_DO_FIRST = re.compile(_R_LEAD + r"(?P<do>(?!remind)(?:play|open|close|connect|turn|start|lock|organi[sz]e|tidy|clean|"
                          r"check|run|say|send|switch)\b.{2,80}?)\s+(?P<when>(?:every\s*time|whenever|every\s+(?:day|morning|"
@@ -899,7 +904,130 @@ def _direct_watch(text: str) -> tuple[str, dict] | None:
     return "watch_for_changes", {"what": what, "every_hours": hours}
 
 
+_R_EVERY = r"every\s+(?:(?P<n>\d+(?:\.\d+)?)\s*|(?P<half>half\s+(?:an?\s+)?)|an?\s+)?(?P<u>min(?:ute)?s?|hours?|hrs?)"
+_R_UNTIL = r"\s*,?\s+(?:until|till|untill|and\s+stop\s+(?:when|once))\s+(?P<goal>.{3,}?)\W*$"
+# "every 30 minutes, check the orb site on phones until it works" - a loop (loops.py) that retires itself
+_R_LOOP_A = re.compile(_R_LEAD + _R_EVERY + r"\s*,?\s*(?P<task>.{6,}?)" + _R_UNTIL, re.I)
+_R_LOOP_B = re.compile(_R_LEAD + r"(?:keep\s+)?(?P<task>.{6,}?)\s*,?\s+" + _R_EVERY + _R_UNTIL, re.I)
+
+
+def _loop_minutes(m: re.Match) -> float:
+    n = 0.5 if m.group("half") else float(m.group("n") or 1)
+    return n * (60 if m.group("u").lower().startswith("h") else 1)
+
+
+_R_N = r"(?P<n>\d+|an?|one|two|three|four|five|six)"
+_R_K = r"(?P<k>codex|chat[\s-]*gpt|gpt|claude|cloud|clawed|gemini|jemini|antigravity|powershell|shell)"
+_R_CON = r"(?:consoles?|agents?|terminals?|sessions?)"
+_R_ON = r"(?:\s+(?:on|in|for|at)\s+(?:the\s+|my\s+)?(?P<f>.+?))?(?:\s+(?:to|and\s+(?:have|get|tell)\s+(?:it|them)(?:\s+to)?)\s+(?P<t>.+?))?\W*$"
+_R_WHO = r"(?P<to>(?:console|terminal)\s+\S+|(?:the\s+)?(?:\S+\s+){0,2}(?:console|terminal)|(?:claude|gemini)\s+\d+)"
+# A build said to Claude opens a live Claude console on the Deck, in a folder
+# of its own, instead of a hidden mission - Hedwig's "start a Claude Code for my
+# friend's peptide shop website" (23 Oct 2026). Whisper hears "clod", "cloud".
+# Gemini, Argon and "start a mission ..." stay missions.
+_R_CL = r"(?:claude|cloud|clawed|clod|clode)"
+_R_BUILD_VERB = r"(?:build|make|create|write|design|code|program|develop|generate|put\s+together)\b"
+_R_CLAUDE_CODE = re.compile(_R_LEAD + r"(?:start|open|launch|spin\s+up|fire\s+up|use|get)\s+(?:up\s+)?(?:a\s+|an\s+)?(?:new\s+)?"
+                            + _R_CL + r"\s+code(?:\s+(?:session|console|agent))?\s+(?P<p>for|to|and)\s+(?P<t>.+?)\W*$", re.I)
+_R_BUILD_WITH = re.compile(_R_LEAD + r"(?P<t>" + _R_BUILD_VERB + r".+?)\s+(?:with|using|in|on)\s+" + _R_CL + r"(?:\s+code)?\W*$", re.I)
+_R_HAVE_CLAUDE = re.compile(_R_LEAD + r"(?:have|ask|get|tell|let)\s+" + _R_CL + r"(?:\s+code)?\s+(?:to\s+)?(?P<t>" + _R_BUILD_VERB + r".+?)\W*$",
+                            re.I)
+
+
+def _claude_build(text: str) -> tuple[str, dict] | None:
+    m = _R_CLAUDE_CODE.match(text) or _R_BUILD_WITH.match(text) or _R_HAVE_CLAUDE.match(text)
+    if not m:
+        return None
+    task = m.group("t").strip()
+    if m.groupdict().get("p") == "for" and not re.match(_R_BUILD_VERB, task, re.I):
+        task = "build " + task                    # "a claude code for my cafe's website"
+    return "deck_spawn", {"kind": "claude", "count": 1, "folder": "", "task": task}
+
+
+def _deck_build_newer() -> bool:
+    """The last thing Claude was asked to build is a Deck console, not a mission."""
+    try:
+        from . import deck_link, missions
+        last = deck_link.last_build()
+        return bool(last) and last > max((m["started"] for m in missions.load() if m.get("worker", "claude") == "claude"),
+                                          default=0)
+    except Exception:
+        return False
+
+
+def _direct_deck(text: str) -> tuple[str, dict] | None:
+    """Athena Deck (deck_link.py): the board of agent consoles."""
+    build = _claude_build(text)
+    if build:
+        return build
+    # A flow on the board (deck/flows.py), run like a tool: "run the weekly summary flow" ("workflow" is a routine).
+    m = re.match(_R_LEAD + r"(?:run|start|kick\s+off|trigger)\s+(?:the\s+|my\s+)?(?:(?P<n>.+?)\s+flow|flow\s+(?:called\s+)?(?P<n2>.+?))"
+                 r"(?:\s+(?:on|in)\s+the\s+deck)?\W*$", text, re.I)
+    if m:
+        return "deck_flow_run", {"name": (m.group("n") or m.group("n2") or "").strip()}
+    m = re.match(_R_LEAD + r"(?:open|load|show(?:\s+me)?|pull\s+up|search(?:\s+for)?)\s+(?P<s>.{2,80}?)\s+(?:on|in)\s+(?:the\s+|my\s+)?deck\W*$",
+                 text, re.I)
+    if m and not re.match(r"(?:the\s+|my\s+)?(?:deck|board)$", m.group("s"), re.I):
+        return "deck_browse", {"site": m.group("s").strip()}
+    m = re.match(_R_LEAD + r"(?:open|launch|start|show(?:\s+me)?|bring\s+up)\s+(?:the\s+|my\s+|athena\s+)?(?:deck|agent\s+board)"
+                 r"(?:\s+(?:on|for|in)\s+(?:the\s+|my\s+)?(?P<f>.+?))?\W*$", text, re.I)
+    if m:
+        return "deck_open", {"folder": (m.group("f") or "").strip()}
+    m = re.match(_R_LEAD + r"(?:open|start|launch|spin\s+up|fire\s+up|give\s+me|put)\s+" + _R_N + r"\s+(?:new\s+)?" + _R_K + r"s?"
+                 r"(?:\s+" + _R_CON + r")?" + _R_ON, text, re.I) \
+        or re.match(_R_LEAD + r"(?:open|start|launch|spin\s+up|fire\s+up)\s+(?:a\s+new\s+)?" + _R_K + r"\s+" + _R_CON + _R_ON, text, re.I)
+    if m:
+        n = (m.groupdict().get("n") or "1").lower()
+        count = int(n) if n.isdigit() else {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}[n]
+        return "deck_spawn", {"kind": re.sub(r"[\s-]+", "", m.group("k").lower()), "count": count, "folder": (m.group("f") or "").strip(),
+                              "task": (m.group("t") or "").strip()}
+    if re.match(_R_LEAD + r"(?:what\s+are|how\s+are|what'?s|check(?:\s+on)?)\s+(?:my\s+|the\s+)?(?:consoles|deck)"
+                r"(?:\s+(?:doing|up\s+to|going|status))?\W*$|^\W*(?:deck|consoles?)\s+status\W*$", text, re.I):
+        return "deck_status", {}
+    # "hand off console 1 to codex: finish the docs", "hand console 2 over to a new claude and have it write the tests"
+    m = re.match(_R_LEAD + r"(?:hand\s+off|hand|pass)\s+" + _R_WHO + r"(?:'s\s+work)?\s+(?:off\s+|over\s+)?to\s+(?:a\s+new\s+|new\s+|the\s+)?"
+                 r"(?P<dst>[\w\s-]+?)(?:(?:\s*[:,]\s*|\s+and\s+(?:have|get|tell)\s+(?:it|them)(?:\s+to)?\s+)(?P<t>.+?))?\W*$", text, re.I)
+    if m:
+        return "deck_handoff", {"frm": m.group("to").strip(), "to": m.group("dst").strip(), "task": (m.group("t") or "").strip()}
+    # "loop console 2 every 10 minutes: run the tests until they pass", "every 5 minutes tell console 2 to check the build"
+    _until = r"(?:\s+until\s+(?P<g>.+?))?\W*$"
+    m = re.match(_R_LEAD + r"loop\s+" + _R_WHO + r"\s+every\s+(?P<m>\d+)\s*(?:min(?:ute)?s?|m)\b\s*[:,]?\s*(?:to\s+)?(?P<t>.+?)" + _until, text, re.I) \
+        or re.match(_R_LEAD + r"every\s+(?P<m>\d+)\s*(?:min(?:ute)?s?|m)\b\s*,?\s*(?:tell|ask)\s+" + _R_WHO + r"\s+(?:to\s+)?(?P<t>.+?)" + _until, text, re.I)
+    if m:
+        return "deck_loop", {"to": m.group("to").strip(), "text": m.group("t").strip(), "every": int(m.group("m")), "goal": (m.group("g") or "").strip()}
+    m = re.match(_R_LEAD + r"(?:stop|pause|cancel|end)\s+(?:the\s+|all\s+(?:the\s+)?)?loops?\s+on\s+" + _R_WHO + r"\W*$", text, re.I)
+    if m:
+        return "deck_loop_stop", {"to": m.group("to").strip()}
+    m = re.match(_R_LEAD + r"(?:tell|ask)\s+" + _R_WHO + r"\s+(?:to\s+)?(?P<t>.+?)\W*$", text, re.I)
+    if m:
+        return "deck_send", {"text": m.group("t").strip(), "to": m.group("to").strip()}
+    m = re.match(_R_LEAD + r"what\s+(?:does|did|is)\s+" + _R_WHO + r"\s+(?:say|saying|asking|showing|want|need)\W*$", text, re.I) \
+        or re.match(_R_LEAD + r"read\s+(?:me\s+)?" + _R_WHO + r"\W*$", text, re.I)
+    if m:
+        return "deck_read", {"to": m.group("to").strip()}
+    m = re.match(_R_LEAD + r"(?:show\s+me|go\s+to|jump\s+to|switch\s+to|focus(?:\s+on)?)\s+" + _R_WHO + r"\W*$", text, re.I)
+    if m:
+        return "deck_focus", {"to": m.group("to").strip()}
+    return None
+
+
 def _direct_rules(text: str) -> tuple[str, dict] | None:
+    deck = _direct_deck(text)
+    if deck:
+        return deck
+    m = _R_LOOP_A.match(text) or _R_LOOP_B.match(text)
+    if m:
+        task = re.sub(r"^(?:to|and)\s+", "", m.group("task").strip(" ,"), flags=re.I)
+        return "loop_start", {"task": task, "until": m.group("goal").strip(), "every_minutes": _loop_minutes(m)}
+    m = re.match(_R_LEAD + r"(?:stop|cancel|end|kill)\s+(?:the\s+|my\s+)?(?P<w>.{0,40}?)\s*loop(?:ing)?\W*$", text, re.I)
+    if m:
+        return "loop_stop", {"which": m.group("w").strip()}
+    if re.match(_R_LEAD + r"(?:how\s+are|what\s+are|show(?:\s+me)?|check(?:\s+on)?)\s+(?:my\s+|the\s+)?loops?"
+                r"(?:\s+(?:doing|going))?\W*$|^\W*loops?\s+status\W*$", text, re.I):
+        return "loop_status", {}
+    if re.match(_R_LEAD + r"(?:does\s+)?(?:anything|anyone|anybody|something|who|what)\s+(?:else\s+)?(?:needs?\s+me|"
+                r"is\s+waiting\s+(?:for|on)\s+me|needs\s+my\s+(?:attention|help|ok|answer))\W*$", text, re.I):
+        return "needs_me", {}
     m = _R_PAUSE.match(text)
     if m:
         n = int(m.group("n") or 0) * (60 if (m.group("u") or "").startswith("hour") else 1)
@@ -991,6 +1119,12 @@ def _direct_rules(text: str) -> tuple[str, dict] | None:
                  r"(?:\s+(?:for|of|in)\s+(?P<g2>.+?))?\W*$", text, re.I)
     if m and _goals_active():
         return "goal_start", {"goal": (m.group("g") or m.group("g2") or "").strip()}
+    # "open my orb website" - one of the user's own sites (a mission's, or a page in athena-sites);
+    # only when one matches, so "open the youtube website" still reaches the browser.
+    m = re.match(_R_LEAD + r"(?:open|show(?:\s+me)?|pull\s+up|launch|load|play|watch)\s+(?:up\s+)?(?:the\s+|my\s+)?(?P<w>.{2,60}?)\s+"
+                 r"(?:web\s*site|site|landing\s+page|home\s*page|web\s*page|page|video|clip|animation|reel)\W*$", text, re.I)
+    if m and _site_known(m.group("w")):
+        return "site_open", {"which": m.group("w").strip()}
     # Missions (missions.py): Claude Code or Google's Gemini agent does a big job
     # in the background. Whisper often hears "Claude" as "cloud" or "clawed".
     # "Argon" (Gemini 4 Argon) runs in the Gemini app; Whisper may hear "argan" or "aragon".
@@ -999,6 +1133,8 @@ def _direct_rules(text: str) -> tuple[str, dict] | None:
                         "gemini" if (m.group("w") or "").lower() in ("gemini", "jemini") else "claude")
     m = re.match(_R_LEAD + r"(?:have|ask|get|tell|let)\s+" + cl + r"\s+(?:to\s+)?(?P<v>change|add|fix|update|tweak|edit|remove|make\s+the|make\s+it)\b"
                  r"(?P<t>.*)$", text, re.I)
+    if m and worker(m) == "claude" and _deck_build_newer():
+        return "deck_send", {"text": (m.group("v") + m.group("t")).strip(), "to": "claude"}
     if m and _missions_exist():
         return "mission_follow_up", {"instruction": (m.group("v") + m.group("t")).strip(), "worker": worker(m)}
     m = re.match(_R_LEAD + r"(?:have|ask|get|tell|let)\s+" + cl + r"\s+(?:to\s+)?"
@@ -1035,6 +1171,11 @@ def _direct_rules(text: str) -> tuple[str, dict] | None:
     if re.match(_R_LEAD + r"(?:every\s+(?:evening|night)\s*,?\s*)?(?:tell|remind|warn)\s+me\s+(?:what'?s|what\s+is|about\s+"
                 r"(?:anything|things|tasks))\s+due\s+(?:by\s+)?tomorrow(?:\s+every\s+(?:evening|night))?\W*$", text, re.I):
         return "add_rule", {"when": "every day at 8pm", "do": "watch:due_soon"}
+    m = _R_SCHEDULED_MISSION.match(text)
+    if m:
+        from .rules import parse_when
+        if parse_when(m.group("when")):
+            return "add_rule", {"when": m.group("when").strip(" ,"), "do": m.group("do").strip(" .")}
     m = _R_WHEN_FIRST.match(text) or _R_DO_FIRST.match(text)
     if m:
         from .rules import parse_when
@@ -1797,6 +1938,14 @@ _PRIVATE = re.compile(
 PRIVATE_TOOLS = {"whatsapp_message", "whatsapp_call", "compose_email", "add_contact", "contact_info",
                  "list_contacts", "remove_contact", "inbox_summary", "call_number", "end_call",
                  "connect_gmail_drafts", "call_me"}
+
+
+def _site_known(which: str) -> bool:
+    try:
+        from . import missions
+        return missions.find_site(which) is not None
+    except Exception:
+        return False
 
 
 def _missions_exist() -> bool:

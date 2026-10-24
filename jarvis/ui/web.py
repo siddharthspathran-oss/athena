@@ -890,6 +890,8 @@ def _overview() -> dict:
                               for t in goals.today_tasks(g) if not t["done"]][:4]
         data["missions"] = [{"title": m["title"], "status": m["status"]} for m in missions.load()
                             if not m.get("parent") and m["status"] in ("running", "starting")]
+        from .. import attention
+        data["needs"] = [{"who": i["who"], "title": i["title"]} for i in attention.items()][:5]
     except Exception:
         pass
     return data
@@ -984,7 +986,36 @@ def _live_payload() -> dict:
     voice["time"] = time.strftime("%H:%M:%S")
     from .. import modes
     voice["mode"] = modes.current()          # read here: data/mode.json is shared by every process
+    voice["jobs"] = _jobs()
     return voice
+
+
+_JOBS: dict = {"t": 0.0, "v": []}
+
+
+def _jobs() -> list[dict]:
+    """What is working in the background, for the HUD's timer chips: Deck
+    consoles Athena started on a task, and running missions (Hedwig's
+    "Claude Code · Building your website · 11s", 23 Oct 2026). /live is polled
+    every 300 ms, so this is worked out at most every 2 s."""
+    if time.time() - _JOBS["t"] < 2:
+        return _JOBS["v"]
+    out: list[dict] = []
+    try:
+        from .. import deck_link
+        out += [{"who": j["who"], "title": j["title"], "since": j["started"], "state": j["state"], "console": j["id"]}
+                for j in deck_link.jobs() if deck_link.job_active(j)]
+    except Exception:
+        pass
+    try:
+        from .. import missions
+        out += [{"who": missions.WORKERS.get(m.get("worker"), "Athena"), "title": m["title"], "since": m["started"],
+                 "state": m["status"], "mission": m["id"]}
+                for m in missions.load() if m["status"] in ("running", "starting") and not m.get("parent") and not m.get("loop")]
+    except Exception:
+        pass
+    _JOBS.update(t=time.time(), v=out)
+    return out
 
 
 def _hud_page() -> bytes:
@@ -1035,6 +1066,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, _hud_page(), "text/html; charset=utf-8")
         elif path == "/classic":
             self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/stage":
+            # The floating panel (ui/stage_window.py); like the HUD, no data in the page itself.
+            self._send(200, (Path(__file__).parent / "stage.html").read_bytes(), "text/html; charset=utf-8")
         elif path == "/live":
             if not self._authorised():
                 self._json(401, {"error": "Bad or missing token."})
@@ -1082,7 +1116,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/sw.js":
             self._send(200, SERVICE_WORKER.encode("utf-8"),
                        "application/javascript; charset=utf-8")
-        elif path in ("/face.js", "/hud.js", "/hud.css"):
+        elif path in ("/face.js", "/hud.js", "/hud.css", "/neuron-brain.js", "/stage.js", "/stage.css"):
             # The HUD's code and styles (no data in them, so no token): served
             # from disk, so an edit only needs a page reload. hud.js and hud.css
             # came out of hud.html on 16 Oct 2026 (it had grown past 200 KB).
@@ -1138,6 +1172,31 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- files between the PC and the phone ----------
 
+    def _range_start(self, size: int):
+        """Answers a Range request's status line and range headers; returns
+        (start, end) to send, or None after a 416. Ranges: a big video resumes
+        after a dropped connection and a player can seek - and phone/WebView
+        players won't play a video at all from a server that ignores them."""
+        start, end = 0, size - 1
+        rng = re.match(r"bytes=(\d*)-(\d*)$", self.headers.get("Range", "") or "")
+        if rng and (rng.group(1) or rng.group(2)):
+            if rng.group(1):
+                start = int(rng.group(1))
+                end = min(int(rng.group(2)), size - 1) if rng.group(2) else size - 1
+            else:
+                start = max(0, size - int(rng.group(2)))
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return None
+        self.send_response(206 if rng and (start, end) != (0, size - 1) else 200)
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Accept-Ranges", "bytes")
+        if (start, end) != (0, size - 1):
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        return start, end
+
     def _serve_share(self, share_id: str) -> None:
         """A file the PC shared with the phone (jarvis/share.py).
 
@@ -1159,7 +1218,6 @@ class Handler(BaseHTTPRequestHandler):
                        "text/plain; charset=utf-8")
             return
         import mimetypes
-        import re
 
         size = target.stat().st_size
         quoted = urllib.parse.quote(target.name)
@@ -1167,27 +1225,11 @@ class Handler(BaseHTTPRequestHandler):
         # The real type, not application/octet-stream: with nosniff the phone
         # saved a video as unknown data and showed "no preview" (2 Oct 2026).
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        # Ranges: a big video resumes after a dropped connection, and a player
-        # can seek, instead of starting the whole download again.
-        start, end = 0, size - 1
-        rng = re.match(r"bytes=(\d*)-(\d*)$", self.headers.get("Range", "") or "")
-        if rng and (rng.group(1) or rng.group(2)):
-            if rng.group(1):
-                start = int(rng.group(1))
-                end = min(int(rng.group(2)), size - 1) if rng.group(2) else size - 1
-            else:
-                start = max(0, size - int(rng.group(2)))
-            if start > end or start >= size:
-                self.send_response(416)
-                self.send_header("Content-Range", f"bytes */{size}")
-                self.end_headers()
-                return
-        self.send_response(206 if rng and (start, end) != (0, size - 1) else 200)
+        span = self._range_start(size)
+        if span is None:
+            return
+        start, end = span
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(end - start + 1))
-        self.send_header("Accept-Ranges", "bytes")
-        if (start, end) != (0, size - 1):
-            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header("Content-Disposition",
                          f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}")
         self.send_header("Cache-Control", "no-store")
@@ -1477,12 +1519,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"No such file.", "text/plain; charset=utf-8")
             return
         body = target.read_bytes()
-        self.send_response(200)
+        span = self._range_start(len(body))
+        if span is None:
+            return
+        body = body[span[0]:span[1] + 1]
         # .md and friends as plain text: readable on the phone instead of a download
         ctype = ("text/plain; charset=utf-8" if target.suffix.lower() in (".md", ".txt", ".csv")
                  else mimetypes.guess_type(target.name)[0] or "text/plain; charset=utf-8")
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-popups allow-modals")

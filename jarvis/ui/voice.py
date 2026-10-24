@@ -26,6 +26,13 @@ SAMPLE_RATE = 16000
 BLOCK = 1600          # 100 ms blocks
 MIN_SPEECH_S = 0.4    # ignore blips shorter than this
 MAX_UTTERANCE_S = 15.0  # hard cap on one recording
+HOLD_MAX_S = 60.0     # hard cap on one hold-to-talk recording (a key stuck down)
+MENU_MASK = 0xE8      # an unassigned virtual key: sent while an Alt hold key is down (_watch_hold_key)
+PARTIAL_BLOCKS = 4    # while the key is held, the words so far are read again every 0.4 s (the Stage)
+# Short lines said again and again before acting (agent._acknowledge, routes._SLOW_TOOLS):
+# synthesised once at start-up, then played with no wait.
+CLIPS = ("Yes?", "On it.", "Opening it.", "Sending it.", "Calling.", "Ringing your phone.",
+         "Bringing up your phone.", "Okay, I'll leave it.", "Going quiet.")
 CONFIRM_TIMEOUT = 12.0  # how long to wait for a yes/no before giving up
 
 # The on-screen orb, when enabled. A module-level handle keeps the state calls
@@ -689,6 +696,7 @@ class Speaker:
         self._synthing = threading.Event()
         self._neural_loading = threading.Event()
         self._play_q: queue.Queue = queue.Queue()
+        self._clips: dict[str, np.ndarray] = {}          # CLIPS, made once the voice is loaded
         threading.Thread(target=self._loop, daemon=True).start()
         self._ready.wait(timeout=10)
 
@@ -764,6 +772,9 @@ class Speaker:
                     time.sleep(0.1)
                 if self._neural is None:
                     self._synthing.clear()
+            if self._neural is not None and text in self._clips:     # said many times: made once, played at once
+                self._play_q.put((self._gen, text, self._clips[text], self._neural.sample_rate))
+                continue
             if self._neural is not None:
                 gen = self._gen
                 self._synthing.set()
@@ -838,6 +849,14 @@ class Speaker:
             self._neural = engine
             self._backend = engine.name
         self._neural_loading.clear()
+        if engine is not None:
+            # The short lines she says before acting ("On it.", "Opening it."), made now so
+            # they play the instant they're needed instead of after a synthesis (24 Oct 2026).
+            for line in CLIPS:
+                try:
+                    self._clips[line] = _breathe(engine.synth(_for_speech(line)), line, engine.sample_rate)
+                except Exception:
+                    break
 
     def _play_loop(self) -> None:
         import sounddevice as sd
@@ -1079,6 +1098,10 @@ class Listener:
         self._stream = None
         self.last_wait = 0.0      # how long the last sentence waited for its end
         self.floor = 0.0          # the room's quiet level, learned as it listens
+        self.held = False         # the hold-to-talk key is down (_watch_hold_key)
+        self.aborted = False      # another key went down with it: a shortcut, not a sentence
+        self.pushed = False       # the last recording was made with the key held: it was meant for her
+        self.on_partial = None    # (audio so far) -> None: the Stage's live words while the key is held
 
     def _callback(self, indata, _frames, _t, status) -> None:
         try:
@@ -1142,6 +1165,8 @@ class Listener:
                 self._ensure_stream()
                 continue
             _orb_level(float(np.sqrt(np.mean(block ** 2))))
+            if self.held:
+                return "key"
             buf = np.concatenate([buf, (np.clip(block.flatten(), -1, 1) * 32767).astype(np.int16)])
             while len(buf) >= pp.frame_length:
                 frame, buf = buf[:pp.frame_length], buf[pp.frame_length:]
@@ -1210,13 +1235,15 @@ class Listener:
         vad_silence = float(cfg.get("voice.vad_silence", 0.45))
         heard_speech = False
         next_check = 0
+        pushing = False
+        self.pushed = False
 
         self._ensure_stream()
         while True:
-            if max_wait is not None and not speaking:
+            if max_wait is not None and not speaking and not self.held:
                 if time.time() - started_waiting > max_wait:
                     return None, False
-            if until is not None and not speaking and until():
+            if until is not None and not speaking and not self.held and until():
                 return None, False
             try:
                 block = self.blocks.get(timeout=1.0)
@@ -1230,6 +1257,27 @@ class Listener:
 
             rms = float(np.sqrt(np.mean(block ** 2)))
             _orb_level(rms)
+            # Hold-to-talk: the key decides where the sentence starts and
+            # ends - no loudness gate, no wait for silence, no wake word.
+            if self.held and not pushing:
+                pushing = True
+                # What was already being recorded, or the 0.3 s before the press.
+                captured = captured if speaking else list(preroll)[-3:]
+                preroll.clear()
+                _orb_state("listening")
+            if pushing:
+                captured.append(block)
+                if self.held and len(captured) * BLOCK / SAMPLE_RATE < HOLD_MAX_S:
+                    if self.on_partial and len(captured) % PARTIAL_BLOCKS == 0:
+                        self.on_partial(np.concatenate(captured).flatten())
+                    continue
+                audio = np.concatenate(captured).flatten()
+                if self.aborted or len(audio) / SAMPLE_RATE < MIN_SPEECH_S:      # a shortcut or a tap
+                    pushing = speaking = False
+                    captured = []
+                    continue
+                self.last_wait, self.pushed = 0.0, True
+                return audio, False
             # The threshold follows the room: a little above its own quiet, not
             # a fixed 0.012 - two metres away you peaked at 0.02 and mostly sat
             # under it (4 Oct 2026). Never below voice.silence_rms.
@@ -1291,6 +1339,115 @@ class Listener:
                     if gap >= vad_silence and len(captured) * BLOCK / SAMPLE_RATE >= MIN_SPEECH_S:
                         self.last_wait = gap
                         return np.concatenate(captured).flatten(), False
+
+def _watch_hold_key(listener: Listener, speaker: "Speaker") -> str:
+    """Hold-to-talk (voice.hold_key): hold it, speak, let go - she answers.
+
+    Hedwig's Space bar (23 Oct 2026). The key marks where the sentence starts
+    and ends, so there is no wake word, no wait for silence, and no room
+    chatter caught on the way: since 16 Oct nearly every fumble left was a
+    mis-heard fragment ("photoshoot, stay away from me, sir" sent a message).
+    Pressing it while she talks cuts her off. Another key pressed with it is
+    a shortcut (Ctrl+C), and that recording is thrown away.
+    Returns the key's name, or "" when off or unavailable.
+    """
+    key = str(cfg.get("voice.hold_key", "right alt") or "").strip().lower()
+    if not key:
+        return ""
+    try:
+        import keyboard
+    except Exception as e:
+        print(f"[hold-to-talk off: {e}]")
+        return ""
+    # By name: Right Ctrl shares a scan code with the left one. Right Alt is
+    # named "alt gr" on some layouts and "right menu" by some Windows builds.
+    names = {"right alt": {"right alt", "alt gr", "right menu"}}.get(key, {key})
+    is_alt = "alt" in key or "menu" in key
+
+    def mask_menu() -> None:
+        # Alt pressed and released on its own opens the window's menu bar.
+        # An unassigned key (vk E8) while it is down makes it a combination,
+        # so letting go does nothing - AutoHotkey's "menu mask key".
+        import ctypes
+        ctypes.windll.user32.keybd_event(MENU_MASK, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(MENU_MASK, 0, 2, 0)          # KEYEVENTF_KEYUP
+
+    def on_event(e) -> None:
+        if e.scan_code == -MENU_MASK:              # our own mask key coming back through the hook
+            return
+        if (e.name or "").lower() in names:
+            if e.event_type == "down" and not listener.held:
+                listener.aborted, listener.held = False, True
+                if is_alt:
+                    mask_menu()
+                if speaker.busy():
+                    speaker.stop()
+            elif e.event_type == "up":
+                listener.held = False
+        elif e.event_type == "down" and listener.held:
+            listener.aborted = True
+
+    keyboard.hook(on_event)
+    return key
+
+
+class _OneAtATime:
+    """Whisper, one transcription at a time. The Stage's live words run on their
+    own thread next to the main loop and the phone's voice; faster-whisper
+    decodes lazily, so the segments are read inside the lock."""
+
+    def __init__(self, model) -> None:
+        self.model, self.lock = model, threading.Lock()
+
+    def transcribe(self, *a, **k):
+        with self.lock:
+            segs, info = self.model.transcribe(*a, **k)
+            return list(segs), info
+
+    def __getattr__(self, name):
+        return getattr(self.model, name)
+
+
+class _Partials:
+    """The words so far while the key is held, for the Stage (24 Oct 2026,
+    Hedwig shows them as you speak). Only the newest audio is read - a pass
+    that would wait behind another is skipped, and nothing read after you let
+    go is shown."""
+
+    def __init__(self, stt) -> None:
+        self.stt, self.audio, self.gen = stt, None, 0
+        self.wake = threading.Event()
+        threading.Thread(target=self._loop, daemon=True, name="stage-partials").start()
+
+    def feed(self, audio) -> None:
+        self.audio = (self.gen, audio)
+        self.wake.set()
+
+    def stop(self) -> None:
+        self.gen += 1
+        self.audio = None
+
+    def _loop(self) -> None:
+        from .. import stage
+        while True:
+            self.wake.wait()
+            self.wake.clear()
+            job, self.audio = self.audio, None
+            if not job or job[0] != self.gen or len(job[1]) < SAMPLE_RATE * 0.5:
+                continue
+            if not self.stt.lock.acquire(blocking=False):      # the final read is running: it wins
+                continue
+            try:
+                segs, _ = self.stt.model.transcribe(_level(job[1]), language="en", beam_size=1, initial_prompt=PROMPT_BIAS,
+                                                    condition_on_previous_text=False, without_timestamps=True)
+                text = fix_mishearings(" ".join(s.text for s in segs).strip())
+            except Exception:
+                text = ""
+            finally:
+                self.stt.lock.release()
+            if text and job[0] == self.gen and not is_hallucination(text):
+                stage.partial(text)
+
 
 # ---------------------------------------------------------------- speech detector
 # Silero VAD, as shipped inside faster-whisper - no extra package. It tells a
@@ -1536,7 +1693,7 @@ def _voice_loop() -> None:
         pass
     print(f"Loading Whisper ({model_size})...")
     try:
-        stt = _load_whisper(model_size, device)
+        stt = _OneAtATime(_load_whisper(model_size, device))
     except Exception as e:
         print(f"ERROR: could not load Whisper at all: {e}")
         return
@@ -1603,8 +1760,16 @@ def _voice_loop() -> None:
         speaker.say("I didn't get a yes, so I'll skip that.")
         return False
 
-    agent = Agent(on_step=lambda s: (print(f"   -> {s.tool}"), live.step(s.tool)),
-                  confirm=confirm_aloud, voice=True)
+    from .. import stage
+
+    def _stepped(s) -> None:
+        print(f"   -> {s.tool}")
+        live.step(s.tool)
+        try:
+            stage.on_step(s.tool, s.args or {}, s.result or "")     # its card, the moment it's done
+        except Exception as e:
+            print(f"[stage card: {e}]")
+    agent = Agent(on_step=_stepped, confirm=confirm_aloud, voice=True)
 
     ok, msg = agent.llm.available()
     if not ok:
@@ -1627,6 +1792,9 @@ def _voice_loop() -> None:
         goals.start(presence.interject)           # long-running goals: re-plan, nudge, wrap up
         from .. import missions
         missions.start_watch(presence.interject)  # say when a Claude mission finishes
+        from .. import attention, loops
+        attention.start_watch(presence.interject)  # say when a Deck console is stuck or asks you something
+        loops.start(presence.interject)           # repeat jobs until their goal is met, then say so
         _serve_phone_voice(stt, speaker)          # the phone app hears and speaks through these models
         from .. import vault
         vault.start()                             # Obsidian notes kept searchable
@@ -1695,6 +1863,13 @@ def _voice_loop() -> None:
         print(f"[memory learner unavailable: {e}]")
 
     hint = f" Say '{wake}' first to address me." if wake else ""
+    hold = _watch_hold_key(listener, speaker)
+    if hold:
+        hint += f" Or hold {hold.title()} and talk."
+    partials = _Partials(stt)
+    listener.on_partial = partials.feed
+    if cfg.get("stage.enabled", True):
+        _start_stage()
     print(f"\nListening.{hint} Press Ctrl+C to stop.\n")
     # Jarvis-style: what's next, what's overdue - not just "Ready."
     if cfg.get("presence.greet", True):
@@ -1804,7 +1979,9 @@ def _voice_loop() -> None:
         if _STOP_TAIL.search(heard) and not (said and _echo(heard, said)) and not unsure:
             print(f"   [stopped - heard {heard!r} while busy]")
             return ""
-        if wake:
+        if listener.pushed:                  # said with the key held: meant for her, name or not
+            rest = re.sub(rf"^\W*(?:{re.escape(wake or 'athena')})\b\W*", "", heard, flags=re.I).strip(" .!?,")
+        elif wake:
             m = re.search(rf"\b(?:{re.escape(wake)}|athina|atheena|athene|atena|thena|athenas)\b"
                           rf"[\s,.!?]*(.*)$", heard, re.I)
             if not m:
@@ -1876,6 +2053,10 @@ def _voice_loop() -> None:
                     if audio is None:
                         continue
                 t_stop = time.time() - listener.last_wait     # you stopped talking about here
+                if listener.pushed:                            # let go of the key: she's on it, show it at once
+                    partials.stop()
+                    _engage(True)
+                    _orb_state("thinking")
                 # Just her own last sentence trailing out of the speaker.
                 from .. import echo as _echo_mod
                 if _echo_mod.guard.has_voice(audio) is False:
@@ -1908,6 +2089,7 @@ def _voice_loop() -> None:
                 # up below, once the wake word has actually been found.
                 from ..agent import clean_speech
                 text = clean_speech(fix_mishearings(_from_last_name(_trusted_text(segments))))
+                stage.partial("")                              # the final words replace the live ones
                 if hindi_turn:
                     from .. import hindi
                     text = hindi.wake_to_latin(text)
@@ -1978,7 +2160,7 @@ def _voice_loop() -> None:
                         heard_wake = False
                 still_awake = _ENGAGED and time.time() < awake_until and followups > 0
                 # The HUD's mic button stands in for saying "Athena".
-                tapped = live.take_wake()
+                tapped = live.take_wake() or listener.pushed     # the key held down counts too
                 if tapped:
                     still_awake = True
                 # A follow-up that is mostly Athena's own last answer is the
@@ -2123,6 +2305,9 @@ def _voice_loop() -> None:
                 t_done = time.time()
                 last_said["a"] = answer
                 live.replied(answer)
+                card = None if stage.shown_since(t_ask) else stage.answer_card(text, answer)
+                if card:                                       # a long answer: to read as well as hear
+                    stage.show(card)
                 _orb_state("speaking")
                 done_aloud = agent.spoken.strip()
                 if not done_aloud:
@@ -2237,6 +2422,19 @@ def _voice_loop() -> None:
             continue
 
 
+def _start_stage() -> None:
+    """The Stage's window (run.py stage, ui/stage_window.py) - one copy; run.py's mutex
+    turns a second start away."""
+    import subprocess
+    root = Path(__file__).resolve().parents[2]
+    exe = Path(sys.executable).with_name("pythonw.exe")
+    try:
+        subprocess.Popen([str(exe if exe.exists() else sys.executable), "run.py", "stage"], cwd=str(root),
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except OSError as e:
+        print(f"[stage: not started ({e})]")
+
+
 def run() -> None:
     """Start the orb (main thread) and the voice loop (worker thread).
 
@@ -2246,7 +2444,8 @@ def run() -> None:
     """
     global _ORB
 
-    if cfg.get("overlay.enabled", True):
+    # The Stage has its own mascot; the old orb would be a second one.
+    if cfg.get("overlay.enabled", True) and not cfg.get("stage.enabled", True):
         try:
             from .overlay import Orb
 

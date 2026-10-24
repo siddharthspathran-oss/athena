@@ -408,10 +408,15 @@ class LLM:
             if _benched(self.model):
                 return self._local()._chat_stream(messages, tools, on_sentence, stop, max_tokens)
             try:
+                # Streamed, the socket timeout is the longest silence allowed between pieces: a
+                # model that hasn't started in a few seconds has stalled, so the next one (Groq)
+                # gets the question at ~4 s instead of after llm.cloud_timeout_seconds (24 Oct 2026:
+                # NVIDIA answers in 0.6-1.4 s when well; Groq's free 8k tokens a minute fit only
+                # two Athena requests, so it rescues stalls rather than going first).
                 msg = cloud.chat_tools_stream(self.model, messages, tools, piece, stop,
                                               temperature=cfg.get("llm.temperature", 0.3),
                                               max_tokens=int(max_tokens or cfg.get("llm.max_tokens", 600)),
-                                              timeout=int(cfg.get("llm.cloud_timeout_seconds", 20)))
+                                              timeout=float(cfg.get("llm.stream_stall_seconds", 4)))
             except Exception as e:
                 _bench_if_slow(self.model, e)
                 try:

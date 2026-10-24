@@ -215,19 +215,24 @@ def push(message: str, topic: str | None = None, title: str = "Athena",
     up, used to be lost (15 Oct 2026)."""
     import httpx
 
-    if cfg.get("alerts.web_push", True):        # the Athena app's own notification, when a phone subscribed
+    # The Athena app's own notification goes too, but never instead of ntfy: Google accepting a
+    # web push doesn't mean the phone shows it - Chrome's notifications were off on the S24 and
+    # the 8 AM brief vanished (24 Oct 2026). Sent on the first try only, so a retry can't double it.
+    app = False
+    if _retry and cfg.get("alerts.web_push", True):
         try:
             from . import webpush
             if webpush.subscribers():
                 import urllib.parse
                 u = urllib.parse.urlsplit(click) if click else None
                 where = (u.path or "/") + (f"#{u.fragment}" if u.fragment else "") if u else "/"
-                if webpush.send(title, message or "", where, urgent=(priority == "urgent")):
-                    return True, "Pushed to the Athena app."
+                app = bool(webpush.send(title, message or "", where, urgent=(priority == "urgent")))
         except Exception as e:
-            print(f"[web push: {str(e)[:120]} - using ntfy]")
+            print(f"[web push: {str(e)[:120]}]")
     topic = topic or contact().get("ntfy_topic", "")
     if not topic:
+        if app:
+            return True, "Pushed to the Athena app."
         return False, "no ntfy topic set up (python run.py alerts setup)."
     server = str(cfg.get("alerts.ntfy.server", "https://ntfy.sh")).rstrip("/")
     try:
@@ -245,10 +250,10 @@ def push(message: str, topic: str | None = None, title: str = "Athena",
             threading.Thread(target=again, daemon=True, name="athena-push-retry").start()
         return False, f"could not reach ntfy ({str(e)[:120] or 'network error'}) - will retry."
     if r.status_code == 429:
-        return False, "ntfy is rate-limiting this PC; try again in a minute."
+        return app, "ntfy is rate-limiting this PC; try again in a minute."
     if r.status_code >= 400:
-        return False, f"ntfy refused the push (HTTP {r.status_code})."
-    return True, "Push sent."
+        return app, f"ntfy refused the push (HTTP {r.status_code})." + (" The Athena app got it." if app else "")
+    return True, "Pushed to ntfy and the Athena app." if app else "Push sent."
 
 
 # ---------- both ----------

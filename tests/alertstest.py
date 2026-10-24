@@ -120,6 +120,17 @@ def push_is_urgent():
             and h.get("Priority") == "urgent" and kw.get("content") == b"Battery low."), url
 
 
+def app_push_keeps_ntfy():
+    # Google taking the app's push isn't the phone showing it (24 Oct 2026): ntfy goes too.
+    SENT.clear()
+    webpush.subscribers, webpush.send = (lambda: 1), (lambda *a, **k: 1)
+    try:
+        ok, words = phone.push("Brief.", topic="jarvis-test-topic", priority="default")
+    finally:
+        webpush.subscribers, webpush.send = (lambda: 0), (lambda *a, **k: 0)
+    return ok and any(u.endswith("/jarvis-test-topic") for _m, u, _k in SENT) and "Athena app" in words, words
+
+
 def deliver_needs_setup():
     ok, words = phone.deliver("hi")
     return (not ok) and "alerts setup" in words, words
@@ -301,7 +312,7 @@ ROUTER = [
 def main() -> int:
     bad = 0
     cases = [shorten_fits, shorten_leaves_short, call_is_encoded,
-             call_not_authorised, push_is_urgent, deliver_needs_setup,
+             call_not_authorised, push_is_urgent, app_push_keeps_ntfy, deliver_needs_setup,
              deliver_both, deliver_push_only, normalise_numbers, dedupe, quiet_hours_window,
              quiet_skips_non_urgent, gap_and_merge, daily_cap, master_switch,
              class_timing, class_rings_once, inbox_round_trip, sender_matching]

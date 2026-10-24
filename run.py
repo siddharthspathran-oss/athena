@@ -283,6 +283,26 @@ def main() -> int:
         print(words)
         return 0 if ok else 1
 
+    if mode == "brief":
+        # The day ahead plus the weather, for n8n's 8 AM workflow:
+        # `python run.py brief today --push`. Keys and the ntfy topic stay in Athena.
+        from jarvis import phone
+        from jarvis.tools.brief import daily_brief
+        from jarvis.tools.web import get_weather
+
+        day = next((a for a in sys.argv[2:] if not a.startswith("-")), "today")
+        text = f"{daily_brief(day)}\n\n{get_weather('Dehradun')}"
+        print(text)
+        if "--push" not in sys.argv:
+            return 0
+        topic = phone.contact().get("ntfy_topic")
+        if not topic:
+            print("Phone alerts are not set up. Run: python run.py alerts setup")
+            return 1
+        ok, words = phone.push(text, topic, title=f"Your {day} brief", priority="default", tags="sunrise")
+        print(words)
+        return 0 if ok else 1
+
     if mode == "key":
         # Kept out of config.yaml on purpose: that file gets pasted into
         # chats and committed to repos; an API key should not travel with it.

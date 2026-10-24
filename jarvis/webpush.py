@@ -1,4 +1,4 @@
-"""Notifications from the Athena phone app itself (Web Push), instead of ntfy.
+"""Notifications from the Athena phone app itself (Web Push), alongside ntfy.
 
 The phone app subscribes once (the browser hands it an endpoint on Google's
 push service plus two keys); the PC encrypts each alert for that phone and
@@ -6,8 +6,8 @@ posts it there. The service worker (ui/web.py SERVICE_WORKER) shows it, and a
 tap opens the app at the given page.
 
 Keys: one VAPID key pair, made on first use, in data/ (never committed).
-phone.push() tries this first and falls back to ntfy when no phone has
-subscribed or every push fails.
+phone.push() sends this and ntfy both: Google accepting a push doesn't mean
+the phone showed it (Chrome's notifications can be off).
 """
 from __future__ import annotations
 

@@ -10,7 +10,32 @@ from getpass import getpass
 
 from jarvis import cloud
 
-print("Providers:", ", ".join(sorted(cloud.PROVIDERS)), "(or a new name - tell Claude which)")
+
+def _github(key: str) -> str:
+    import json
+    import urllib.request
+    req = urllib.request.Request("https://api.github.com/user", headers={"Authorization": f"Bearer {key}"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return f"signed in as {json.loads(r.read())['login']}. Restart Athena to start the GitHub tools."
+
+
+def _wolfram(key: str) -> str:
+    from jarvis.tools.calc import ask_wolfram
+    out = ask_wolfram("2+2", key)
+    if out.startswith("ERROR"):
+        raise RuntimeError(out[7:])
+    return "Wolfram answered. Ask Athena for something step by step."
+
+
+def _telegram(key: str) -> str:
+    from jarvis import telegram
+    return f"your bot is {telegram.check(key)}. Restart Athena, then ask her for the Telegram code."
+
+
+# Keys that aren't a brain: each checked its own way.
+OTHER = {"telegram": _telegram, "github": _github, "wolfram": _wolfram}
+
+print("Providers:", ", ".join(sorted(cloud.PROVIDERS) + sorted(OTHER)), "(or a new name - tell Claude which)")
 while True:
     p = input("\nProvider (blank to finish): ").strip().lower()
     if not p:
@@ -19,6 +44,12 @@ while True:
     if not key:
         continue
     cloud.set_key(p, key)
+    if p in OTHER:
+        try:
+            print(f"  saved - {OTHER[p](key)}")
+        except Exception as e:
+            print(f"  saved, but {p} didn't accept it: {str(e)[:150]}")
+        continue
     if p not in cloud.PROVIDERS:
         print(f"  saved. Claude still has to wire '{p}' into Athena.")
         continue

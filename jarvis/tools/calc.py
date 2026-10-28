@@ -92,3 +92,43 @@ def calculate(code: str) -> str:
         err = (p.stderr or "").strip().splitlines()
         return f"ERROR: {err[-1] if err else 'the code failed'}"
     return out[-1500:] if out else "ERROR: the code printed nothing - print the answer."
+
+
+# Wolfram|Alpha's API made for AI tools: one GET, plain text back (28 Oct 2026).
+# Built in rather than an MCP server - none of those is official or maintained.
+WOLFRAM = "https://www.wolframalpha.com/api/v1/llm-api"
+
+
+@tool(tags=["math"], timeout=25)
+def wolfram(query: str) -> str:
+    """Ask Wolfram|Alpha, for working shown step by step: integrals, derivatives,
+    Fourier/Laplace/Z transforms, equations, probability distributions, units,
+    constants and science facts. Use for "step by step", "Laplace transform of",
+    "solve ...", "what is the density of ...". Send only the maths or science
+    question - never names, messages or anything personal.
+
+    query: the question in plain words or maths notation, e.g. "Laplace transform of t*e^(-2t)"
+    """
+    from ..cloud import get_key
+    key = get_key("wolfram")
+    if not key:
+        return ("Wolfram isn't set up: make a free LLM API AppID at developer.wolframalpha.com, "
+                "then save it with python add_keys.py, provider wolfram.")
+    return ask_wolfram(query, key)
+
+
+def ask_wolfram(query: str, key: str) -> str:
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    url = WOLFRAM + "?" + urllib.parse.urlencode({"input": query, "appid": key, "maxchars": 3000})
+    try:
+        with urllib.request.urlopen(url, timeout=20) as r:          # the URL holds the key: never logged
+            return r.read().decode("utf-8", "replace").strip()
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return "ERROR: the saved Wolfram AppID doesn't work - save it again with add_keys.py."
+        body = e.read().decode("utf-8", "replace").strip()[:600]
+        return f"ERROR: Wolfram couldn't answer that (HTTP {e.code}). {body}"
+    except OSError as e:
+        return f"ERROR: couldn't reach Wolfram ({str(e)[:80]})"

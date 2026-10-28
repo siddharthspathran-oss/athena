@@ -432,6 +432,18 @@ class Agent:
             self.memory.add("assistant", answer)
             return answer
         offer.clear()              # anything else is a new request
+        # "Save it as morning setup": the job just worked out, under your own name for it.
+        named = _SAVE_SKILL.match(user_input or "")
+        skill = getattr(self, "_last_skill", None)
+        if named and skill and time.time() - skill[1] < 600:
+            from .tools import routines
+            answer = routines.save(named.group("n").strip(" .!?\"'"), skill[0], "from a job she worked out")
+            answer = answer.removeprefix("ERROR:").strip()
+            self._last_skill = None
+            self.memory.add("user", user_input)
+            self.memory.add("assistant", answer)
+            self._last_answer = answer
+            return answer
         # Half-caught speech reaches here as a fragment. Answering it from the
         # previous topic looks like Athena ignoring you, so ask instead - and
         # do it without spending a model call.
@@ -866,7 +878,10 @@ class Agent:
                 pass
 
     def _plan(self, request: str) -> str | None:
+        done: list[tuple[str, dict, str]] = []
+
         def step(name, args, result):
+            done.append((name, args, result))
             self.on_step(Step(tool=name, args=args, result=result))
             self.memory.add_raw({"role": "tool", "name": name, "content": _truncate(result)})
         try:
@@ -876,9 +891,22 @@ class Agent:
         except Exception as e:
             print(f"[planner failed: {e}]")
             return None
+        answer = (answer + " " + self._offer_skill(request, done)).strip()
         self._last_answer = answer
         self.memory.add("assistant", answer)
         return answer
+
+    def _offer_skill(self, request: str, done: list) -> str:
+        """A new multi-step job worked out: offer to keep it as a skill, run by name next
+        time with no model at all (28 Oct 2026, Hermes Agent's learning loop)."""
+        from .tools import routines
+        plan = routines.skill_steps(done)
+        if not plan or self.memory.private_turn or routines.find(request):
+            return ""
+        name = routines.unique_name(routines.suggest_name(request))
+        self._last_skill = (plan, time.time())
+        offer.set_choices([offer.Choice(f'the skill "{name}"', "save_skill", {"name": name, "steps": plan})])
+        return f'Want me to keep that as a skill? Then just say "{name}" next time.'
 
     def _rescue(self, request: str, why: str) -> str | None:
         """The local model got stuck; let the planner finish the job.
@@ -903,6 +931,11 @@ class Agent:
         self._acknowledge("One moment.")
         return self._plan(brief)
 
+
+# "save it as morning setup", "keep that as a skill called study start" - right after a job
+_SAVE_SKILL = re.compile(r"^\W*(?:(?:athena|jarvis|ok|okay|yes|yeah)\W+)*(?:save|keep|store)\s+(?:that|it|this)"
+                         r"(?:\s+job)?\s+as\s+(?:a\s+)?(?:(?:skill|routine)\s+)?(?:(?:called|named)\s+)?(?P<n>[\w' -]{2,40}?)\W*$",
+                         re.I)
 
 from .routes import (  # noqa: E402 - routing lives in routes.py since 16 Oct 2026
     PRIVATE_TOOLS, _CANT, _FILE_TOOLS, _FOLLOW, _LOOKUPS, _NO_RECIPIENT,

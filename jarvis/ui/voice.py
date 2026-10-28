@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import live, offer, presence
+from .. import live, offer, presence, wakedata
 from ..agent import Agent
 from ..config import cfg
 from ..tools import scheduler
@@ -584,14 +584,19 @@ def _porcupine():
         return None
 
 
-def _wake_probability(segments) -> float | None:
-    """Whisper's confidence in the first wake-word-like word, or None."""
+def _wake_word(segments):
+    """The first wake-word-like word Whisper heard, with its timing, or None."""
     for seg in segments:
         for w in (getattr(seg, "words", None) or []):
-            word = re.sub(r"[^a-z']", "", w.word.lower())
-            if word in WAKE_ALIASES:
-                return float(w.probability)
+            if re.sub(r"[^a-z']", "", w.word.lower()) in WAKE_ALIASES:
+                return w
     return None
+
+
+def _wake_probability(segments) -> float | None:
+    """Whisper's confidence in the first wake-word-like word, or None."""
+    w = _wake_word(segments)
+    return float(w.probability) if w is not None else None
 
 
 def _strip_wake(text: str, wake: str, at_start: bool = True) -> tuple[bool, str]:
@@ -1391,6 +1396,89 @@ def _watch_hold_key(listener: Listener, speaker: "Speaker") -> str:
     return key
 
 
+class _Playback:
+    """When something else is coming out of the speakers - a class on Teams, a
+    video, music - read from Windows' output meter ten times a second.
+
+    Whisper is primed for her name, so a teacher's sentence came out as
+    "Athena, ..." clearly enough to pass every check: 18 of the 58 "commands"
+    from 21 to 28 Oct 2026 were a Teams lecture ("Athena, we're super lucky",
+    "send you a message saying hello"). Her own voice doesn't count
+    (speaker.busy), nor does sound in headphones, which the mic can't hear.
+    """
+
+    PEAK = 0.03                       # silence reads 0.00-0.01; speech and music 0.1-0.7
+    # The meter is read in a small process of its own, not here: read in this process, the
+    # COM objects it made were freed on other threads and the voice process crashed every
+    # two or three minutes (access violation, 28 Oct 2026). A new one every ten minutes
+    # follows a change of output (headphones on or off).
+    METER = (
+        "import time\n"
+        "from ctypes import POINTER, cast\n"
+        "from comtypes import CLSCTX_ALL\n"
+        "from pycaw.pycaw import AudioUtilities, IAudioMeterInformation\n"
+        "dev = AudioUtilities.GetSpeakers()\n"
+        "meter = cast(dev._dev.Activate(IAudioMeterInformation._iid_, CLSCTX_ALL, None), POINTER(IAudioMeterInformation))\n"
+        "print('device', dev.FriendlyName, flush=True)\n"
+        "end = time.time() + 600\n"
+        "while time.time() < end:\n"
+        "    print(f'{meter.GetPeakValue():.3f}', flush=True)\n"
+        "    time.sleep(0.1)\n")
+
+    def __init__(self, speaker) -> None:
+        from collections import deque
+        self.speaker, self.loud, self.headphones = speaker, deque(maxlen=900), False
+        threading.Thread(target=self._loop, daemon=True, name="playback-meter").start()
+
+    def _loop(self) -> None:
+        import subprocess
+        quiet_until = 0.0
+        while True:
+            try:
+                p = subprocess.Popen([sys.executable, "-c", self.METER], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                for line in p.stdout:
+                    if line.startswith("device "):
+                        self.headphones = bool(_HEADPHONES.search(line))
+                    elif self.speaker.busy():
+                        quiet_until = time.time() + 0.4                 # her own voice, and its tail
+                    elif time.time() > quiet_until and float(line) > self.PEAK:
+                        self.loud.append(time.time())
+                p.wait()
+            except Exception:
+                pass
+            time.sleep(2)
+
+    def during(self, start: float, end: float) -> bool:
+        """Was something else playing aloud between these two moments?"""
+        return not self.headphones and any(start <= t <= end + 0.3 for t in list(self.loud))
+
+    def recent(self, seconds: float) -> bool:
+        return self.during(time.time() - seconds, time.time())
+
+
+# With the speakers playing, her name alone doesn't count - only these short controls
+# (or the hold key): "Athena, pause", "next song", "stop", "volume down".
+_MEDIA_CMD = re.compile(r"^\W*(?:please\s+)?(?:stop|pause|resume|play|next|previous|skip|mute|unmute|quiet|shut\s+up|enough|"
+                        r"volume|louder|quieter|turn\s+(?:it\s+)?(?:up|down|off)|go\s+back|cancel)\b[\w\s%,.'-]{0,40}$", re.I)
+_HEADPHONES = re.compile(r"head|hands-?free|buds|airpods|wh-|wf-|earphone|jabra|bose|sony", re.I)
+_WORD = re.compile(r"[A-Za-z0-9']+")
+
+
+def _unsaid(answer: str, said: str) -> str:
+    """What of the answer the streamed sentences haven't said yet, compared word by
+    word: markdown, numbering and line breaks differ between the two, and a list of
+    five files was read out and then the whole answer again (25 Oct 2026)."""
+    found = list(_WORD.finditer(answer))
+    words = [m.group().lower() for m in found]
+    spoken = [w.lower() for w in _WORD.findall(said)]
+    if not words or not spoken:
+        return answer.strip() if not spoken else ""
+    if words[:len(spoken)] == spoken:
+        return answer[found[len(spoken) - 1].end():].strip(" \n.,;:-*") if len(spoken) < len(words) else ""
+    return "" if len(spoken) >= 0.6 * len(words) else answer.strip()       # changed on the way: don't say it twice
+
+
 class _OneAtATime:
     """Whisper, one transcription at a time. The Stage's live words run on their
     own thread next to the main loop and the phone's voice; faster-whisper
@@ -1778,6 +1866,8 @@ def _voice_loop() -> None:
 
     # Away and back, "sorry to interrupt", welcome-backs (presence.py).
     presence.set_speaker(speaker.say, speaker.busy)
+    playback = _Playback(speaker)
+    presence.set_playing(lambda: playback.recent(20))      # no welcome-back over a class or a film
     try:
         from .. import gestures                       # back on if it was on before a restart
         gestures.start()
@@ -1852,6 +1942,11 @@ def _voice_loop() -> None:
         upes.start()
     except Exception as e:
         print(f"[automations: not started ({e})]")
+    try:
+        from .. import mcp             # plug-in tool servers (config.yaml mcp.servers), in the background
+        mcp.start_all()
+    except Exception as e:
+        print(f"[mcp: not started ({e})]")
 
     # The profile learner, for the same reason: voice is always running. It
     # only works while Athena is idle, so it never holds up a reply.
@@ -1921,6 +2016,17 @@ def _voice_loop() -> None:
     # back as a command to open Spotify (28 Sep 2026).
     _BARGE_PROMPT = "Athena, stop. Stop. Athena, cancel. Enough."
 
+    def _name_only() -> None:
+        """Her name alone: she listens on, and the Stage shows it. She said "Yes?" out loud
+        until 28 Oct 2026 - 72 times, many of them to typing or a cough that Whisper, primed
+        for her name, heard as "Athena?". voice.name_reply: yes brings it back."""
+        if cfg.get("voice.name_reply", "listen") == "yes":
+            _orb_state("speaking")
+            speaker.say("Yes?")
+            speaker.wait_until_done(timeout=20)
+            listener.drain()
+        _orb_state("listening")
+
     def _barge_in(said: str, done=lambda: False) -> str | None:
         """One short listen while Athena talks or thinks. None = nothing for
         us, "" = stop, anything else = a new command to run instead.
@@ -1979,6 +2085,8 @@ def _voice_loop() -> None:
         if _STOP_TAIL.search(heard) and not (said and _echo(heard, said)) and not unsure:
             print(f"   [stopped - heard {heard!r} while busy]")
             return ""
+        if not listener.pushed and playback.during(time.time() - len(audio) / SAMPLE_RATE - 0.5, time.time()):
+            return None                      # the speakers, not you (a class, a video): only a stop gets through, above
         if listener.pushed:                  # said with the key held: meant for her, name or not
             rest = re.sub(rf"^\W*(?:{re.escape(wake or 'athena')})\b\W*", "", heard, flags=re.I).strip(" .!?,")
         elif wake:
@@ -2039,12 +2147,8 @@ def _voice_loop() -> None:
                         if pre == "word":        # just "Athena" - someone getting our attention
                             awake_until = time.time() + follow_up
                             followups = int(cfg.get("voice.follow_ups", 3))
-                            _orb_state("speaking")
-                            speaker.say("Yes?")
+                            _name_only()
                             invited = True
-                            speaker.wait_until_done(timeout=20)
-                            listener.drain()
-                            _orb_state("listening")
                         else:
                             _engage(False)
                         continue
@@ -2069,6 +2173,7 @@ def _voice_loop() -> None:
                 # A multilingual model hears English or Hindi (hindi.py); any
                 # other language it thinks it heard is noise or an accent, and
                 # is decoded again as English.
+                raw = audio                                    # as the mic heard it, for the wake-word data
                 audio = _level(audio)
                 multi = MULTILINGUAL and cfg.get("language.hindi", True)
                 segments, info = stt.transcribe(
@@ -2093,6 +2198,10 @@ def _voice_loop() -> None:
                 if hindi_turn:
                     from .. import hindi
                     text = hindi.wake_to_latin(text)
+                # No name anywhere in it (a lecture, the TV, typing taken for
+                # speech): what "not Athena" sounds like here (wakedata.py).
+                if wake and not _strip_wake(text, wake, at_start=False)[0]:
+                    wakedata.negative(raw)
                 # "yes", "two", "all" are too short to count as commands - except
                 # as the answer to a question Athena just asked.
                 answering = invited and bool(offer.REPLY.match(text))
@@ -2183,8 +2292,17 @@ def _voice_loop() -> None:
                         and not answering and _echo(text, last_said["a"]):
                     still_awake = False
                 addressed = (not wake) or heard_wake or still_awake
+                # The speakers were playing while this was said - a class, a video, music: it's
+                # most likely them, so only the key or a short control ("Athena, pause") counts.
+                if addressed and not tapped and t_stop and playback.during(t_stop - len(audio) / SAMPLE_RATE - 0.3, t_stop) \
+                        and not _MEDIA_CMD.match(remainder if heard_wake else text):
+                    print(f"   [ignored: {text[:80]!r} - the speakers were playing (a class, a video, music);"
+                          " hold Right Alt to talk over them]")
+                    addressed = False
                 if addressed:
                     invited = False
+                    if heard_wake and (w := _wake_word(segments)) is not None:
+                        wakedata.positive(raw, float(w.end))   # a real "Athena", from Whisper's word timing
                 # A command that named Athena (or the mic button) gives a fresh
                 # budget of voice.follow_ups; each follow-up spends one, so a
                 # conversation runs a few turns without the name but a video
@@ -2220,12 +2338,8 @@ def _voice_loop() -> None:
                         if not remainder:
                             awake_until = time.time() + follow_up
                             followups = int(cfg.get("voice.follow_ups", 3))
-                            _orb_state("speaking")
-                            speaker.say("Yes?")
+                            _name_only()
                             invited = True
-                            speaker.wait_until_done(timeout=20)
-                            listener.drain()
-                            _orb_state("listening")
                             continue
 
             # Hindi: translated now - only once it is known to be meant for
@@ -2312,12 +2426,12 @@ def _voice_loop() -> None:
                 done_aloud = agent.spoken.strip()
                 if not done_aloud:
                     speaker.say(answer, hindi=reply_hindi)
-                elif answer.strip() != done_aloud:
+                else:
                     # The streamed part was cut short (a guard stopped it) or
-                    # the answer changed: say what has not been said.
-                    rest = answer.strip()[len(done_aloud):] if answer.strip().startswith(done_aloud) else answer
-                    if rest.strip():
-                        speaker.say(rest.strip(), hindi=reply_hindi)
+                    # the answer changed: say only what has not been said.
+                    rest = _unsaid(answer, done_aloud)
+                    if rest:
+                        speaker.say(rest, hindi=reply_hindi)
                 if cfg.get("voice.log_timings", True):
                     first = next((t for t in speaker.started[n_started:]), None)
                     if first is None:
@@ -2379,10 +2493,8 @@ def _voice_loop() -> None:
                         continue
                     time.sleep(0.2)
                     listener.drain()
-                    _orb_state("speaking")
-                    speaker.say("Yes?")
-                    speaker.wait_until_done(timeout=5)
-                    listener.drain()
+                    earcon()
+                    _name_only()
                     invited = True
                     awake_until = time.time() + follow_up
                     followups = max(followups, 1)

@@ -1899,6 +1899,11 @@ def run() -> None:
 
     threading.Thread(target=_supervise_voice, daemon=True, name="voice-supervisor").start()
     try:
+        from .. import mcp             # typed chat gets the same plug-in tools as voice
+        mcp.start_all()
+    except Exception as e:
+        print(f"[mcp: not started ({e})]")
+    try:
         from ..tools import taste
         taste.start_sampler()     # what you listen to, for "play something"
         from .. import deadlines
@@ -1918,6 +1923,19 @@ def run() -> None:
     if not ok:
         print(msg)
         return
+
+    def telegram_ask(text: str) -> str:
+        # Same agent and conversation as the phone page; a destructive step is
+        # offered, and "yes" as the next message does it (offer.py).
+        with _lock:
+            _agent.confirm = _agent._offer_instead
+            _log(f"telegram: {text[:70]}")
+            return _agent.ask(text)
+    try:
+        from .. import telegram
+        telegram.start(telegram_ask, _log)
+    except Exception as e:
+        print(f"[telegram: not started ({e})]")
 
     from ..tools import scheduler
     scheduler.start_scheduler("web")

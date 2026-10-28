@@ -372,6 +372,11 @@ SELECTION = [
     ("did my phone send anything", ["open_from_phone"], []),
     ("what can you do", [], ["store_orders", "free_gpu"]),
     ("how are you", [], ["look_at_screen"]),
+    # lean: plain chat carries the core only; a group comes with its own words (28 Oct 2026)
+    ("what is your name", ["web_search", "open_app"], ["lms_deadlines", "set_goal", "battery", "get_datetime", "whatsapp_message"]),
+    ("can i skip tomorrow's class", ["can_i_skip", "my_attendance"], ["set_goal", "whatsapp_message"]),
+    ("what's the weather like", ["get_weather"], ["lms_deadlines"]),
+    ("what is 18 percent of 2400", ["calculate"], ["lms_deadlines"]),
     ("can you see this error", ["look_at_screen"], []),
 ]
 
@@ -417,6 +422,8 @@ def _check_selection() -> list[str]:
     bad = []
     everything = registry.select("", everything=True)
     core = registry.select("")
+    if len(core) > 14:
+        bad.append(f"{len(core)} tools go with every question - keep the core lean (it was 61 and cost ~1 s a reply)")
     if len(core) >= len(everything):
         bad.append("the core tool set is no smaller than the full list")
     for request, shown, hidden in SELECTION:

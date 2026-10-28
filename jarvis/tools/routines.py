@@ -91,6 +91,70 @@ def _run_step(step, say: list[str]) -> str:
     return t.run(**args)
 
 
+# ---------- skills Athena saves herself (28 Oct 2026, Hermes Agent's learning loop) ----------
+# When the planner works out a new multi-step job, Athena offers to keep its steps as a
+# routine: next time the name alone runs it, no model involved. Never steps that reach
+# another person, can't be undone, or touch private things - a skill runs without asking.
+
+def skill_steps(steps: list[tuple[str, dict, str]]) -> list[dict] | None:
+    """The planner's steps (tool, args, result) as routine steps, or None when they
+    shouldn't become a skill: fewer than two that worked, or one that isn't safe to replay."""
+    from .. import registry
+    from ..routes import PRIVATE_TOOLS
+    good: list[tuple[str, dict]] = []
+    for name, args, result in steps:
+        if str(result).startswith("ERROR"):
+            continue
+        t = registry.get(name)
+        if (t is None or t.destructive or name in registry.OUTWARD or name in PRIVATE_TOOLS
+                or "route_only" in t.tags or name in ("run_routine", "save_skill")):
+            return None
+        if not good or good[-1] != (name, args):                     # the same call twice is one step
+            good.append((name, dict(args or {})))
+    return [{name: args} for name, args in good] if len(good) >= 2 else None
+
+
+def suggest_name(request: str) -> str:
+    """A short name to say next time: "athena, open spotify and play lofi" -> "spotify and play lofi"."""
+    import re
+    s = re.sub(r"^\W*(?:(?:athena|jarvis|hey|ok|okay|please|can\s+you|could\s+you)\W+)*", "", request.lower())
+    s = re.sub(r"\b(?:please|the|my|a|an|for\s+me|now|then|also)\b", " ", s)
+    s = re.sub(r"^\s*(?:open|start|play|set|turn|put|make|get|show|tell|find)\s+", "", s)
+    words = re.findall(r"[a-z0-9']+", s)[:4]
+    return " ".join(words) or "my skill"
+
+
+def unique_name(name: str) -> str:
+    have, n, base = load(), 2, name
+    while name in have:
+        name, n = f"{base} {n}", n + 1
+    return name
+
+
+def save(name: str, steps: list[dict], note: str = "") -> str:
+    """Append one routine to routines.yaml - the rest of the file, comments and all, untouched."""
+    name = name.strip().lower()
+    if not name or not steps:
+        return "ERROR: a skill needs a name and at least one step."
+    if name in load():
+        return f"ERROR: there's already a routine called {name} - pick another name."
+    block = yaml.safe_dump({name: {"steps": steps}}, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    with FILE.open("a", encoding="utf-8") as f:
+        f.write(f"\n# Saved by Athena {time.strftime('%d %b %Y')}{': ' + note if note else ''}\n{block}")
+    return f'Saved. Say "{name}" and I\'ll do it again.'
+
+
+@tool(tags=TAG + ["route_only"])
+def save_skill(name: str, steps: list) -> str:
+    """Keep a job Athena just worked out as a routine she can run by name (offered after a
+    multi-step job; reached by "yes" or "save it as ...", never on the model's initiative).
+
+    name: what you'll say to run it
+    steps: the routine's steps
+    """
+    return save(name, steps, "from a job she worked out")
+
+
 @tool(tags=TAG)
 def run_routine(name: str) -> str:
     """Run a saved routine - a list of actions stored under one name in routines.yaml.
@@ -139,3 +203,29 @@ def list_routines() -> str:
                          for s in steps if isinstance(s, dict) for k, v in s.items())
         lines.append(f"{name}: {desc[:160]}")
     return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    import tempfile
+    from pathlib import Path
+
+    from .. import tools  # noqa: F401 - registers every tool
+    from ..agent import _SAVE_SKILL
+    FILE = Path(tempfile.mkdtemp()) / "routines.yaml"
+    FILE.write_text("# mine\nmorning:\n  steps:\n    - get_weather: Dehradun\n", encoding="utf-8")
+    job = [("set_volume", {"level": 20}, "Volume set to 20%."), ("music", {"action": "song", "song": "lofi"}, "Playing lofi."),
+           ("music", {"action": "song", "song": "lofi"}, "Playing lofi.")]
+    plan = skill_steps(job)
+    assert plan == [{"set_volume": {"level": 20}}, {"music": {"action": "song", "song": "lofi"}}], plan
+    assert skill_steps(job + [("whatsapp_message", {"to": "papa", "text": "hi"}, "Sent.")]) is None    # reaches a person
+    assert skill_steps([("set_volume", {"level": 20}, "ok")]) is None                                    # one step isn't a job
+    assert skill_steps([("set_volume", {}, "ERROR: x"), ("music", {}, "ok")]) is None                     # only one worked
+    name = unique_name(suggest_name("Athena, set the volume low and play lofi"))
+    assert name == "volume low and play", name
+    assert save(name, plan).startswith("Saved") and save(name, plan).startswith("ERROR")
+    got = load()
+    assert got["volume low and play"]["steps"] == plan and "morning" in got and "# mine" in FILE.read_text(encoding="utf-8")
+    assert find("run volume low and play") == "volume low and play"
+    assert _SAVE_SKILL.match("save it as study start").group("n") == "study start"
+    assert _SAVE_SKILL.match("Athena, keep that as a skill called night setup.").group("n") == "night setup"
+    print("routines: checks pass")

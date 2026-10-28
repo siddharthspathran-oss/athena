@@ -242,10 +242,41 @@ def check_hold_to_talk(bad):
         bad.append("hold-to-talk: a shortcut (another key with it) was taken as a sentence")
 
 
+def check_not_twice(bad):
+    """A streamed answer isn't said again at the end (25 Oct 2026: a list of five files, twice)."""
+    spoken = ('I found several files with "find me" in your documents: 1. **Workbook.docx** - about industry connect. '
+              '2. **Start here.md** - your vault. Would you like me to open any of these?')
+    answer = ('I found several files with "find me" in your documents:\n\n1. **Workbook.docx** - about industry connect\n'
+              '2. **Start here.md** - your vault\n\nWould you like me to open any of these?')
+    if voice._unsaid(answer, spoken):
+        bad.append(f"a fully streamed answer would be said again: {voice._unsaid(answer, spoken)!r}")
+    if voice._unsaid(answer, "I found several files with \"find me\" in your documents:") != \
+            "1. **Workbook.docx** - about industry connect\n2. **Start here.md** - your vault\n\nWould you like me to open any of these?":
+        bad.append(f"the unsaid rest is wrong: {voice._unsaid(answer, 'I found several files with \"find me\" in your documents:')!r}")
+
+
+def check_speakers_gate(bad):
+    """Sound from the speakers (a Teams class) isn't taken for a command; short controls still are."""
+    pb = voice._Playback.__new__(voice._Playback)
+    from collections import deque
+    pb.loud, pb.headphones = deque([100.0, 100.1, 100.2]), False
+    if not pb.during(99.0, 100.05) or pb.during(101.0, 102.0):
+        bad.append("playback window wrong")
+    pb.headphones = True
+    if pb.during(99.0, 100.05):
+        bad.append("sound in headphones was treated as heard by the mic")
+    for said in ("pause", "next song", "stop", "volume down", "turn it down", "skip this one"):
+        if not voice._MEDIA_CMD.match(said):
+            bad.append(f"{said!r} should still work while music plays")
+    for said in ("we're super lucky", "send you a message saying hello", "find me", "do you have a question for me"):
+        if voice._MEDIA_CMD.match(said):
+            bad.append(f"{said!r} would get through while a class plays")
+
+
 if __name__ == "__main__":
     bad: list[str] = []
     checks = (check_player, check_fallback, check_text, check_failure_log, check_follow_ups, check_continuation,
-              check_hold_to_talk)
+              check_hold_to_talk, check_not_twice, check_speakers_gate)
     for check in checks:
         check(bad)
     for b in bad:

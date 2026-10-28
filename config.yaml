@@ -239,6 +239,10 @@ voice:
   # Silent test of the trained detector (data/athena_wake.onnx) next to the
   # live wake word: times only, to data/wake_shadow.log. false when done.
   wake_shadow: false   # test over 16 Oct 2026: 41% caught, 20 false/hour at 0.7 - Whisper gate stays
+  # Keeps your real "Athena"s and the room's other sound (lectures, TV, typing)
+  # as detector features only - no audio, no words - in data/wake_real/ (at
+  # most 150 MB), for: python finetune/wakeword.py --mine --real
+  wake_collect: true
   # Far-field (4 Oct 2026, mic effects off): the listening threshold is the
   # room's own level times gate_ratio; 2.5 (threshold ~0.030) caught all 8 test sentences up to
   # across the room with ~5% of room noise over it. A real "Athena, play the
@@ -252,6 +256,29 @@ voice:
   # Seconds of silence that ends a recording. This is pure dead time on
   # every command, so keep it just long enough to cover a natural pause.
   silence_timeout: 0.65
+
+mcp:
+  # Plug-in tool servers (jarvis/mcp.py, 28 Oct 2026) - ready-made tools other people
+  # maintain. Each one's tools come with its name or its `words`. Keys stay out of
+  # this file: "${name}" is read from the key store (python add_keys.py); a server
+  # whose key isn't saved yet waits. Tools that send, create, delete, click or
+  # type ask you first. Installed in C:\claude code\mcp-servers, pinned versions.
+  servers:
+    # Microsoft's browser control, 0.0.83: works through a website step by step in
+    # its own Chrome window (no saved sign-ins: --isolated). Every click and every
+    # bit of typing waits for your yes.
+    playwright:
+      command: ["node", "C:/claude code/mcp-servers/playwright/node_modules/@playwright/mcp/cli.js",
+                "--browser", "chrome", "--isolated", "--image-responses", "omit",
+                "--output-dir", "C:/claude code/mcp-servers/playwright/output", "--output-max-size", "50000000"]
+      words: 'brows(?:e|er|ing)|websites?|web\s*pages?|on\s+(?:the\s+)?site|fill\s+(?:in|out)|forms?|click|amazon|flipkart|track\s+(?:my\s+)?order|order\s+status'
+    # GitHub's own server, 2.0.2: read-only (it can't change anything on GitHub), with
+    # lockdown on (strangers' text in public repos is held back). Key: provider github.
+    github:
+      command: ["C:/claude code/mcp-servers/github/github-mcp-server.exe", "stdio", "--read-only", "--lockdown-mode",
+                "--toolsets=context,repos,issues,pull_requests,actions"]
+      env: {GITHUB_PERSONAL_ACCESS_TOKEN: "${github}"}
+      words: 'repos?|repositor\w*|issues?|pull\s+requests?|commits?|pushed|workflows?'
 
 stage:
   # The Stage (24 Oct 2026, after Hedwig): a floating panel in the bottom-right
@@ -690,7 +717,7 @@ modes:
   # Permissions are the same in every mode.
   study:
     prompt: "The user is studying. Explain step by step with the formula and one worked example. Look in their own notes and LMS course files first (search_documents) and say which file an answer came from."
-    tools: [knowledge, schedule]
+    tools: [knowledge]     # was [knowledge, schedule]: 36 more tools on every question (28 Oct 2026); quiz, revise, plan, LMS come by their words
     say: "I'll check your notes and course files first."
   coding:
     prompt: "The user is programming. Code first, then at most two lines. Exact commands and file names, no filler."

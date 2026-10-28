@@ -315,12 +315,12 @@ _SHOP_WORDS = re.compile(r"\b(store|shop|ragazza|orders?|stock|products?|prices?
 # The most common commands never reach the model at all (agent.route), so
 # the core is what an unrouted request is likely to need. A tool not named
 # anywhere below is treated as core, so a newly added tool is never hidden.
+# Lean on purpose (28 Oct 2026): 61 tools - ~5,800 tokens - went with every question
+# ("what is your name" included), most of Athena's 2.2 s of thinking. The rest come
+# with the words that need them (the groups below) or by meaning.
 CORE_TOOLS = [
-    "open_app", "close_app", "open_file", "open_folder", "find_files",
-    "web_search", "read_webpage", "open_url", "get_weather",
-    "remember", "recall", "add_reminder", "music", "set_volume",
-    "battery", "system_info", "take_screenshot", "read_text", "explain",
-    "list_skills",
+    "open_app", "close_app", "web_search", "open_url",
+    "remember", "recall", "add_reminder", "music", "explain", "list_skills",
 ]
 
 # Offered only when the request's own words call for them - never as a core
@@ -336,8 +336,8 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
         r"delet|mov|renam|cop(?:y|ies)|writ|wrote|sav|size|organi[sz]|sort|tidy|clean|"
         r"path|drives?|zip|images?|photos?|pictures?|videos?|excel|word|csv|txt|notes?|"
         r"read|contents?|list|show|where|explorer|phone|mobile)" + _W, re.I),
-     ["find_document", "send_to_phone", "open_from_phone", "list_folder", "read_file", "write_file", "move_file", "delete_file",
-      "organize_folder", "folder_size", "reveal_path"]),
+     ["find_files", "open_file", "open_folder", "find_document", "send_to_phone", "open_from_phone", "list_folder", "read_file",
+      "write_file", "move_file", "delete_file", "organize_folder", "folder_size", "reveal_path"]),
     ("phone_control", re.compile(
         r"\b(?:phone|mobile|galaxy|samsung)" + _W, re.I),
      ["show_phone", "phone_open_app", "find_my_phone", "phone_status", "lock_phone", "phone_screenshot",
@@ -345,23 +345,50 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
     ("media", re.compile(
         r"\b(?:songs?|tracks?|music|spotify|play|playlist|album|artist|pause|skip|"
         r"volume|loud|quiet|mute|listen)" + _W, re.I),
-     ["play_track", "play_song", "play_my_taste", "play_my_playlist", "get_volume"]),
+     ["set_volume", "now_playing", "play_track", "play_song", "play_my_taste", "play_my_playlist", "get_volume"]),
     ("automation", re.compile(
         r"\b(?:automat|rules?\b|whenever|every\s*time|each\s+time|pause|resume|on\s+(?:your|its)\s+own|health|check\s+yourself|retrain|"
         r"standing|keep\s+(?:my|an?\s+eye))" + _W, re.I),
      ["add_rule", "list_rules", "remove_rule", "pause_automation", "resume_automation", "what_did_you_do",
       "health_check", "retrain_athena", "add_watch", "watch_for_changes", "backup_now"]),
-    ("schedule", re.compile(
-        r"\b(?:remind|alarm|timer|tasks?|to[- ]?dos?|deadline|assignment|due|schedul|calendar|"
-        r"timetable|class|lecture|meeting|teams|brief|today|tomorrow|tonight|week|agenda|exam|revis|review|flash\s*cards?|primer|prepare|attend|bunk|skip|upes|portal|lms|due|alarm|snooze|"
-        r"time|date|day|free|busy|cancel|goals?|plan|finished|ticked?|end[- ]?sem|mid[- ]?sem)" + _W, re.I),
-     ["list_reminders", "cancel_reminder", "add_task", "complete_task", "list_tasks",
-      "check_deadlines", "daily_brief", "evening_summary", "get_datetime", "show_timetable", "set_timetable",
-      "add_calendar_feed", "list_calendar_feeds", "connect_google",
-      "teams_meetings", "join_teams_meeting", "plan_my_assignments", "prepare_for_tomorrow",
-      "set_goal", "goal_status", "goal_done", "replan_goal", "drop_goal", "goal_start",
-      "my_attendance", "can_i_skip", "upes_classes", "open_upes_login", "lms_deadlines", "lms_files", "quiz_me", "review_flashcards", "lab_report", "open_lms",
-      "stop_alarm", "snooze_alarm"]),
+    # What was one "schedule" group of 36 tools, woken by "time", "day", "today", "plan" and
+    # "cancel" - nearly every sentence - split by what the words are about (28 Oct 2026).
+    ("reminders", re.compile(r"\b(?:remind|alarm|timer|snooze|wake\s+me|ring\s+me)" + _W, re.I),
+     ["list_reminders", "cancel_reminder", "stop_alarm", "snooze_alarm"]),
+    ("tasks", re.compile(r"\b(?:tasks?|to[- ]?dos?|deadlines?|assignments?|due|homework|submi|finished|done\s+with|ticked?)" + _W,
+                         re.I),
+     ["add_task", "complete_task", "list_tasks", "check_deadlines", "plan_my_assignments", "lms_deadlines"]),
+    ("college", re.compile(r"\b(?:class|lecture|timetable|teams|meeting|attend|bunk|upes|portal|lms|exam|lab|course|"
+                           r"subject|semester|professor|tomorrow)" + _W, re.I),
+     ["show_timetable", "set_timetable", "teams_meetings", "join_teams_meeting", "my_attendance", "can_i_skip",
+      "upes_classes", "open_upes_login", "lms_deadlines", "lms_files", "open_lms", "lab_report", "prepare_for_tomorrow"]),
+    ("calendar", re.compile(r"\b(?:calendar|agenda|google|feed|brief|summary|schedul|today|tonight|this\s+week|busy)" + _W, re.I),
+     ["daily_brief", "evening_summary", "add_calendar_feed", "list_calendar_feeds", "connect_google"]),
+    ("goals", re.compile(r"\b(?:goals?|plan|revis|review|flash\s*cards?|primer|quiz|prepar|end[- ]?sem|mid[- ]?sem|study)" + _W,
+                         re.I),
+     ["set_goal", "goal_status", "goal_done", "replan_goal", "drop_goal", "goal_start", "quiz_me", "review_flashcards",
+      "prepare_for_tomorrow"]),
+    ("time", re.compile(r"\b(?:time|date|day|clock|o'?clock)\b", re.I),
+     ["get_datetime", "world_time"]),
+    ("weather", re.compile(r"\b(?:weather|rain|temperature|forecast|hot|cold|umbrella|sunny|humid|snow|wind)" + _W, re.I),
+     ["get_weather"]),
+    ("system", re.compile(r"\b(?:battery|charg|plugged|cpu|ram|system|specs?|screenshot|screen\s*shot|ocr|text\s+on|"
+                          r"read\s+(?:the\s+)?text|status|gpu|vram)" + _W, re.I),
+     ["battery", "system_info", "pc_status", "take_screenshot", "read_text", "load_gpu", "free_gpu"]),
+    ("math", re.compile(r"\b(?:calculat|plus|minus|times|divid|multipl|percent|square|root|sum|total|convert|"
+                        r"how\s+much\s+is|wolfram|integra|derivativ|differentiat|fourier|laplace|transform|"
+                        r"equation|solve|step\s+by\s+step|probabilit|distribution|eigen|matri|limit)\w*"
+                        r"|\d\s*[-+*/x×^%]\s*\d", re.I),
+     ["calculate", "wolfram"]),
+    ("web", re.compile(r"\b(?:read|summari[sz]e|article|link|url|page|website|news)" + _W, re.I),
+     ["read_webpage"]),
+    ("plugins", re.compile(r"\b(?:plug-?ins?|mcp|integrations?|connectors?)" + _W, re.I),
+     ["mcp_servers"]),
+    ("telegram", re.compile(r"telegram" + _W, re.I),
+     ["telegram_status"]),
+    ("store", _SHOP_WORDS,
+     ["store_summary", "store_orders", "store_order", "find_store_product", "show_store_product", "set_store_price",
+      "set_store_stock", "ship_store_order", "update_store_order"]),
     ("messaging", re.compile(
         r"\b(?:whatsapp|messag|text|msg|call|ring|dial|phone|mobile|contacts?|e-?mail|mail|"
         r"inbox|send|sent|reply|number|tell|hang)" + _W, re.I),
@@ -541,7 +568,9 @@ def by_meaning(request: str, have: list[str], k: int = 6) -> list[str]:
     from .config import cfg
     if _SEM["M"] is None or not request.strip() or not cfg.get("llm.tools_by_meaning", True):
         warm_semantic()
-        return []
+        # The embeddings need Ollama, which is often off: a few tools sharing words with the
+        # request stand in, so the lean core isn't all she gets (28 Oct 2026).
+        return related(request, have, k=min(k, 4)) if request.strip() else []
     try:
         import numpy as np
         import ollama

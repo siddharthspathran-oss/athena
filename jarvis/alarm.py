@@ -48,8 +48,9 @@ def snooze(minutes: int = 10) -> str:
     return f"Snoozed for {minutes} minutes."
 
 
-def ring(text: str, speak, busy=lambda: False) -> None:
-    """Start ringing (or add this to the alarm already ringing)."""
+def ring(text: str, speak, busy=lambda: False, says: int = 0) -> None:
+    """Start ringing (or add this to the alarm already ringing).
+    says: stop after saying it this many times (0 = until stopped or alarm.max_minutes)."""
     global _thread
     if not cfg.get("alarm.enabled", True):
         speak(f"Reminder: {text}")
@@ -61,7 +62,7 @@ def ring(text: str, speak, busy=lambda: False) -> None:
                 s["text"] += f"; {text}"
                 save_json(STATE, s)
             return
-        save_json(STATE, {"text": text, "since": time.time(), "stop": False})
+        save_json(STATE, {"text": text, "since": time.time(), "stop": False, "says": int(says)})
         _thread = threading.Thread(target=_loop, args=(speak, busy), daemon=True, name="athena-alarm")
         _thread.start()
 
@@ -85,6 +86,7 @@ def _loop(speak, busy) -> None:
         rules.log(f"alarm: {ringing()['text'][:80]}", "alarm")
     except Exception:
         pass
+    said = 0
     while ringing() and time.time() - started < limit:
         try:
             winsound.PlaySound(sound, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_LOOP)
@@ -95,7 +97,10 @@ def _loop(speak, busy) -> None:
         if stopped:
             break
         s = ringing()
+        if s and s.get("says") and said >= s["says"]:
+            break                                    # said enough: the phone gets it (below)
         if s:
+            said += 1
             speak(f"Reminder: {s['text']}. Say Athena stop to turn it off.")
             time.sleep(1)
             for _ in range(60):                      # let the sentence finish
@@ -129,13 +134,13 @@ def start(speak, busy) -> None:
                     from . import rules
                     from .tools import todo
                     today = now.date().isoformat()
-                    open_ = [t for t in todo.load() if not t["done"] and t.get("due") and t["due"][:10] <= today]
-                    late = [t["text"] for t in open_ if t["due"][:10] < today]
-                    due = [t["text"] for t in open_ if t["due"][:10] == today]
-                    text = "; ".join(x for x in (late and "Overdue: " + "; ".join(late[:3]),
-                                                 due and "Due today: " + "; ".join(due[:3])) if x)
-                    if text and not rules.paused():
-                        ring(text, speak, busy)
+                    # Only what is due today rings, and it is said three times at most. Overdue work
+                    # rang every day for ten minutes - one forum post was said 61 times in a week
+                    # (21-28 Oct 2026, "it starts speaking itself"); the briefings already mention it.
+                    due = [t["text"] for t in todo.load()
+                           if not t["done"] and t.get("due") and t["due"][:10] == today]
+                    if due and not rules.paused():
+                        ring("Due today: " + "; ".join(due[:3]), speak, busy, says=3)
                 except Exception:
                     pass
             time.sleep(60)

@@ -35,7 +35,10 @@ def _deck_items() -> list[dict]:
     b = deck_link.brief()
     return [{"key": f"console:{c['id']}:{int(c.get('since') or 0)}", "kind": "console", "who": c["title"], "console": c["id"],
              "title": "needs you on the Deck", "text": c.get("detail") or "It's waiting for your answer.",
-             "since": float(c.get("since") or time.time()), "can_reply": True}
+             "since": float(c.get("since") or time.time()), "can_reply": True,
+             # Said aloud only for the AI agents: a PowerShell running a menu ("←/→ navigate • enter
+             # confirm") looked like a question and was read out (21-28 Oct 2026). Still on the HUD.
+             "aloud": c.get("kind") in ("claude", "codex", "gemini")}
             for c in b.get("consoles", []) if c.get("state") == "needs"] if b.get("running") else []
 
 
@@ -139,7 +142,7 @@ def start_watch(announce) -> None:
         while True:
             time.sleep(10)
             try:
-                now = [i for i in items() if i["kind"] in SPOKEN]
+                now = [i for i in items() if i["kind"] in SPOKEN and i.get("aloud", True)]
                 told = load_json(TOLD, {}) if TOLD.exists() else {}
                 for i in now:
                     if i["key"] not in told:

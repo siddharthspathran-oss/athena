@@ -36,6 +36,14 @@ def set_speaker(say, busy) -> None:
     _say, _busy = say, busy
 
 
+_playing = lambda: False       # noqa: E731 - set by voice: is a class, a video or music coming out of the speakers?
+
+
+def set_playing(check) -> None:
+    global _playing
+    _playing = check
+
+
 def talked() -> None:
     """The voice loop calls this on every exchange - for 'sorry to interrupt'."""
     _state["talk"] = time.time()
@@ -217,6 +225,8 @@ def greet(reason: str = "", minutes_away: float = 30) -> None:
             return
     except Exception:
         pass
+    if _playing():                               # not over a class on Teams or a film (28 Oct 2026)
+        return
     with _greet_lock:                            # claim the slot before the slow part
         saved = load_json(DATA / "presence.json", {})
         _state["greeted"] = max(_state["greeted"], saved.get("greeted", 0))

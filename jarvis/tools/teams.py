@@ -455,4 +455,14 @@ def start(note=print) -> None:
             except Exception as e:
                 note(f"[teams] {e}")
             time.sleep(30)
-    threading.Thread(target=loop, daemon=True, name="athena-teams").start()
+    def run() -> None:
+        # Its own COM apartment: Teams is read through UI Automation (COM), and this thread
+        # only had COM by luck - whichever thread imported comtypes first got it, and when
+        # that changed every read failed ("CoInitialize has not been called", 28 Oct 2026).
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+        except Exception:
+            pass
+        loop()
+    threading.Thread(target=run, daemon=True, name="athena-teams").start()

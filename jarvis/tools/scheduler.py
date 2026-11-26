@@ -21,6 +21,16 @@ TAG = ["schedule"]
 
 JOBS_FILE = DATA / "jobs.json"
 _notify_hook = None  # set by the UI so reminders can surface properly
+_LOCK = threading.RLock()  # athena-server's web requests and its timer share the queue
+QUIET_STALE = timedelta(minutes=10)  # a "say it" handed over by the server, too late to bother
+
+
+def _remote(op: str, **kw):
+    """With athena-server set up, the reminder queue lives there so reminders
+    fire with the laptop shut (server.py, 9 Nov 2026). None = no server, or it
+    can't be reached: kept on this machine, as before."""
+    from .. import server
+    return server.remote(op, **kw)
 
 
 def set_notifier(fn) -> None:
@@ -283,6 +293,9 @@ def add_reminder(text: str, when: str, repeat: str = "once") -> str:
     when: when to fire, for example 'in 20 minutes', 'at 18:30', 'tomorrow 9am'
     repeat: one of once, daily, weekly, hourly
     """
+    said = _remote("add", text=text, when=when, repeat=repeat)
+    if said is not None:
+        return str(said)
     fire_at = _parse_when(when)
     if fire_at is None:
         return (f"ERROR: could not understand the time {when}. "
@@ -290,24 +303,65 @@ def add_reminder(text: str, when: str, repeat: str = "once") -> str:
     if repeat not in ("once", "daily", "weekly", "hourly"):
         return f"ERROR: repeat must be once, daily, weekly or hourly (got {repeat})."
 
-    jobs = _load()
-    jobs.append({
-        "id": uuid.uuid4().hex[:8],
-        "text": text,
-        "fire_at": fire_at.isoformat(timespec="seconds"),
-        "repeat": repeat,
-        "created": datetime.now().isoformat(timespec="seconds"),
-    })
-    _save(jobs)
+    _append(text, fire_at, repeat)
     when_str = fire_at.strftime("%a %d %b at %I:%M %p").replace(" 0", " ")
     suffix = "" if repeat == "once" else f", repeating {repeat}"
     return f"Reminder set for {when_str}{suffix}: {text}"
 
 
+def _append(text: str, fire_at: datetime, repeat: str = "once", **extra) -> None:
+    with _LOCK:
+        jobs = _load()
+        jobs.append({
+            "id": uuid.uuid4().hex[:8],
+            "text": text,
+            "fire_at": fire_at.isoformat(timespec="seconds"),
+            "repeat": repeat,
+            "created": datetime.now().isoformat(timespec="seconds"),
+            **extra,
+        })
+        _save(jobs)
+
+
+def add_at(text: str, when: datetime) -> str:
+    """A one-off reminder at an exact time, once (studyauto's dated ones)."""
+    said = _remote("add_at", text=text, fire_at=when.isoformat(timespec="seconds"))
+    if said is not None:
+        return str(said)
+    with _LOCK:
+        if any(j["text"] == text for j in _load()):
+            return "Already set."
+        _append(text, when)
+    return "Set."
+
+
+def pending() -> list[dict]:
+    """Every waiting reminder, wherever it's kept, for the pages that show them."""
+    there = _remote("jobs")
+    here = [j for j in _load() if not j.get("quiet")]
+    return (there if isinstance(there, list) else []) + here
+
+
+def say_now(text: str) -> None:
+    """athena-server fired a reminder and has already rung the phone: say it
+    here too (the alarm and the voice), without ringing the phone again."""
+    _append(text, datetime.now(), quiet=True)
+
+
 @tool(tags=TAG)
 def list_reminders() -> str:
     """List all pending reminders and recurring tasks."""
-    jobs = sorted(_load(), key=lambda j: j["fire_at"])
+    said = _remote("list")
+    here = _list_here()
+    if said is None or here == "No reminders set.":
+        return here if said is None else str(said)
+    if said == "No reminders set.":
+        return here
+    return f"{said}\nKept on this laptop (the server was unreachable when they were set):\n{here}"
+
+
+def _list_here() -> str:
+    jobs = sorted((j for j in _load() if not j.get("quiet")), key=lambda j: j["fire_at"])
     if not jobs:
         return "No reminders set."
     lines = []
@@ -325,6 +379,20 @@ def cancel_reminder(reminder_id: str) -> str:
 
     reminder_id: the 8-character id from list_reminders, words from the reminder ("the dentist one"), or 'all'
     """
+    said = _remote("cancel", reminder_id=reminder_id)
+    if said is not None and not str(said).startswith("NOT CANCELLED: no reminder matches"):
+        if reminder_id.strip().lower() == "all":
+            _cancel_here("all")
+        return str(said)
+    return _cancel_here(reminder_id)
+
+
+def _cancel_here(reminder_id: str) -> str:
+    with _LOCK:
+        return _cancel_locked(reminder_id)
+
+
+def _cancel_locked(reminder_id: str) -> str:
     jobs = _load()
     key = reminder_id.strip()
     if key.lower() == "all":
@@ -390,30 +458,40 @@ def _claim(ui: str) -> bool:
         return False
 
 
-def _tick(hold_before: datetime | None = None) -> list[str]:
-    """Fire anything due. Returns the texts that fired.
+def _tick(hold_before: datetime | None = None) -> list[tuple[str, bool]]:
+    """Fire anything due. Returns (text, quiet) for each that fired; quiet =
+    the phone has already been rung for it (handed over by athena-server).
 
     hold_before: leave jobs that fell due before this moment untouched. Used
         to keep the startup backlog intact until the interface that can speak
         has finished loading.
     """
+    with _LOCK:
+        return _tick_locked(hold_before)
+
+
+def _tick_locked(hold_before: datetime | None) -> list[tuple[str, bool]]:
     jobs = _load()
     if not jobs:
         return []
     now = datetime.now()
-    fired: list[str] = []
+    fired: list[tuple[str, bool]] = []
     keep: list[dict] = []
+    stale = False
 
     for j in jobs:
         try:
             due = datetime.fromisoformat(j["fire_at"])
         except Exception:
             continue
+        if j.get("quiet") and now - due > QUIET_STALE:
+            stale = True                     # the laptop was asleep: the phone already had it
+            continue
         if due > now or (hold_before is not None and due < hold_before):
             keep.append(j)
             continue
 
-        fired.append(j["text"])
+        fired.append((j["text"], bool(j.get("quiet"))))
         step = _STEP.get(j["repeat"])
         if step:
             # roll forward past any occurrences missed while Athena was closed
@@ -422,7 +500,7 @@ def _tick(hold_before: datetime | None = None) -> list[str]:
             j["fire_at"] = due.isoformat(timespec="seconds")
             keep.append(j)
 
-    if fired:
+    if fired or stale:
         _save(keep)
     return fired
 
@@ -458,12 +536,13 @@ def start_scheduler(ui: str = "cli", interval_seconds: int = 20) -> threading.Th
                 if _claim(ui):
                     hold = (started_at if yields
                             and time.time() - started < _YIELD_SECONDS else None)
-                    for text in _tick(hold):
+                    for text, quiet in _tick(hold):
                         if _notify_hook:
                             _notify_hook(text)
                         else:
                             print(f"\n[REMINDER] {text}\n")
-                        _phone_reminder(text)
+                        if not quiet:
+                            _phone_reminder(text)
             except Exception:
                 pass
             time.sleep(interval_seconds)

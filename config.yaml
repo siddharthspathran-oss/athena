@@ -198,8 +198,10 @@ voice:
   clone_device: "auto"
   # After an answer she keeps listening this long without "Athena", for up
   # to follow_ups turns in a row; saying her name again refills it.
+  # 0 since 31 Oct 2026 - like Alexa: she wakes only to her name (or Right Alt).
+  # A question she asks still waits for your answer (reply_seconds below).
   follow_up_seconds: 8
-  follow_ups: 3
+  follow_ups: 0
   # After Athena asks something ("Which one?", "Want me to open it?"), how
   # long she listens for the answer without the wake word.
   reply_seconds: 10
@@ -265,19 +267,21 @@ mcp:
   # type ask you first. Installed in C:\claude code\mcp-servers, pinned versions.
   servers:
     # Microsoft's browser control, 0.0.83: works through a website step by step in
-    # its own Chrome window (no saved sign-ins: --isolated). Every click and every
+    # a hidden Chrome (--headless: nothing pops up; no saved sign-ins: --isolated). Every click and every
     # bit of typing waits for your yes.
     playwright:
       command: ["node", "C:/claude code/mcp-servers/playwright/node_modules/@playwright/mcp/cli.js",
-                "--browser", "chrome", "--isolated", "--image-responses", "omit",
+                "--browser", "chrome", "--isolated", "--headless", "--image-responses", "omit",
                 "--output-dir", "C:/claude code/mcp-servers/playwright/output", "--output-max-size", "50000000"]
       words: 'brows(?:e|er|ing)|websites?|web\s*pages?|on\s+(?:the\s+)?site|fill\s+(?:in|out)|forms?|click|amazon|flipkart|track\s+(?:my\s+)?order|order\s+status'
-    # GitHub's own server, 2.0.2: read-only (it can't change anything on GitHub), with
-    # lockdown on (strangers' text in public repos is held back). Key: provider github.
+    # GitHub's own server, 2.0.2: read-only (it can't change anything on GitHub), 12 chosen
+    # tools, lockdown on (strangers' text in public repos is held back). Key: provider github.
     github:
       command: ["C:/claude code/mcp-servers/github/github-mcp-server.exe", "stdio", "--read-only", "--lockdown-mode",
-                "--toolsets=context,repos,issues,pull_requests,actions"]
+                "--toolsets=", "--tools=get_me,search_repositories,list_commits,get_commit,list_issues,issue_read,list_pull_requests,pull_request_read,get_file_contents,list_branches,get_latest_release,actions_list"]
       env: {GITHUB_PERSONAL_ACCESS_TOKEN: "${github}"}
+      # 12 tools, not 29: with all of them "what changed in my repo" went to a CI tool.
+      hint: "The user's GitHub account is siddharthspathran-oss - the owner of 'my' repos (athena, athena-sites, athena-desk-orb, lab-report-builder...). What changed in a repo = list_commits with owner, repo and since (ISO date); leave until out, or today is cut off."
       words: 'repos?|repositor\w*|issues?|pull\s+requests?|commits?|pushed|workflows?'
 
 stage:
@@ -515,6 +519,9 @@ alerts:
   #
   # Master switch. false = nothing rings, nothing is pushed.
   enabled: true
+  # Every push also goes to your linked Telegram chat (@siddharth_athena_bot), where
+  # a reply goes straight back to her: "snooze 10 minutes", "remind me at 6".
+  telegram_bot: true
   # Nothing rings between these times, except the kinds listed in `urgent`.
   # Skipped alerts are logged on the HUD, not saved for the morning.
   quiet_hours: ["23:00", "07:00"]
@@ -553,6 +560,11 @@ alerts:
   reminders:
     # Reminders you set also ring the phone when they fire.
     enabled: true
+  deck:
+    # Items on today's Athena Deck checklist that start with a time ("12:30 YT
+    # clip 11") get a push this many minutes before.
+    enabled: true
+    minutes_before: 5
   email:
     # New unread mail from these senders (a whole domain, or one address).
     # The call says who it is from, never the subject.
@@ -576,6 +588,29 @@ web:
   # Every request needs the token in data/web_token.txt, and anything
   # destructive asks on the phone before it runs.
   port: 8420
+
+server:
+  # athena-server, the always-on mini PC at home (9 Nov 2026, jarvis/server.py).
+  # It polls Telegram, keeps the reminders, rings for classes and important
+  # mail, and sends the morning brief - so they all work with the laptop shut.
+  # Telegram goes to the laptop first while it's awake. Empty url = no server:
+  # the laptop does everything itself, as before.
+  url: ""                                    # set in data/config.local.yaml (private)
+  port: 8421                                  # the server's reminder API (Tailscale only)
+  laptop_url: ""                              # this laptop's web as the server reaches it: data/config.local.yaml
+  brief_at: "08:00"
+  brief_city: "Dehradun"
+
+skills:
+  # The skill finder (jarvis/skillfinder.py, 10 Nov 2026): actions you did together
+  # by hand on two different days in the last month, offered as routines. Ask
+  # "any skill ideas" any time; new ones also go to your phone (ntfy + Telegram)
+  # once a week, from this day and time - or the next time the laptop is awake
+  # that week. Reply "save idea 1" or "save idea 1 as uni stuff". Nothing is
+  # saved unless you say so, and nothing that messages anyone is ever offered.
+  finder: true
+  finder_day: "sat"
+  finder_at: "11:00"
 
 apps:
   # Spoken name -> real app name, for words speech keeps getting wrong.

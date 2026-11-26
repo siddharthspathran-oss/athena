@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<!-- maximum-scale stops Android zooming the whole app when a field is
+     focused, which is what made the layout look out of proportion in the
+     installed window. interactive-widget keeps the keyboard from squashing
+     the page instead of overlaying it. -->
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<title>Athena</title>
+<!-- Installable from the phone's browser: Chrome offers "Install app",
+     iOS Safari needs Share > Add to Home Screen. Either way it then opens
+     without browser chrome, with its own icon. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#05080c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Athena">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="icon" href="/icons/icon-192.png">
+<style>
+  :root { --bg:#05080c; --card:rgba(18,30,38,.72); --fg:#dff2f4; --dim:#5f7f8c;
+          --accent:#2fe6c0; --accent2:#19b6ff; --edge:rgba(47,230,192,.16);
+          --glow:rgba(47,230,192,.45); }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-size:16px;
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         display:flex; flex-direction:column; overflow:hidden;
+         /* dvh follows the address bar; svh does not jump as it hides. The
+            installed app has no bar, so both agree there. */
+         height:100svh; height:100dvh;
+         padding-top:env(safe-area-inset-top);
+         padding-bottom:env(safe-area-inset-bottom); }
+  /* The glow behind everything, and a faint grid over it. Fixed and
+     pointer-events:none so it never gets in the way of the chat. */
+  body::before { content:''; position:fixed; inset:0; pointer-events:none;
+    background:
+      radial-gradient(60% 40% at 50% -8%, rgba(47,230,192,.16), transparent 70%),
+      radial-gradient(45% 35% at 110% 105%, rgba(25,182,255,.12), transparent 70%);
+    z-index:0; }
+  body::after { content:''; position:fixed; inset:0; pointer-events:none; opacity:.35;
+    background-image:linear-gradient(rgba(47,230,192,.05) 1px, transparent 1px),
+                     linear-gradient(90deg, rgba(47,230,192,.05) 1px, transparent 1px);
+    background-size:44px 44px; z-index:0;
+    -webkit-mask-image:radial-gradient(70% 55% at 50% 0%, #000, transparent 75%);
+            mask-image:radial-gradient(70% 55% at 50% 0%, #000, transparent 75%); }
+  header, #log, #chip, form { position:relative; z-index:1; }
+
+  header { padding:12px 16px;
+           border-bottom:1px solid var(--edge); display:flex;
+           align-items:center; gap:12px;
+           background:linear-gradient(180deg, rgba(47,230,192,.06), transparent); }
+  /* The reactor ring: two arcs turning in opposite directions. */
+  .ring { width:30px; height:30px; flex:none; position:relative; }
+  .ring i { position:absolute; inset:0; border-radius:50%;
+            border:1.5px solid transparent; }
+  .ring i:nth-child(1){ border-top-color:var(--accent);
+    border-right-color:var(--accent); animation:spin 3.2s linear infinite;
+    box-shadow:0 0 12px var(--glow); }
+  .ring i:nth-child(2){ inset:6px; border-bottom-color:var(--accent2);
+    border-left-color:var(--accent2); animation:spin 2.1s linear infinite reverse; }
+  .ring b { position:absolute; inset:11px; border-radius:50%;
+            background:var(--accent); box-shadow:0 0 14px var(--glow);
+            animation:pulse 2.4s ease-in-out infinite; }
+  .ring.busy i:nth-child(1){ animation-duration:.7s; }
+  .ring.busy i:nth-child(2){ animation-duration:.5s; }
+  .ring.bad i { border-top-color:#ff6b6b; border-right-color:#ff6b6b;
+                border-bottom-color:#ff6b6b; border-left-color:#ff6b6b; }
+  .ring.bad b { background:#ff6b6b; box-shadow:0 0 14px rgba(255,107,107,.5); }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @keyframes pulse { 0%,100%{opacity:.55;transform:scale(.82)} 50%{opacity:1;transform:scale(1)} }
+
+  h1 { font-size:14px; margin:0; font-weight:700; letter-spacing:3.4px;
+       text-transform:uppercase; color:var(--fg);
+       text-shadow:0 0 16px var(--glow); }
+  #model { margin-left:auto; max-width:47%; background:rgba(14,24,31,.9);
+           color:var(--dim); border:1px solid var(--edge); border-radius:9px;
+           font-size:11px; padding:5px 6px; font-family:inherit; }
+  #model:focus { outline:none; border-color:var(--accent); }
+  header small { color:var(--dim); font-size:10.5px; margin-left:8px;
+                 letter-spacing:1.4px; text-transform:uppercase;
+                 font-family:ui-monospace,Menlo,Consolas,monospace; }
+
+  #log { flex:1; overflow-y:auto; padding:18px 16px; display:flex;
+         flex-direction:column; gap:13px; scrollbar-width:thin;
+         scrollbar-color:var(--edge) transparent; }
+  #log::-webkit-scrollbar { width:5px; }
+  #log::-webkit-scrollbar-thumb { background:var(--edge); border-radius:3px; }
+
+  .msg { max-width:88%; padding:12px 15px; border-radius:15px; line-height:1.5;
+         white-space:pre-wrap; word-wrap:break-word; position:relative;
+         animation:rise .26s cubic-bezier(.2,.8,.3,1) both;
+         backdrop-filter:blur(9px); -webkit-backdrop-filter:blur(9px); }
+  @keyframes rise { from{opacity:0;transform:translateY(9px)} to{opacity:1;transform:none} }
+  .me { align-self:flex-end; color:#02201c; border-bottom-right-radius:4px;
+        background:linear-gradient(135deg, var(--accent), #14c9d6);
+        box-shadow:0 5px 22px rgba(47,230,192,.24); font-weight:500; }
+  .bot { align-self:flex-start; background:var(--card);
+         border:1px solid var(--edge); border-left:2px solid var(--accent);
+         border-bottom-left-radius:4px;
+         box-shadow:0 5px 24px rgba(0,0,0,.45), inset 0 0 26px rgba(47,230,192,.045); }
+  .trace { align-self:flex-start; color:var(--dim); font-size:12px;
+           font-family:ui-monospace,Menlo,Consolas,monospace; padding:1px 5px;
+           letter-spacing:.4px; animation:rise .26s both; }
+  .err { color:#ff8a8a; border-left-color:#ff6b6b !important; }
+
+  form { display:flex; gap:8px; align-items:center;
+         padding:11px 12px;
+         border-top:1px solid var(--edge);
+         background:linear-gradient(0deg, rgba(5,8,12,.96), rgba(5,8,12,.72)); }
+  input, button { font:inherit; border-radius:13px; border:1px solid var(--edge); }
+  /* min-width:0 is load-bearing. A flex item will not shrink below the
+     intrinsic width of a text input (~20 characters), so on a 375px phone
+     the text box pushed the Send button clean off the right edge. */
+  input { flex:1; min-width:0; padding:13px 15px; background:rgba(14,24,31,.85);
+          color:var(--fg); outline:none;
+          transition:border-color .2s, box-shadow .2s; }
+  input::placeholder { color:var(--dim); }
+  input:focus { border-color:var(--accent);
+                box-shadow:0 0 0 3px rgba(47,230,192,.12), 0 0 22px rgba(47,230,192,.16); }
+  button { padding:13px 17px; border:none; font-weight:700; letter-spacing:.4px;
+           flex:none; white-space:nowrap;
+           color:#02201c; background:linear-gradient(135deg, var(--accent), #14c9d6);
+           box-shadow:0 4px 18px rgba(47,230,192,.28); transition:transform .12s, opacity .2s; }
+  button:active { transform:scale(.96); }
+  button:disabled { opacity:.42; box-shadow:none; }
+
+  .confirm { align-self:flex-start; background:rgba(42,34,14,.8);
+             border:1px solid rgba(214,168,58,.35); border-left:2px solid #d6a83a;
+             padding:13px 15px; border-radius:15px; max-width:88%;
+             backdrop-filter:blur(9px); }
+  .confirm button { margin-top:9px; margin-right:8px; padding:9px 15px; font-size:15px; }
+  .no { background:rgba(18,30,38,.9); color:var(--fg);
+        border:1px solid var(--edge); box-shadow:none; }
+  a.page { display:inline-block; margin-top:10px; padding:9px 15px;
+           background:linear-gradient(135deg, var(--accent), #14c9d6); color:#02201c;
+           font-weight:700; border-radius:11px; text-decoration:none;
+           box-shadow:0 4px 16px rgba(47,230,192,.26); }
+
+  .icon { display:flex; align-items:center; justify-content:center;
+          width:42px; min-width:42px; height:42px; background:rgba(14,24,31,.85);
+          border:1px solid var(--edge); border-radius:13px; font-size:18px;
+          color:var(--dim); cursor:pointer; transition:all .18s; }
+  .icon:active { color:var(--accent); border-color:var(--accent);
+                 box-shadow:0 0 18px rgba(47,230,192,.22); }
+  #chip { padding:0 14px; }
+  #chip .att { display:inline-flex; align-items:center; gap:9px;
+               background:rgba(18,30,38,.85); border:1px solid var(--edge);
+               border-radius:11px; padding:7px 11px; font-size:13px;
+               box-shadow:0 0 18px rgba(47,230,192,.09); }
+  #chip img { width:34px; height:34px; object-fit:cover; border-radius:7px; }
+  #chip .x { color:var(--dim); padding:0 3px; cursor:pointer; }
+  .shot { max-width:200px; border-radius:12px; display:block; margin-top:8px;
+          border:1px solid var(--edge); }
+  /* Saved conversations, as a drawer rather than a permanent column - a
+     phone has no width to spare for one. */
+  #menu { position:fixed; inset:0; z-index:5; visibility:hidden; }
+  #menu.open { visibility:visible; }
+  #scrim { position:absolute; inset:0; background:rgba(0,0,0,.6);
+           opacity:0; transition:opacity .22s; }
+  #menu.open #scrim { opacity:1; }
+  #drawer { position:absolute; top:0; bottom:0; left:0; width:80%;
+            max-width:310px; background:#080d13;
+            border-right:1px solid var(--edge); display:flex;
+            flex-direction:column; transform:translateX(-102%);
+            transition:transform .24s cubic-bezier(.2,.8,.3,1);
+            padding-top:env(safe-area-inset-top);
+            padding-bottom:env(safe-area-inset-bottom); }
+  #menu.open #drawer { transform:none; }
+  #drawer h2 { font-size:10px; letter-spacing:1.6px; text-transform:uppercase;
+               color:var(--dim); margin:16px 18px 8px; font-weight:700; }
+  #newchat { margin:16px 14px 4px; padding:12px 14px; border-radius:12px;
+             background:var(--card); border:1px solid var(--edge);
+             color:var(--accent); font-weight:700; font-size:14.5px;
+             text-align:left; }
+  #chatlist { flex:1; overflow-y:auto; padding:0 10px 14px; }
+  .chat { display:flex; align-items:center; gap:8px; padding:11px 10px;
+          border-radius:10px; margin-bottom:2px; }
+  .chat.live { background:var(--card); }
+  .chat span.t { flex:1; font-size:14px; color:var(--fg);
+                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chat.live span.t { color:var(--accent); }
+  .chat span.w { font-size:11px; color:var(--dim); }
+  .chat span.d { color:var(--dim); font-size:13px; padding:0 2px 0 6px; }
+  .burger { display:flex; align-items:center; justify-content:center;
+            width:30px; height:30px; flex:none; font-size:19px;
+            color:var(--dim); }
+  .file { display:inline-block; margin-top:7px; padding:6px 11px;
+          background:rgba(0,0,0,.22); border-radius:9px; font-size:13.5px;
+          font-family:ui-monospace,Menlo,Consolas,monospace; }
+  @media (prefers-reduced-motion:reduce){
+    .ring i,.ring b{animation:none} .msg,.trace{animation:none} }
+</style></head><body>
+<div id="menu"><div id="scrim"></div><nav id="drawer">
+  <button id="newchat">+  New chat</button>
+  <h2>Recent</h2><div id="chatlist"></div>
+</nav></div>
+<header><span class="burger" id="burger">&#9776;</span>
+<span class="ring" id="dot"><i></i><i></i><b></b></span>
+<select id="model" title="Which model answers class work"></select>
+<h1>Athena</h1><small id="host"></small></header>
+<div id="log"></div>
+<div id="chip"></div>
+<form id="f">
+  <label class="icon" for="cam" title="Take a photo">â—‰</label>
+  <label class="icon" for="pick" title="Choose a picture">ï¼‹</label>
+  <!-- capture= asks the phone for its camera rather than the gallery -->
+  <input id="cam" type="file" accept="image/*" capture="environment" hidden>
+  <!-- Documents as well as pictures. accept="image/*" meant a phone would
+       only offer the photo gallery, so a worksheet could not be sent at all
+       from a phone - the one device you actually have the PDF on. -->
+  <input id="pick" type="file" hidden
+         accept="image/*,.pdf,.docx,.txt,.md,.csv,application/pdf">
+  <input id="q" placeholder="Tell Athena what to do"
+    autocomplete="off" autocapitalize="sentences"><button id="go">Send</button>
+</form>
+<script>
+const log=document.getElementById('log'), f=document.getElementById('f'),
+      q=document.getElementById('q'), go=document.getElementById('go'),
+      dot=document.getElementById('dot');
+document.getElementById('host').textContent=location.host;
+
+// Token arrives once in the URL, then lives in storage so it stays out of
+// browser history and server logs.
+const p=new URLSearchParams(location.search);
+if(p.get('t')){ localStorage.setItem('jarvis_token',p.get('t'));
+  history.replaceState({},'',location.pathname); }
+const token=()=>localStorage.getItem('jarvis_token')||'';
+
+// Chrome will not offer to install without a service worker. This one
+// deliberately caches nothing: Athena is useless without the PC anyway, and a
+// stale cached shell would be worse than a clear "cannot reach the PC".
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('/sw.js').catch(()=>{});
+}
+
+function add(text,cls){ const d=document.createElement('div');
+  d.className=cls; d.textContent=text; log.appendChild(d);
+  log.scrollTop=log.scrollHeight; return d; }
+
+// A study answer comes back as a sentence plus [file.html]. The page itself
+// is on the PC, so turn the reference into a link the phone can open - same
+// rendering, equations and tables and all.
+function addAnswer(text){
+  const shared=[];
+  text=(text||'').replace(/\s*\[share:([\w-]+)\]/g,function(_,id){shared.push(id);return '';});
+  if(shared.length){
+    const d=add(text,'msg bot');
+    shared.forEach(function(id){
+      const a=document.createElement('a');
+      a.href='/get/'+encodeURIComponent(id)+'?t='+encodeURIComponent(token());
+      a.setAttribute('download',''); a.className='page'; a.textContent='Download';
+      d.appendChild(document.createElement('br')); d.appendChild(a);
+    });
+    return d;
+  }
+  const m=text.match(/\[([\w.\-]+\.html)\]$/m);
+  if(!m){ return add(text,'msg bot'); }
+  const d=add(text.replace(m[0],'').trim(),'msg bot');
+  const a=document.createElement('a');
+  a.href='/answers/'+encodeURIComponent(m[1])+'?t='+encodeURIComponent(token());
+  a.target='_blank'; a.rel='noopener'; a.className='page';
+  a.textContent='Open the full answer';
+  d.appendChild(document.createElement('br'));
+  d.appendChild(a);
+  log.scrollTop=log.scrollHeight;
+  return d;
+}
+
+// ---- pictures from the phone ----
+let pending=null;                       // {dataUrl, name}
+const chip=document.getElementById('chip');
+
+function showChip(){
+  chip.innerHTML='';
+  if(!pending) return;
+  const w=document.createElement('div'); w.className='att';
+  const im=document.createElement('img'); im.src=pending.dataUrl;
+  const t=document.createElement('span'); t.textContent=pending.name;
+  const x=document.createElement('span'); x.className='x'; x.textContent='✕';
+  x.onclick=()=>{ pending=null; showChip(); };
+  w.append(im,t,x); chip.appendChild(w);
+}
+
+function pickImage(input){
+  input.onchange=()=>{
+    const file=input.files&&input.files[0];
+    input.value='';
+    if(!file) return;
+    const fr=new FileReader();
+    // A picture goes to the eyes, anything else to the reader. The phone
+    // does not always set file.type for a document, so the extension is
+    // the fallback.
+    const name=file.name||'photo.jpg';
+    const isImage=(file.type||'').startsWith('image/') ||
+                  /\.(jpe?g|png|gif|webp|heic|bmp)$/i.test(name);
+    fr.onload=()=>{ pending={dataUrl:fr.result,name:name,doc:!isImage};
+                    showChip(); q.focus(); };
+    fr.readAsDataURL(file);
+  };
+}
+pickImage(document.getElementById('cam'));
+pickImage(document.getElementById('pick'));
+
+async function look(text,shot){
+  go.disabled=true; dot.className='ring busy';
+  const waiting=add('looking at the pictureâ€¦','trace');
+  try{
+    const r=await fetch('/look',{method:'POST',
+      headers:{'Content-Type':'application/json','X-Token':token()},
+      body:JSON.stringify({text:text,image:shot.dataUrl})});
+    const j=await r.json();
+    waiting.remove();
+    if(!r.ok){ dot.className='ring bad';
+      add(j.error||('HTTP '+r.status),'msg bot err'); return; }
+    dot.className='ring';
+    (j.steps||[]).forEach(s=>add('â†’ '+s.tool+'  '+s.result,'trace'));
+    add(j.answer,'msg bot');
+  }catch(e){ waiting.remove(); dot.className='ring bad';
+    add('Cannot reach the PC. Is it awake and on Tailscale?','msg bot err'); }
+  finally{ go.disabled=false; }
+}
+
+// ---------- which model answers class work ----------
+const modelSel=document.getElementById('model');
+async function loadModels(){
+  try{
+    const j=await api('/models');
+    modelSel.innerHTML='';
+    (j.models||[]).forEach(m=>{
+      const o=document.createElement('option');
+      o.value=m.model;
+      o.textContent=m.label+(m.ready?'':'  - no key');
+      o.disabled=!m.ready;
+      if(m.live) o.selected=true;
+      modelSel.appendChild(o);
+    });
+  }catch(e){ /* the header select is not worth an error bubble */ }
+}
+modelSel.onchange=async()=>{
+  try{ const j=await api('/model',{method:'POST',
+        body:JSON.stringify({model:modelSel.value})});
+       add(j.said,'trace'); }
+  catch(e){ add('Could not switch model.','msg bot err'); }
+};
+
+// ---------- saved conversations ----------
+const menu=document.getElementById('menu');
+document.getElementById('burger').onclick=()=>{ menu.classList.add('open'); loadChats(); };
+document.getElementById('scrim').onclick=()=>menu.classList.remove('open');
+document.getElementById('newchat').onclick=()=>switchChat('new');
+
+async function api(path,opts){
+  const r=await fetch(path,Object.assign({headers:{'X-Token':token(),
+    'Content-Type':'application/json'}},opts||{}));
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+}
+
+async function loadChats(){
+  const list=document.getElementById('chatlist');
+  try{
+    const j=await api('/chats');
+    list.innerHTML='';
+    (j.chats||[]).forEach(c=>{
+      const row=document.createElement('div');
+      row.className='chat'+(c.live?' live':'');
+      const t=document.createElement('span'); t.className='t'; t.textContent=c.title;
+      const w=document.createElement('span'); w.className='w'; w.textContent=c.when;
+      const d=document.createElement('span'); d.className='d'; d.textContent='✕';
+      t.onclick=w.onclick=()=>switchChat(c.id);
+      d.onclick=async e=>{ e.stopPropagation();
+        if(!d.dataset.sure){ d.dataset.sure=1; d.textContent='Delete?';
+          setTimeout(()=>{ delete d.dataset.sure; d.textContent='✕'; },3000); return; }
+        await api('/chats/'+c.id,{method:'DELETE'}); loadChats(); };
+      row.append(t,w,d); list.appendChild(row);
+    });
+    if(!j.chats.length) list.innerHTML=
+      '<div style="color:var(--dim);font-size:13px;padding:10px">Nothing saved yet.</div>';
+  }catch(e){ list.innerHTML='<div class="msg bot err">Cannot reach the PC.</div>'; }
+}
+
+async function switchChat(id){
+  try{
+    const j=await api('/chats/'+id);
+    log.innerHTML='';
+    (j.messages||[]).forEach(m=>{
+      if(m.role==='user') add(m.text,'msg me'); else addAnswer(m.text);
+    });
+    menu.classList.remove('open');
+    q.focus();
+  }catch(e){ add('Could not open that chat.','msg bot err'); }
+}
+
+// Show the conversation the PC left open, rather than an empty page.
+switchChat('current').catch(()=>{});
+loadModels();
+
+async function readDoc(text,doc){
+  go.disabled=true; dot.className='ring busy';
+  const waiting=add('reading '+doc.name+'â€¦','trace');
+  try{
+    const r=await fetch('/read',{method:'POST',
+      headers:{'Content-Type':'application/json','X-Token':token()},
+      body:JSON.stringify({text:text,name:doc.name,data:doc.dataUrl})});
+    const j=await r.json();
+    waiting.remove();
+    if(!r.ok){ dot.className='ring bad';
+      add(j.error||('HTTP '+r.status),'msg bot err'); return; }
+    dot.className='ring';
+    addAnswer(j.answer);
+  }catch(e){ waiting.remove(); dot.className='ring bad';
+    add('Cannot reach the PC. Is it awake and on Tailscale?','msg bot err'); }
+  finally{ go.disabled=false; }
+}
+
+async function send(text,force){
+  go.disabled=true; dot.className='ring busy';
+  const thinking=add('thinkingâ€¦','trace');
+  try{
+    const r=await fetch('/ask',{method:'POST',
+      headers:{'Content-Type':'application/json','X-Token':token()},
+      body:JSON.stringify({text:text,confirm:!!force})});
+    const j=await r.json();
+    thinking.remove();
+    if(!r.ok){ dot.className='ring bad';
+      add(j.error||('HTTP '+r.status),'msg bot err'); return; }
+    dot.className='ring';
+    (j.steps||[]).forEach(s=>add('â†’ '+s.tool+'  '+s.result,'trace'));
+    if(j.needs_confirm){
+      const box=add('','confirm');
+      box.textContent=j.answer;
+      const yes=document.createElement('button'); yes.textContent='Run anyway';
+      const no=document.createElement('button'); no.textContent='Cancel'; no.className='no';
+      yes.onclick=()=>{ box.remove(); send(text,true); };
+      no.onclick=()=>{ box.remove(); };
+      box.appendChild(document.createElement('br'));
+      box.appendChild(yes); box.appendChild(no);
+    } else { addAnswer(j.answer); }
+  }catch(e){ thinking.remove(); dot.className='ring bad';
+    add('Cannot reach the PC. Is it awake and on Tailscale?','msg bot err'); }
+  finally{ go.disabled=false; q.focus(); }
+}
+
+f.onsubmit=e=>{ e.preventDefault();
+  const t=q.value.trim();
+  if(pending){
+    const shot=pending;
+    const said=t||(shot.doc?'Work through this and answer it.'
+                           :'What is in this picture?');
+    const mine=add(said,'msg me');
+    if(shot.doc){
+      const f=document.createElement('span'); f.className='file';
+      f.textContent='ðŸ“„ '+shot.name; mine.appendChild(document.createElement('br'));
+      mine.appendChild(f);
+    } else {
+      const im=document.createElement('img'); im.className='shot'; im.src=shot.dataUrl;
+      mine.appendChild(im);
+    }
+    pending=null; showChip(); q.value='';
+    if(shot.doc){ readDoc(said,shot); } else { look(said,shot); }
+    return;
+  }
+  if(!t) return;
+  add(t,'msg me'); q.value=''; send(t,false); };
+</script></body></html>

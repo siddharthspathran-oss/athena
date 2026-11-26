@@ -1,108 +1,22 @@
-"""The agent loop: prompt -> model -> tool calls -> results -> answer."""
+"""The agent loop: prompt -> model -> tool calls -> results -> answer.
+
+Split on 31 Oct 2026: the prompt text and Step are in agent_defs.py, asking first
+(Guardrails, which Agent inherits) in agent_safety.py, and the shortcuts in
+routes*.py - all importable from here as before.
+"""
 from __future__ import annotations
 
 import json
 import re
 import time
-from dataclasses import dataclass
 from typing import Callable
 
 from . import offer, planner, registry
 from .config import cfg
 from .llm import LLM
 from .memory import Memory
-
-# Nothing in here may change from one turn to the next. qwen2.5's template
-# renders the system message first and the ~4k tokens of tool definitions
-# straight after it, and Ollama reuses its KV cache only for an identical
-# prefix. The time used to sit on the second line, so each new minute threw
-# the whole prefix away: measured 3.3 s (2.8 s of prompt eval over 5.5k
-# tokens) for the first question after the minute rolled, against 0.4 s warm.
-# The clock now rides on each user message instead (Memory.build).
-SYSTEM_PROMPT = """You are {name}, a local AI assistant running on the user's own Windows PC.
-Each user message ends with the date and time it was sent, in square brackets.
-Use the latest one when asked the time, date or day; do not mention it otherwise.
-
-You have tools that genuinely control this computer: launching apps, reading and
-organising files, searching the web, reading the user's documents, and scheduling
-tasks. Use them. Do not claim you cannot do something that a tool covers, and do
-not describe what a tool would do instead of calling it.
-
-Rules:
-- Prefer calling a tool over guessing. If asked about files, search for them.
-- Call one tool at a time and read its result before deciding the next step.
-- If one sentence asks for several things - "open Spotify and play music" -
-  carry out every part. Call the next tool instead of answering, and only
-  reply once nothing is left to do.
-- If a tool returns an error, read the error and try a corrected call once.
-  Do not retry the identical call.
-- When you have the answer, reply in plain prose. Be brief: one or two sentences
-  unless the user asked for detail. No preamble, no restating the question.
-- If a request is genuinely ambiguous, or you did not understand it, ask one
-  short clarifying question. Never repeat your previous answer to cover for
-  not having understood - say you did not catch it.
-- Never invent file paths, search results, or command output. Only report what a
-  tool actually returned.
-
-You cannot do anything in the real world by describing it. Sending a message,
-opening an app, changing a setting, saving a fact - each happens only when the
-matching tool runs and returns. Never report an action as done unless its tool
-just returned successfully. Saying "sent", "opened", "done" or "remembered"
-when no tool ran is the worst mistake you can make, because the user believes
-you and finds out later that nothing happened.
-
-Memory is a tool, not something you can do by thinking:
-- Anything the user tells you to remember, save, note or keep MUST go through
-  the `remember` tool. Knowing it for the rest of this conversation is not
-  remembering it - the moment the assistant restarts it is gone.
-- Never say "remembered", "saved", "noted" or "I will keep that in mind" unless
-  you have just called `remember` and it returned successfully.
-- To answer a question about something stored earlier, call `recall`. Do not
-  rely on it being in the conversation.
-- When the user states a lasting personal fact - their name, a birthday, a
-  preference, a folder they use - call `remember` even if they did not say the
-  word "remember".
-
-Work like a partner, not a vending machine (13 Oct 2026):
-- Keep track of what the user is working on in this conversation - the
-  assignment, the bug, the plan - and build on it. "Do the next one" or "now
-  make it shorter" refers to that work; don't make them repeat it.
-- When a piece of work is done and there is an obvious next step, offer it in
-  one short line ("Want me to send it to your phone?"). Don't offer anything
-  when there's no real next step.
-- Say what you think when it helps: if their approach has a problem, or there
-  is a clearly better way, say so briefly and why. Be honest when you're unsure.
-- If something is unclear, ask one short question instead of guessing.
-"""
-
-
-@dataclass
-class Step:
-    """One tool invocation, surfaced to the UI so the user can see the work."""
-    tool: str
-    args: dict
-    result: str
-
-
-VOICE_STYLE = """
-Your reply is spoken aloud in a natural human voice, so talk like a capable,
-friendly person rather than a machine: contractions, everyday words, no lists,
-headings, markdown, emoji or symbols. Length costs the user real seconds of
-waiting: usually one short sentence, under fifteen words. State the result and
-stop - no restating the question, no offering further help.
-Personality: calm, quick, quietly confident, with a dry sense of humour now and
-then - like a trusted assistant who has known the user for years, not a help
-desk. Confirm actions in a word or two: "Done." "On it." "Playing it now."
-Use the user's name only occasionally. One light remark is fine when nothing is
-urgent; never joke about bad news.
-Your punctuation sets your tone of voice: good news ends with "!" ("Done! It's
-open.", "Nice, all three classes are done!"), a question ends with "?", and bad
-news is a plain, gentle sentence. Don't put "!" on everything - only where you'd
-genuinely sound pleased.
-Good: "You're on 43 percent, running on battery." Bad: "Your battery is
-currently at 43 percent and you are running on battery power. Let me know if
-you need anything else."
-"""
+from .agent_defs import SYSTEM_PROMPT, Step, VOICE_STYLE  # noqa: F401 - split out 31 Oct 2026; Step is agent.Step to the UIs
+from .agent_safety import Guardrails, _OPEN_ASK, _new_recipient, opens_asked  # noqa: F401 - split out 31 Oct 2026
 
 
 def warm(voice: bool = True, load: bool = False) -> None:
@@ -140,21 +54,7 @@ def warm(voice: bool = True, load: bool = False) -> None:
         print(f"[warm: {e}]")
 
 
-def _new_recipient(args: dict) -> bool:
-    """A message or call going to a number that is not one of your contacts -
-    or, for call_number, to anyone who is not (a business, a raw number)."""
-    from .tools import messaging
-    to = str(args.get("to") or args.get("who") or "").strip()
-    if not to:
-        return False
-    digits = messaging._normalise_phone(to)
-    if len(digits) >= 10:
-        return not any(messaging._normalise_phone(c.get("phone", ""))[-10:] == digits[-10:]
-                       for c in messaging._load().values())
-    return messaging._find_contact(to) is None
-
-
-class Agent:
+class Agent(Guardrails):
     def __init__(self, on_step: Callable[[Step], None] | None = None,
                  confirm: Callable[[str, dict], bool] | None = None,
                  voice: bool = False):
@@ -191,53 +91,6 @@ class Agent:
         from . import offer
         return bool(offer.pending()) or self._last_answer.rstrip().endswith("?")
 
-    def _needs_confirm(self, tool: registry.Tool, args: dict | None = None) -> bool:
-        """Risk tiers (9 Oct 2026 audit):
-
-          critical  every time: safety.ask_first (PowerShell, deleting) and
-                    safety.always_confirm_tags (the RAGAZZA shop - an
-                    unconfirmed "set stock to 50" looped six times, 27 Sep 2026)
-          high      a message or call to someone not in your contacts; and
-                    anything in registry.OUTWARD while a web page, email, file
-                    or another app's text is in the conversation - it may
-                    carry instructions written for Athena (prompt injection)
-          low       everything else just runs, as before (confirm_destructive off)
-        """
-        if tool.name in (cfg.get("safety.ask_first", []) or []) or                 set(tool.tags) & set(cfg.get("safety.always_confirm_tags", []) or []):
-            return True
-        if tool.name in registry.OUTWARD and time.time() < self._untrusted_until:
-            return True
-        if tool.name in ("whatsapp_message", "whatsapp_call", "call_number") and _new_recipient(args or {}):
-            return True
-        return bool(tool.destructive and cfg.get("safety.confirm_destructive", True))
-
-    def allowed(self, tool: registry.Tool, args: dict) -> bool:
-        """Ask if this call needs it - once per request: the router asking
-        and then Tool.run asking again would be the same question twice."""
-        getattr(self, "_ran_tools", set()).add(tool.name)
-        key = tool.name + json.dumps(args, sort_keys=True, default=str)
-        if key in self._approved or not self._needs_confirm(tool, args):
-            return True
-        if key in self._refused:
-            return False
-        # On the HUD's live feed: what is waiting for your OK, and what was refused.
-        self.on_step(Step(tool=f"permission: {tool.name}", args=args, result="asked"))
-        ok = bool(self.confirm(tool.name, args))
-        (self._approved if ok else self._refused).add(key)
-        if not ok:
-            self.on_step(Step(tool=f"blocked: {tool.name}", args=args, result="not done"))
-        return ok
-
-    def saw_untrusted(self) -> None:
-        """Text someone else wrote is now in the conversation; it stays in the
-        history for a while, so outward actions ask for the next 10 minutes."""
-        self._untrusted_until = time.time() + float(cfg.get("safety.untrusted_minutes", 10)) * 60
-
-    def _offer_instead(self, name: str, args: dict) -> bool:
-        from . import offer
-        from .habits import _label
-        offer.set_choices([offer.Choice(_label(name, args), name, args)])
-        return False
 
     def _follow_up(self, text: str) -> tuple[str, dict] | None:
         """The last command again with one thing changed, for a follow-up
@@ -271,22 +124,6 @@ class Agent:
                 return name, {**args, key: x}
         return None
 
-    def _declined(self, name: str, args: dict) -> str:
-        """End the turn when a confirmation is refused or still pending.
-
-        Fed back as "Cancelled by the user" and left to carry on, a 7B model
-        read the word "cancel" as a cue and called cancel_reminder("all")
-        seven times in a row (27 Sep 2026). Nothing further runs this turn.
-        """
-        from . import offer
-        from .habits import _label
-        note = "Not done: waiting for the user's approval."
-        self.on_step(Step(tool=name, args=args, result=note))
-        self.memory.add_raw({"role": "tool", "name": name, "content": note})  # every tool call gets its result
-        answer = (f"That needs your OK first: {_label(name, args)}. Say yes to go ahead." if offer.pending()
-                  else "I haven't done that - it needs your OK first.")
-        self.memory.add("assistant", answer)
-        return answer
 
     # A similarity check on short inputs used to live here, replacing repeated
     # answers with "I didn't catch that". It fired on real two-word commands
@@ -307,6 +144,7 @@ class Agent:
             return "Yes?"
         started = time.time()
         self._approved, self._refused = set(), set()
+        self._opens_left = opens_asked(user_input)
         from . import modes
         self.memory.system_prompt = self._base_prompt + modes.prompt()    # study / coding / research ...
         registry._guard.agent = self       # Tool.run checks permissions with this request
@@ -419,6 +257,7 @@ class Agent:
                 answer = "Okay, I'll leave it."
             else:
                 said = []
+                self._opens_left = len(picked)         # "yes" to "want me to open it?" asked for these
                 for c in picked:
                     t = registry.get(c.tool)
                     self._approved.add(c.tool + json.dumps(c.args, sort_keys=True, default=str))   # "yes" was the OK

@@ -261,7 +261,7 @@ def system() -> dict:
 
 def tasks() -> dict:
     from ..tools import todo
-    from ..tools.scheduler import _load as load_jobs
+    from ..tools.scheduler import pending as load_jobs
 
     today = dt.date.today().isoformat()
     now = dt.datetime.now()

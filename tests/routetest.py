@@ -35,6 +35,15 @@ if not hasattr(ctypes, "WinDLL"):
 import jarvis.tools  # noqa: E402,F401  (registers every tool)
 from jarvis import memory, profile, registry  # noqa: E402
 from jarvis.agent import route, split_simple  # noqa: E402
+from jarvis.store import save_json  # noqa: E402
+from jarvis.tools import messaging_contacts  # noqa: E402
+
+# A made-up contact book, so the alias cases below hold on any machine and no real
+# contact's name is in the repo (26 Nov 2026, before it went public).
+messaging_contacts.CONTACTS_FILE = Path(tempfile.mkdtemp()) / "contacts.json"
+save_json(messaging_contacts.CONTACTS_FILE, {
+    "neha": {"phone": "+910000000001", "aka": ["sleepyhead panda", "sleepy head panda"]},
+    "papa": {"phone": "+910000000002"}, "maa": {"phone": "+910000000003"}, "me": {"phone": "+910000000004"}})
 
 # phrase -> (tool, args), or None when it must be left to the model.
 # Only phrases whose routing does not depend on this PC's apps, files or
@@ -165,6 +174,16 @@ ROUTES = {
     "play my playlist": ("play_my_playlist", {}),
     "set volume to 40": ("set_volume", {"level": 40}),
     "volume 120": ("set_volume", {"level": 100}),
+    "athena, set the volume to 20.": ("set_volume", {"level": 20}),
+    "turn the volume down to 30": ("set_volume", {"level": 30}),
+    "volume up": ("set_volume", {"step": 10}),
+    "turn it down a bit": ("set_volume", {"step": -10}),
+    "turn up the volume please": ("set_volume", {"step": 10}),
+    "louder": ("set_volume", {"step": 10}),
+    "make it quieter": ("set_volume", {"step": -10}),
+    "turn it up on my phone": ("phone_media", {"action": "volume up"}),
+    "what is the volume": ("get_volume", {}),
+    "athena, what's the volume right now?": ("get_volume", {}),
     # quick system answers
     "take a screenshot": ("take_screenshot", {}),
     "lock my screen": ("lock_screen", {}),

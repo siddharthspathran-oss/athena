@@ -5,6 +5,7 @@
     python run.py classic    the older Tk chat window
     python run.py hotkey     background listener, Ctrl+Alt+Space popup
     python run.py voice      talk to it, it talks back
+    python run.py server     athena-server only: Telegram, reminders, morning brief
     python run.py doctor     check that everything is installed and working
     python run.py tools      list every tool it can use
     python run.py voice-setup   download the natural voices (Kokoro / Piper)
@@ -235,7 +236,7 @@ def _log_to_file(mode: str) -> None:
 
 def main() -> int:
     mode = (sys.argv[1] if len(sys.argv) > 1 else "cli").lower().lstrip("-")
-    if mode in ("voice", "web", "hotkey", "stage"):
+    if mode in ("voice", "web", "hotkey", "stage", "server"):
         import ctypes
         # One copy of each: a manual start racing the web server's watchdog
         # ran voice twice (26 Sep 2026) - Whisper loaded twice, ~1 GB of VRAM,
@@ -447,6 +448,11 @@ def main() -> int:
         from jarvis.ui import web
 
         web.run()
+    elif mode == "server":
+        # athena-server, the always-on mini PC: Telegram, reminders, the morning brief.
+        from jarvis import server
+
+        server.run()
     elif mode in ("cli", "chat", "terminal"):
         from jarvis.ui import cli
 

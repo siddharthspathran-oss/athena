@@ -39,7 +39,9 @@ for n in ("browser_snapshot", "list_issue_types", "list_pull_requests", "pull_re
         bad.append(f"{n} only reads but would ask")
 w = mcp.Server("web tool", s.command)
 w.tools = [{"name": "browser_navigate", "description": "go to a url"}]
-mcp.register(w, r"amazon|track\s+my\s+order")
+mcp.register(w, r"amazon|track\s+my\s+order", "The account is test-user.")
+if "The account is test-user." not in registry.get("web_tool_browser_navigate").description:
+    bad.append("a server's hint isn't on its tools")
 if "web_tool_browser_navigate" not in registry.select("track my order on amazon"):
     bad.append("a server's words don't bring its tools")
 if "web_tool_browser_navigate" not in registry.OUTWARD or registry.get("web_tool_browser_navigate").destructive:

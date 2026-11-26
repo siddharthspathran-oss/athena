@@ -328,10 +328,218 @@ def to_url(v: str) -> str:
 @tool(tags=["deck"])
 def deck_status() -> str:
     """What every console on the Deck is doing - working, resting, or needs you,
-    and why. Use for "what are my consoles doing", "deck status"."""
+    and why - and how today's checklist is going. Use for "what are my consoles
+    doing", "what is the deck doing", "deck status"."""
+    today = today_line()
     if not running():
-        return "The Deck isn't open."
-    return summary(api("GET", "/api/state"))
+        return "The Deck isn't open." + (f" {today}" if today else "")
+    return summary(api("GET", "/api/state")) + (f"\n{today}" if today else "")
+
+
+# ---------- checklists: your day-by-day lists on the board ----------
+# 31 Oct 2026: the YouTube Shorts week was planned on the Deck as one checklist
+# a day ("Sat 31 Oct"), 3 of 49 items ticked, and Athena couldn't see any of it.
+
+_DAY_TITLE = re.compile(r"^\s*(?:mon|tue|wed|thu|fri|sat|sun)\w*\s+(\d{1,2})\s+([a-z]{3})", re.I)
+
+
+def _day(d) -> str:
+    return f"{d:%a} {d.day} {d:%b}"                       # "Sat 31 Oct", "Sun 1 Nov" - the titles' own form
+
+
+def _title_date(title: str):
+    import datetime as dt
+    m = _DAY_TITLE.match(title or "")
+    if not m:
+        return None
+    today = dt.date.today()
+    try:
+        d = dt.datetime.strptime(f"{m.group(1)} {m.group(2).title()} {today.year}", "%d %b %Y").date()
+    except ValueError:
+        return None
+    return d.replace(year=d.year - 1) if (d - today).days > 180 else d
+
+
+def _board() -> dict:
+    """The board: from the Deck while it's open (it owns the board then), else its file."""
+    if running(0.4):
+        try:
+            return api("GET", "/api/state", timeout=3)
+        except Exception:
+            pass
+    return json.loads((DECK / "data" / "board.json").read_text(encoding="utf-8"))
+
+
+def _save_items(node: dict, items: list) -> None:
+    if running(0.4):
+        api("PATCH", f"/api/nodes/{node['id']}", {"items": items, "refresh": True})   # "refresh": an open board redraws
+        return
+    f = DECK / "data" / "board.json"
+    st = json.loads(f.read_text(encoding="utf-8"))
+    for n in st["nodes"]:
+        if n["id"] == node["id"]:
+            n["items"] = items
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, indent=1, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(f)
+
+
+def _checklists(st: dict) -> list[dict]:
+    return [n for n in st.get("nodes", []) if n.get("type") == "checklist"]
+
+
+def _pick(lists: list[dict], which: str) -> dict | None:
+    """'today' / 'tomorrow' / 'yesterday' by the date in the title, else by title words."""
+    import datetime as dt
+    from difflib import SequenceMatcher
+    w = (which or "today").strip().lower()
+    offset = {"today": 0, "tomorrow": 1, "yesterday": -1}.get(w)
+    if offset is not None:
+        day = dt.date.today() + dt.timedelta(days=offset)
+        return next((n for n in lists if _title_date(n.get("title", "")) == day), None)
+    hit = next((n for n in lists if w in n.get("title", "").lower()), None)
+    if hit:
+        return hit
+    best = max(lists, key=lambda n: SequenceMatcher(None, w, n.get("title", "").lower()).ratio(), default=None)
+    return best if best and SequenceMatcher(None, w, best.get("title", "").lower()).ratio() >= 0.5 else None
+
+
+def _left_before(lists: list[dict]) -> int:
+    import datetime as dt
+    today = dt.date.today()
+    return sum(1 for n in lists if (d := _title_date(n.get("title", ""))) and d < today
+               for i in n.get("items", []) if not i.get("done"))
+
+
+def _match_item(items: list[dict], item: str) -> int | None:
+    from difflib import SequenceMatcher
+    s = str(item).strip().lower().strip(".!?\"'")
+    if s.isdigit():
+        k = int(s) - 1
+        return k if 0 <= k < len(items) else None
+    hits = [k for k, i in enumerate(items) if s and s in i.get("text", "").lower()]
+    if hits:
+        return hits[0]
+    score = [(SequenceMatcher(None, s, i.get("text", "").lower()).ratio(), k) for k, i in enumerate(items)]
+    best = max(score, default=(0, None))
+    return best[1] if best[0] >= 0.45 else None
+
+
+_AT = re.compile(r"^\s*(\d{1,2})[:.](\d{2})\b\s*[-–—:]?\s*(?P<rest>.+)")
+
+
+def timed_today() -> list[dict]:
+    """Unticked items on today's Deck list that start with a time ("12:30 YT clip
+    11 -> submit link on Whop"), for the alert watcher (alerts._Watch.deck)."""
+    import datetime as dt
+    try:
+        n = _pick(_checklists(_board()), "today")
+    except Exception:
+        return []
+    out, today = [], dt.date.today()
+    for i in (n or {}).get("items", []):
+        m = _AT.match(i.get("text", ""))
+        if m and not i.get("done") and int(m.group(1)) < 24 and int(m.group(2)) < 60:
+            out.append({"key": f"deck:{n['id']}:{i.get('id', '')}:{today}", "text": m.group("rest").strip(),
+                        "at": dt.datetime.combine(today, dt.time(int(m.group(1)), int(m.group(2))))})
+    return out
+
+
+def on_today_list(said: str) -> bool:
+    """For the "tick off X" / "I did X" shortcut: True only when X plainly names an
+    unticked item on today's Deck list, so study goals keep everything else."""
+    s = re.sub(r"^(?:the|my|a|an)\s+", "", (said or "").strip().lower().strip(".!?\"'"))
+    if len(s) < 4:
+        return False
+    try:
+        n = _pick(_checklists(_board()), "today")
+    except Exception:
+        return False
+    return bool(n) and any(s in i.get("text", "").lower() for i in n.get("items", []) if not i.get("done"))
+
+
+def today_line() -> str:
+    """One line on today's checklist, for the brief and deck status - '' if there is none."""
+    try:
+        lists = _checklists(_board())
+    except Exception:
+        return ""
+    n = _pick(lists, "today")
+    left = _left_before(lists)
+    if not n:
+        return f"On the Deck, {left} items are still unticked from earlier days." if left else ""
+    items = n.get("items", [])
+    done = sum(1 for i in items if i.get("done"))
+    nxt = next((i["text"] for i in items if not i.get("done")), "")
+    return (f"Today's Deck list ({n['title']}): {done} of {len(items)} done" + (f" - next: {nxt}" if nxt else " - all done")
+            + (f". {left} still unticked from earlier days." if left else "."))
+
+
+@tool(tags=["deck"])
+def deck_list(which: str = "today") -> str:
+    """Your checklists on Athena Deck - by default today's, the one titled with
+    today's date ("Sat 31 Oct"). Use for "what's on my checklist today", "what's
+    left on my deck list", "show tomorrow's list".
+
+    which: today, tomorrow, yesterday, part of a checklist's title, or "all"
+    """
+    lists = _checklists(_board())
+    if not lists:
+        return "There are no checklists on the Deck."
+    if (which or "").strip().lower() == "all":
+        return "\n".join(f"{n['title']}: {sum(1 for i in n.get('items', []) if i.get('done'))} of {len(n.get('items', []))} done"
+                         for n in lists)
+    n = _pick(lists, which)
+    if not n:
+        return f"No Deck checklist for '{which}'. There are: " + ", ".join(x["title"] for x in lists) + "."
+    items = n.get("items", [])
+    done = sum(1 for i in items if i.get("done"))
+    lines = [f"{n['title']}: {done} of {len(items)} done."] + [
+        f"{k}. [{'x' if i.get('done') else ' '}] {i.get('text', '')}" for k, i in enumerate(items, 1)]
+    left = _left_before(lists)
+    if left and (which or "today").strip().lower() == "today":
+        lines.append(f"{left} items are still unticked from earlier days.")
+    return "\n".join(lines)
+
+
+@tool(tags=["deck"])
+def deck_tick(item: str, which: str = "today", done: bool = True) -> str:
+    """Tick an item off a Deck checklist (done=false unticks it). Use for "tick
+    off record episode 2", "I've done number 3 on my list".
+
+    item: the item's number or some of its words
+    which: today, tomorrow, yesterday or part of the checklist's title
+    """
+    n = _pick(_checklists(_board()), which)
+    if not n:
+        return f"ERROR: no Deck checklist for '{which}'."
+    items = [dict(i) for i in n.get("items", [])]
+    k = _match_item(items, item)
+    if k is None:
+        return f"ERROR: nothing on {n['title']} matches '{item}'. It has: " + "; ".join(
+            f"{j}. {i.get('text', '')}" for j, i in enumerate(items, 1))
+    items[k]["done"] = bool(done)
+    _save_items(n, items)
+    left = sum(1 for i in items if not i.get("done"))
+    return (f"{'Ticked' if done else 'Unticked'} \"{items[k]['text']}\" on {n['title']}. "
+            + (f"{left} left." if left else "That's the whole list done."))
+
+
+@tool(tags=["deck"])
+def deck_add_item(text: str, which: str = "today") -> str:
+    """Add an item to a Deck checklist (today's by default). Use for "add edit
+    episode 3 to today's list".
+
+    text: the item
+    which: today, tomorrow, yesterday or part of the checklist's title
+    """
+    import uuid
+    n = _pick(_checklists(_board()), which)
+    if not n:
+        return f"ERROR: no Deck checklist for '{which}' - make the card on the Deck first."
+    items = [dict(i) for i in n.get("items", [])] + [{"id": uuid.uuid4().hex[:8], "text": text.strip(), "done": False}]
+    _save_items(n, items)
+    return f"Added \"{text.strip()}\" to {n['title']} ({len(items)} items)."
 
 
 @tool(tags=["deck"], timeout=20)

@@ -160,9 +160,11 @@ def tool(tmp: Path) -> None:
 
 
 def server(tmp: Path) -> None:
-    from jarvis.ui import web
+    from jarvis.ui import web, web_files
 
-    web.get_token = lambda: "tok-123"
+    # The handler checks the token in web.py, the share/upload routes in web_files.py
+    # (split out 31 Oct 2026) - both read it from their own module.
+    web.get_token = web_files.get_token = lambda: "tok-123"
     srv = ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     port = srv.server_address[1]

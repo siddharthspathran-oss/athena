@@ -1,0 +1,291 @@
+<title>Athena, explained</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column for the explanation, a wider searchable directory for the files.
+   Athena's own HUD world: dark first, her lavender and pink, Chakra Petch / Figtree / JetBrains Mono. */
+:root {
+  color-scheme: dark;
+  --bg: #0c0b12;
+  --surface: #15131e;
+  --surface2: #1d1a29;
+  --ink: #ecebf3;
+  --dim: #a4aabf;
+  --line: rgba(196, 168, 255, .17);
+  --lav: #c4a8ff;
+  --pink: #ff7ccd;
+  --lav-soft: rgba(196, 168, 255, .12);
+  --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --body: "Figtree", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #f6f4fb; --surface: #ffffff; --surface2: #efeaf8; --ink: #1c1828; --dim: #545a6e;
+    --line: rgba(91, 63, 196, .18); --lav: #5b3fc4; --pink: #b31f74; --lav-soft: rgba(91, 63, 196, .08);
+  }
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f4fb; --surface: #ffffff; --surface2: #efeaf8; --ink: #1c1828; --dim: #545a6e;
+  --line: rgba(91, 63, 196, .18); --lav: #5b3fc4; --pink: #b31f74; --lav-soft: rgba(91, 63, 196, .08);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 400 17px/1.6 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 64px;
+}
+.col { max-width: 760px; margin-inline: auto; }
+.wide { max-width: 1040px; margin-inline: auto; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; line-height: 1.15; margin: 0; }
+h2 { font-size: 1.75rem; font-weight: 600; }
+h3 { font-size: 1.2rem; font-weight: 600; }
+p { margin: 0; }
+code { font: 500 .86em var(--mono); background: var(--lav-soft); color: var(--ink); padding: .08em .35em; border-radius: 4px; }
+a { color: var(--lav); }
+:focus-visible { outline: 2px solid var(--pink); outline-offset: 2px; }
+.eyebrow { font: 600 .78rem var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--pink); }
+section { display: grid; gap: 18px; padding-block: 44px 8px; }
+
+/* ---- opening */
+header { display: grid; gap: 16px; padding-block: 56px 8px; }
+header h1 { font-size: clamp(2.6rem, 7vw, 4.2rem); font-weight: 700; letter-spacing: -.01em; }
+header h1 span { color: var(--lav); }
+.lede { font-size: 1.18rem; color: var(--ink); max-width: 62ch; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font: 500 .9rem var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
+.facts b { color: var(--ink); font-weight: 500; }
+
+/* ---- the team */
+.team { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.role { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 16px 14px; display: grid; gap: 6px; align-content: start; }
+.role h3 { font-size: 1.05rem; color: var(--lav); }
+.role p { font-size: .95rem; color: var(--ink); }
+.role .files { font: 400 .78rem var(--mono); color: var(--dim); }
+
+/* ---- the journey */
+.pipe { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font: 500 .82rem var(--display); letter-spacing: .02em; }
+.pipe span { background: var(--surface2); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; white-space: nowrap; }
+.pipe i { color: var(--pink); font-style: normal; }
+.pipe .fork { border-color: var(--pink); color: var(--pink); }
+ol.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; display: grid; gap: 14px; }
+ol.steps li { counter-increment: step; display: grid; grid-template-columns: 2.2rem 1fr; gap: 12px; align-items: start; }
+ol.steps li::before { content: counter(step); font: 700 1.05rem var(--display); color: var(--bg); background: var(--lav); border-radius: 50%; width: 2.2rem; height: 2.2rem; display: grid; place-items: center; }
+ol.steps p { padding-top: .2rem; }
+.say { font-family: var(--display); color: var(--pink); }
+
+/* ---- programs, glossary, places */
+dl.pairs { margin: 0; display: grid; grid-template-columns: minmax(130px, 200px) 1fr; border-top: 1px solid var(--line); }
+dl.pairs dt, dl.pairs dd { padding: 12px 0; border-bottom: 1px solid var(--line); margin: 0; }
+dl.pairs dt { font: 600 1rem var(--display); color: var(--lav); padding-right: 16px; }
+dl.pairs dt small { display: block; font: 400 .76rem var(--mono); color: var(--dim); letter-spacing: 0; margin-top: 2px; }
+dl.pairs dd { color: var(--ink); }
+.note { font-size: .95rem; color: var(--dim); }
+
+/* ---- the directory */
+.toolbar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 12px; display: grid; gap: 10px; border-bottom: 1px solid var(--line); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+#q { width: 100%; font: 400 1rem var(--body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 11px 14px; }
+#q::placeholder { color: var(--dim); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips button { font: 500 .82rem var(--display); letter-spacing: .02em; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; cursor: pointer; }
+.chips button span { color: var(--dim); font-family: var(--mono); font-size: .74rem; margin-left: 4px; }
+.chips button[aria-pressed="true"] { background: var(--lav); color: var(--bg); border-color: var(--lav); }
+.chips button[aria-pressed="true"] span { color: var(--bg); }
+.count { font: 400 .82rem var(--mono); color: var(--dim); }
+.area { display: grid; gap: 10px; padding-block: 28px 4px; }
+.area-head { display: grid; gap: 6px; max-width: 760px; }
+.area-head h3 { font-size: 1.35rem; }
+.area-head h3 small { font: 400 .8rem var(--mono); color: var(--dim); margin-left: 8px; }
+.area-head p { color: var(--dim); font-size: .98rem; }
+.rows { display: grid; border-top: 1px solid var(--line); }
+.row { display: grid; grid-template-columns: minmax(200px, 300px) 1fr 5.5rem; gap: 6px 20px; padding: 11px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.path { font: 400 .84rem var(--mono); overflow-wrap: anywhere; }
+.path .dir { color: var(--dim); }
+.path b { font-weight: 500; color: var(--lav); }
+.what { font-size: .97rem; }
+.n { font: 400 .78rem var(--mono); color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; }
+.empty { padding: 24px 0; color: var(--dim); }
+footer { padding-block: 48px 0; color: var(--dim); font-size: .9rem; }
+
+@media (max-width: 640px) {
+  body { font-size: 16px; }
+  dl.pairs { grid-template-columns: 1fr; }
+  dl.pairs dt { border-bottom: 0; padding-bottom: 0; }
+  .row { grid-template-columns: 1fr auto; }
+  .row .what { grid-column: 1 / -1; }
+  .row .n { grid-row: 1; grid-column: 2; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .chips button { transition: background .15s, color .15s; }
+}
+</style>
+
+<header class="col">
+  <p class="eyebrow">Your project, in plain words</p>
+  <h1>Athena, <span>explained</span></h1>
+  <p class="lede">Athena is your own AI assistant, living on this PC. You talk to her, type to her or text her on Telegram, and she does things on the computer and your phone. This page explains how she works, then every one of her 209 files, one plain sentence each.</p>
+  <p class="facts"><span><b>209</b> files</span><span><b>192</b> tools</span><span><b>6</b> programs</span><span><b>17</b> test suites</span></p>
+</header>
+
+<section class="col" aria-labelledby="team">
+  <p class="eyebrow">Start here</p>
+  <h2 id="team">Athena is a small team inside your PC</h2>
+  <p>Every part of her code has one job. If you remember these six, the rest of the page will make sense.</p>
+  <div class="team">
+    <div class="role"><h3>Ears and mouth</h3><p>Hears your voice, checks you said &ldquo;Athena&rdquo;, turns speech into text, and speaks her answers.</p><p class="files">ui/voice*.py · tts.py</p></div>
+    <div class="role"><h3>Brain</h3><p>Works out what you want: a quick shortcut for clear commands, an AI model for everything else.</p><p class="files">agent.py · routes*.py · llm.py</p></div>
+    <div class="role"><h3>Hands</h3><p>192 tools, each one action: open an app, set the volume, find a file, read a page, do maths.</p><p class="files">tools/ folder</p></div>
+    <div class="role"><h3>Screens</h3><p>The HUD dashboard, the phone app, the floating Stage panel and the hotkey popup.</p><p class="files">ui/web*.py · ui/hud* · ui/stage*</p></div>
+    <div class="role"><h3>Memory</h3><p>Your chats, facts about you and a searchable memory, all kept on this PC.</p><p class="files">memory.py · chats.py · db.py</p></div>
+    <div class="role"><h3>Messenger</h3><p>Reaches you when something matters: phone alerts, Telegram, reminders, alarms.</p><p class="files">alerts.py · phone.py · telegram.py</p></div>
+  </div>
+</section>
+
+<section class="col" aria-labelledby="journey">
+  <p class="eyebrow">One request, start to finish</p>
+  <h2 id="journey">What happens when you say <span class="say">&ldquo;Athena, open Spotify&rdquo;</span></h2>
+  <div class="pipe" aria-hidden="true"><span>You speak</span><i>→</i><span>Microphone</span><i>→</i><span>Whisper: sound to text</span><i>→</i><span>Was &ldquo;Athena&rdquo; said?</span><i>→</i><span>Agent</span><i>→</i><span class="fork">Shortcut or AI model</span><i>→</i><span>Tool</span><i>→</i><span>She answers</span></div>
+  <ol class="steps">
+    <li><p><b>The microphone hears you.</b> <code>voice_mic.py</code> records one sentence. If you hold Right Alt, it records exactly while the key is down, even over music.</p></li>
+    <li><p><b>Whisper turns the sound into text</b> on your graphics card, in about half a second. <code>voice_boot.py</code> loads it when the voice program starts.</p></li>
+    <li><p><b>She checks you meant her.</b> <code>voice_text.py</code> makes sure &ldquo;Athena&rdquo; opens the sentence and that it wasn't noise, a video or her own voice. If not, the sentence is ignored.</p></li>
+    <li><p><b>The agent decides what to do.</b> <code>agent.py</code> first tries the shortcuts in <code>routes*.py</code>. &ldquo;Open Spotify&rdquo; is a clear command, so a shortcut sends it straight to the <code>open_app</code> tool. No AI model is needed, which is why it's fast.</p></li>
+    <li><p><b>If no shortcut fits</b> (&ldquo;what's a good song for studying?&rdquo;), the agent asks an AI model through <code>llm.py</code> and <code>cloud.py</code>. <code>registry.py</code> shows the model only the few tools that fit the question, and it either answers or picks a tool.</p></li>
+    <li><p><b>Anything risky waits for your yes.</b> Deleting a file, sending a message or clicking a button on a website: <code>agent_safety.py</code> makes her ask first.</p></li>
+    <li><p><b>The tool runs.</b> Here <code>system_apps.py</code> finds Spotify and opens it.</p></li>
+    <li><p><b>She answers.</b> <code>voice_speaker.py</code> says it out loud in her Kokoro voice, and the Stage panel in the corner shows a card (<code>stage.py</code>).</p></li>
+  </ol>
+  <p class="note">Typing on the phone app or texting on Telegram skips the first three steps and starts at step 4, inside the web program.</p>
+</section>
+
+<section class="col" aria-labelledby="programs">
+  <p class="eyebrow">What's running</p>
+  <h2 id="programs">The six programs on your PC</h2>
+  <p>Athena isn't one program. Several small ones run side by side and start by themselves when you log in to Windows.</p>
+  <dl class="pairs">
+    <dt>Web<small>run.py web</small></dt><dd>The hub, always running. Serves the HUD and the phone app, answers typed chat and Telegram, and restarts the voice program if it ever stops.</dd>
+    <dt>Voice<small>run.py voice</small></dt><dd>Her ears and mouth. Started by the web program.</dd>
+    <dt>Stage<small>run.py stage</small></dt><dd>The small floating panel in the bottom-right corner while you talk to her.</dd>
+    <dt>Hotkey<small>run.py hotkey</small></dt><dd>Press Ctrl+Alt+Space anywhere to type her a command.</dd>
+    <dt>HUD window<small>run.py gui</small></dt><dd>The dashboard in its own window on the PC.</dd>
+    <dt>Deck<small>pythonw -m deck</small></dt><dd>The board of AI terminals. Runs only while you have it open.</dd>
+  </dl>
+</section>
+
+<section class="col" aria-labelledby="words">
+  <p class="eyebrow">Vocabulary</p>
+  <h2 id="words">Words you'll keep seeing</h2>
+  <dl class="pairs">
+    <dt>Tool</dt><dd>One action Athena can take, such as opening an app or setting the volume. She has 192.</dd>
+    <dt>Shortcut</dt><dd>A fixed rule that sends a clear command straight to a tool, without the AI model. Fast and predictable. In the code these are called routes.</dd>
+    <dt>AI model</dt><dd>The language model that understands free-form requests. Hers is NVIDIA's Nemotron online, with Groq as a backup and a small model on your PC through Ollama.</dd>
+    <dt>Agent</dt><dd>The part that connects the AI model to the tools: asks the model, runs what it picks, and repeats until the job is done.</dd>
+    <dt>Whisper</dt><dd>The speech-to-text model that runs on your graphics card.</dd>
+    <dt>Kokoro</dt><dd>Her voice: the model that turns text into speech.</dd>
+    <dt>Wake word</dt><dd>&ldquo;Athena&rdquo;. She acts on what you say only after hearing it, or while you hold Right Alt, or when she has just asked you a question.</dd>
+    <dt>HUD</dt><dd>Her dashboard, on the PC and the phone.</dd>
+    <dt>Stage</dt><dd>The floating panel showing your words as you speak and what she did.</dd>
+    <dt>Deck</dt><dd>A board of real AI terminals (Claude Code, Codex, Gemini) with notes and checklists.</dd>
+    <dt>Mission</dt><dd>A big job, like building a website, done in the background by Claude or Gemini.</dd>
+    <dt>Routine, skill</dt><dd>A name plus a list of steps. Say the name and every step runs.</dd>
+    <dt>Rule, loop</dt><dd>Automation she runs by herself: &ldquo;when this happens, do that&rdquo;, or &ldquo;keep doing this until it's done&rdquo;.</dd>
+    <dt>Plug-in</dt><dd>A ready-made outside tool set she can use, such as the hidden browser or GitHub. Also called an MCP server.</dd>
+    <dt>Key, token</dt><dd>A secret code that lets Athena use a service. Yours are in Windows Credential Manager, not in any file.</dd>
+    <dt>Test</dt><dd>A small program that checks she still works after a change.</dd>
+  </dl>
+</section>
+
+<section class="col" aria-labelledby="where">
+  <p class="eyebrow">Your stuff</p>
+  <h2 id="where">Where everything is kept</h2>
+  <dl class="pairs">
+    <dt>The code<small>C:\claude code\jarvis</small></dt><dd>Everything on this page. Copied to your private GitHub repository <code>athena</code> each time you say &ldquo;push&rdquo;.</dd>
+    <dt>Settings<small>config.yaml · routines.yaml</small></dt><dd>The two files you can safely edit yourself.</dd>
+    <dt>Your data<small>jarvis\data</small></dt><dd>Memory, chats, reminders, the Telegram link and logs. It stays on this PC and is never sent to GitHub.</dd>
+    <dt>Logs<small>data\voice.log · data\failures.jsonl</small></dt><dd>What she heard and did, and what went wrong. These are how problems get fixed.</dd>
+    <dt>Secret keys<small>Windows Credential Manager</small></dt><dd>Saved there by <code>add_keys.py</code>, listed as Athena/telegram, Athena/github and so on.</dd>
+    <dt>Plug-in programs<small>C:\claude code\mcp-servers</small></dt><dd>The browser and GitHub plug-ins, outside the project folder.</dd>
+  </dl>
+</section>
+
+<section class="wide" aria-labelledby="files" id="dir">
+  <div class="col" style="margin-inline:0;display:grid;gap:12px">
+    <p class="eyebrow">The full list</p>
+    <h2 id="files">Every file, in plain words</h2>
+    <p>Grouped by what it does. Search for a word, or pick an area. The number on the right is how many lines the file has.</p>
+  </div>
+  <div class="toolbar">
+    <label class="count" for="q">Search the 209 files</label>
+    <input id="q" type="search" placeholder="Try: telegram, volume, deck, memory" autocomplete="off">
+    <div class="chips" id="chips" role="group" aria-label="Areas"></div>
+    <p class="count" id="shown"></p>
+  </div>
+  <div id="list"></div>
+</section>
+
+<section class="col" aria-labelledby="todo">
+  <p class="eyebrow">Doing things yourself</p>
+  <h2 id="todo">If you want to…</h2>
+  <dl class="pairs">
+    <dt>Change her voice</dt><dd>Edit the <code>voice</code> section of config.yaml, then restart her.</dd>
+    <dt>Add a routine</dt><dd>Add a name and its steps to routines.yaml. Or after she finishes a job, say &ldquo;save that as morning setup&rdquo;.</dd>
+    <dt>Save a new key</dt><dd>Run <code>add_keys.py</code> in PowerShell and type the provider's name.</dd>
+    <dt>See what went wrong</dt><dd>Run <code>run.py failures</code>, or read data\voice.log.</dd>
+    <dt>Check nothing broke</dt><dd>Run the files in the tests folder. Each prints how many checks failed, which should be 0.</dd>
+    <dt>Undo a change</dt><dd>Every pushed version is on GitHub, so any file can be brought back.</dd>
+  </dl>
+</section>
+
+<footer class="col">Made on 4 Nov 2026 from Athena's own files: 209 files, each described from what it actually does.</footer>
+
+<script>
+const FILES = [{"p": "add_keys.py", "a": "start", "d": "A small program you run yourself to save secret keys (Telegram, GitHub, Wolfram, AI providers). What you type stays hidden, and each key is tested, then stored in Windows Credential Manager.", "n": 64}, {"p": "config.yaml", "a": "start", "d": "All of Athena's settings in one readable file: which AI models she uses, her voice, the wake word, alerts and quiet hours, plug-ins. Many changes need only an edit here, not code.", "n": 795}, {"p": "jarvis/__init__.py", "a": "start", "d": "Marks the <code>jarvis</code> folder as one Python package. Athena's code started life as “Jarvis”, which is why the folder has that name.", "n": 2}, {"p": "jarvis/autostart.py", "a": "start", "d": "Makes Athena start by herself when you log in to Windows.", "n": 97}, {"p": "jarvis/config.py", "a": "start", "d": "Reads config.yaml once and gives every other file its settings, as <code>cfg</code>.", "n": 145}, {"p": "jarvis/credstore.py", "a": "start", "d": "Saves and reads secret keys in Windows Credential Manager, so they never sit in a plain text file.", "n": 70}, {"p": "routines.yaml", "a": "start", "d": "Your routines: a name like “study mode” and the list of steps it runs, in order. Say the name and every step runs, with no AI model involved.", "n": 37}, {"p": "run.py", "a": "start", "d": "The front door. Every Athena program starts here: <code>run.py web</code>, <code>run.py voice</code>, <code>run.py stage</code> and so on. Also has helper commands such as <code>run.py doctor</code> (is everything installed?) and <code>run.py failures</code> (what went wrong lately).", "n": 462}, {"p": "jarvis/agent.py", "a": "brain", "d": "The heart of Athena. Takes what you said, tries a shortcut first, otherwise asks the AI model, runs the tools it chooses, and returns the answer.", "n": 794}, {"p": "jarvis/agent_defs.py", "a": "brain", "d": "The instructions the AI model is given (who Athena is, how to answer, how to sound when speaking), and the record of each action that screens show.", "n": 101}, {"p": "jarvis/agent_safety.py", "a": "brain", "d": "Her safety rules: which actions need your “yes” first, remembering your answers, extra care after reading a web page, and opening windows only when you asked for one.", "n": 122}, {"p": "jarvis/checkcode.py", "a": "brain", "d": "Checks a final answer by actually running code, so a maths answer isn't just a guess.", "n": 154}, {"p": "jarvis/cloud.py", "a": "brain", "d": "Talks to the online AI services (NVIDIA, Groq, Gemini and others) using your saved keys.", "n": 567}, {"p": "jarvis/deadline.py", "a": "brain", "d": "A time limit for each request, so a slow model never keeps you waiting for minutes.", "n": 57}, {"p": "jarvis/failures.py", "a": "brain", "d": "Writes down every request that went wrong, so fixes are made from real evidence, not guesses.", "n": 98}, {"p": "jarvis/llm.py", "a": "brain", "d": "Talks to the AI models: the small one on your PC (Ollama) and the online ones, switching to a backup when one is slow or down.", "n": 494}, {"p": "jarvis/modes.py", "a": "brain", "d": "Study, coding, research, system or general mode. Each mode changes which tools and instructions she uses.", "n": 69}, {"p": "jarvis/offer.py", "a": "brain", "d": "Remembers what Athena just offered (“want me to open it?”), so a short “yes”, “two” or “no” works.", "n": 105}, {"p": "jarvis/planner.py", "a": "brain", "d": "For big requests with several steps: breaks the job into steps and works through them one at a time.", "n": 374}, {"p": "jarvis/qwen_prompt.py", "a": "brain", "d": "Lays out a conversation exactly the way the small local model (Qwen) expects to read it.", "n": 91}, {"p": "jarvis/registry.py", "a": "brain", "d": "The list of all 192 tools, plus the rules for which few the AI model is shown for each question, so it isn't buried in choices.", "n": 633}, {"p": "jarvis/routes.py", "a": "brain", "d": "The shortcut desk. Clear commands (“open Spotify”, “set the volume to 40”) go straight to the right tool here, which is much faster than asking an AI model.", "n": 566}, {"p": "jarvis/routes_automation.py", "a": "brain", "d": "Shortcuts for automation: rules, loops, missions, study goals, and the Athena Deck (consoles, builds, checklists).", "n": 395}, {"p": "jarvis/routes_basic.py", "a": "brain", "d": "Shortcuts for the PC: apps, your brief, the screen, volume, tasks, places, and power (shut down, restart).", "n": 486}, {"p": "jarvis/routes_common.py", "a": "brain", "d": "Small pieces every shortcut file shares, such as the polite words a command may start with (“Athena, can you please…”).", "n": 40}, {"p": "jarvis/routes_files.py", "a": "brain", "d": "Shortcuts for files: open a file or folder, find a document, send a file to your phone.", "n": 243}, {"p": "jarvis/routes_media.py", "a": "brain", "d": "Shortcuts for music: play a song, play track 3, next, previous.", "n": 99}, {"p": "jarvis/routes_memory.py", "a": "brain", "d": "Shortcuts for memory: “remember that…”, “forget…”, reminders, and running a routine by its name.", "n": 157}, {"p": "jarvis/routes_phone.py", "a": "brain", "d": "Shortcuts for people and the phone: calls, WhatsApp messages, contacts, Teams classes, Bluetooth and phone controls.", "n": 200}, {"p": "jarvis/routes_study.py", "a": "brain", "d": "Shortcuts for study questions: quick facts, “explain this”, answers from your own notes, quizzes, lab reports and modes.", "n": 232}, {"p": "jarvis/verify.py", "a": "brain", "d": "Re-checks the arithmetic inside an answer before you see it.", "n": 465}, {"p": "jarvis/cloned_voice.py", "a": "voice", "d": "Optional: speaking in a voice cloned from a short recording.", "n": 127}, {"p": "jarvis/echo.py", "a": "voice", "d": "Tells your voice apart from Athena's own voice coming back through the microphone.", "n": 146}, {"p": "jarvis/hindi.py", "a": "voice", "d": "Understands Hindi when you speak it, and answers in Hindi.", "n": 69}, {"p": "jarvis/live.py", "a": "voice", "d": "What Athena is doing this second (listening, thinking, speaking), shared so the screens can show it.", "n": 165}, {"p": "jarvis/phonevoice.py", "a": "voice", "d": "Talk into the phone app and hear Athena answer on the phone; the PC does the listening and speaking.", "n": 114}, {"p": "jarvis/stage.py", "a": "voice", "d": "Decides which card to show on the floating Stage panel after Athena does something.", "n": 130}, {"p": "jarvis/tts.py", "a": "voice", "d": "The voices: Kokoro (a natural voice, on the graphics card) and Piper (on the processor), with the Windows voice as the last fallback.", "n": 370}, {"p": "jarvis/ui/voice.py", "a": "voice", "d": "The listening loop: waits for “Athena” (or Right Alt held down), turns speech into text, hands it to the agent and speaks the answer. This is the voice program.", "n": 1070}, {"p": "jarvis/ui/voice_boot.py", "a": "voice", "d": "Starting the voice program: loads Whisper on the graphics card, the wake-word engines, and the background watchers (sleep, clock, power).", "n": 431}, {"p": "jarvis/ui/voice_hud.py", "a": "voice", "d": "Knows whether the HUD window is open, and drives the old glowing orb.", "n": 107}, {"p": "jarvis/ui/voice_mic.py", "a": "voice", "d": "The microphone: records one sentence at a time, handles hold-to-talk with Right Alt, and knows when your speakers are playing so their sound isn't taken for you.", "n": 464}, {"p": "jarvis/ui/voice_speaker.py", "a": "voice", "d": "Her mouth: speaks answers sentence by sentence and stops when you interrupt; also short ready-made lines (“On it.”) and little chimes.", "n": 361}, {"p": "jarvis/ui/voice_text.py", "a": "voice", "d": "Rules about the words heard: was her name really said, is this a reply to her question, did Whisper invent words out of noise.", "n": 350}, {"p": "jarvis/wakedata.py", "a": "voice", "d": "Quietly collects real examples of you saying “Athena” (stored as numbers, never as audio) to train a better wake-word detector later.", "n": 111}, {"p": "jarvis/render.py", "a": "screens", "d": "Turns a long answer into a neatly formatted page you can actually read.", "n": 335}, {"p": "jarvis/ui/__init__.py", "a": "screens", "d": "Marks the <code>ui</code> folder as a package.", "n": 1}, {"p": "jarvis/ui/cli.py", "a": "screens", "d": "Chat with Athena inside a terminal window (<code>python run.py</code> with nothing after it).", "n": 140}, {"p": "jarvis/ui/face.js", "a": "screens", "d": "Athena's animated particle face on the HUD, which changes as she listens, thinks and talks.", "n": 261}, {"p": "jarvis/ui/gui.py", "a": "screens", "d": "The older desktop chat window (<code>run.py classic</code>).", "n": 781}, {"p": "jarvis/ui/hotkey.py", "a": "screens", "d": "Press Ctrl+Alt+Space anywhere, type a command, and she acts (<code>run.py hotkey</code>).", "n": 137}, {"p": "jarvis/ui/hud-live.js", "a": "screens", "d": "The HUD's code, part 3: the mic button, phone voice, the live status, the Command Centre, the chat list and settings.", "n": 651}, {"p": "jarvis/ui/hud-missions.js", "a": "screens", "d": "The HUD's code, part 2: the Missions page (what needs you, loops, usage).", "n": 507}, {"p": "jarvis/ui/hud-pages.css", "a": "screens", "d": "The HUD's look, part 2: the pages, phone-sized screens and the Command Centre.", "n": 451}, {"p": "jarvis/ui/hud.css", "a": "screens", "d": "The HUD's look, part 1: layout, sidebar and chat.", "n": 507}, {"p": "jarvis/ui/hud.html", "a": "screens", "d": "The HUD page itself, Athena's dashboard: its layout and which code and styles it loads.", "n": 255}, {"p": "jarvis/ui/hud.js", "a": "screens", "d": "The HUD's code, part 1: your access token, the chat, files and pages.", "n": 281}, {"p": "jarvis/ui/hud_window.py", "a": "screens", "d": "Opens the HUD as its own app window on the PC instead of a browser tab (<code>run.py gui</code>).", "n": 126}, {"p": "jarvis/ui/neuron-brain.js", "a": "screens", "d": "The animated “brain” picture on the HUD that lights up the parts of Athena that are busy.", "n": 501}, {"p": "jarvis/ui/orb_frames.py", "a": "screens", "d": "Draws the orb's animation frames ahead of time from the HUD's face.", "n": 68}, {"p": "jarvis/ui/overlay.py", "a": "screens", "d": "The old glowing orb that appeared while Athena listened. The Stage replaced it.", "n": 357}, {"p": "jarvis/ui/phone_page.html", "a": "screens", "d": "The older, simpler phone page (still served at <code>/classic</code>).", "n": 467}, {"p": "jarvis/ui/phone_sw.js", "a": "screens", "d": "Lets your phone install Athena as an app, and handles “Share to Athena” from other apps.", "n": 44}, {"p": "jarvis/ui/stage.css", "a": "screens", "d": "The Stage's look.", "n": 103}, {"p": "jarvis/ui/stage.html", "a": "screens", "d": "The floating Stage panel's page.", "n": 24}, {"p": "jarvis/ui/stage.js", "a": "screens", "d": "The Stage's code: your words as you say them, the jelly mascot, and the result cards.", "n": 205}, {"p": "jarvis/ui/stage_window.py", "a": "screens", "d": "The small corner window that shows the Stage while you talk to Athena, without stealing focus (<code>run.py stage</code>).", "n": 151}, {"p": "jarvis/ui/views.py", "a": "screens", "d": "Gathers the data for the HUD's pages: calendar, memory, workflows, system, tasks, and tools and skills.", "n": 752}, {"p": "jarvis/ui/web.py", "a": "screens", "d": "Athena's small web server. Serves the HUD and the phone app, takes typed chat (and Telegram), and restarts the voice program if it stops.", "n": 750}, {"p": "jarvis/ui/web_base.py", "a": "screens", "d": "What the web server shares: your access token, this PC's addresses (Wi-Fi and Tailscale), and a lock so only one request uses Athena at a time.", "n": 79}, {"p": "jarvis/ui/web_files.py", "a": "screens", "d": "The web server's file side: sending files to your phone, uploads from the phone, icons, answer pages and the camera.", "n": 340}, {"p": "jarvis/ui/web_status.py", "a": "screens", "d": "The HUD's live panels: processor and graphics card meters, the overview, and the activity feed.", "n": 340}, {"p": "jarvis/tools/__init__.py", "a": "tools", "d": "Loads every tool file. Loading them is what adds all 192 tools to Athena's list.", "n": 10}, {"p": "jarvis/tools/apps.py", "a": "tools", "d": "Reads and presses the buttons, boxes and menus inside any open app.", "n": 301}, {"p": "jarvis/tools/brief.py", "a": "tools", "d": "Your daily brief: classes, meetings, mail that needs a reply, and today's Deck checklist.", "n": 624}, {"p": "jarvis/tools/browser.py", "a": "tools", "d": "Reads, fills in and clicks things on web pages in Athena's own browser.", "n": 458}, {"p": "jarvis/tools/calc.py", "a": "tools", "d": "Maths done by running real code instead of guessing, plus step-by-step working from Wolfram Alpha.", "n": 134}, {"p": "jarvis/tools/files.py", "a": "tools", "d": "File tools: read, write, move, delete (always asks first), organise, and open files with the right app.", "n": 642}, {"p": "jarvis/tools/files_guard.py", "a": "tools", "d": "Where Athena may touch files and where she never may (protected folders, her own data).", "n": 70}, {"p": "jarvis/tools/files_search.py", "a": "tools", "d": "Finding files by name across your folders, skipping clutter such as node_modules.", "n": 177}, {"p": "jarvis/tools/finder.py", "a": "tools", "d": "Fast file finding from how people actually say names (“signals unit 2 pdf”).", "n": 574}, {"p": "jarvis/tools/knowledge.py", "a": "tools", "d": "Ask questions about your own documents and get answers from them.", "n": 274}, {"p": "jarvis/tools/places.py", "a": "tools", "d": "Look a business up, call it through your phone, or book it online.", "n": 306}, {"p": "jarvis/tools/ragazza.py", "a": "tools", "d": "Your RAGAZZA store: orders, revenue and stock, through the shop's private API.", "n": 305}, {"p": "jarvis/tools/routines.py", "a": "tools", "d": "Runs your routines from routines.yaml, and saves a new skill when you ask her to keep a job.", "n": 234}, {"p": "jarvis/tools/scheduler.py", "a": "tools", "d": "Reminders and repeating tasks that survive a restart.", "n": 473}, {"p": "jarvis/tools/screen.py", "a": "tools", "d": "Looks at your screen and answers questions about what's on it (only when you mention the screen).", "n": 208}, {"p": "jarvis/tools/shell.py", "a": "tools", "d": "Runs commands safely, plus remember/recall and the date and time.", "n": 356}, {"p": "jarvis/tools/system.py", "a": "tools", "d": "PC controls: screenshots, windows, battery, system info, lock, shut down or restart, typing, the clipboard, the graphics card.", "n": 410}, {"p": "jarvis/tools/system_apps.py", "a": "tools", "d": "Apps: knows what's installed, matches what you said to the right app, then opens, closes or lists them.", "n": 441}, {"p": "jarvis/tools/system_media.py", "a": "tools", "d": "Sound and music: the volume, what's playing, Spotify controls, playing a particular song.", "n": 516}, {"p": "jarvis/tools/taste.py", "a": "tools", "d": "Learns your taste in music and picks a song you'll like.", "n": 262}, {"p": "jarvis/tools/todo.py", "a": "tools", "d": "A simple to-do list: add a task with an optional day, tick it off.", "n": 105}, {"p": "jarvis/tools/web.py", "a": "tools", "d": "The web: search, read a page, download a file, weather, open a link.", "n": 160}, {"p": "jarvis/tools/windows.py", "a": "tools", "d": "Bluetooth, Wi-Fi, airplane mode and Windows Settings pages.", "n": 307}, {"p": "jarvis/inbox.py", "a": "phone", "d": "Summarises new email and drafts replies in your style. It never sends anything itself.", "n": 233}, {"p": "jarvis/phone.py", "a": "phone", "d": "Reaches your phone when something matters: a push to the ntfy app, the Athena app and your Telegram chat.", "n": 305}, {"p": "jarvis/phone_notify.py", "a": "phone", "d": "Reads out important phone messages that reach the PC through Phone Link.", "n": 221}, {"p": "jarvis/share.py", "a": "phone", "d": "Moves files between the PC and your phone safely, inside your own network.", "n": 232}, {"p": "jarvis/telegram.py", "a": "phone", "d": "Your Telegram bot (@siddharth_athena_bot): text Athena from anywhere and get her alerts there. Only your linked chat is answered.", "n": 248}, {"p": "jarvis/tools/android.py", "a": "phone", "d": "Controls your Android phone over Wi-Fi: media keys, lock, screenshots, finding the phone.", "n": 336}, {"p": "jarvis/tools/messaging.py", "a": "phone", "d": "WhatsApp messages and calls, and writing emails. Always asks before anything is sent.", "n": 667}, {"p": "jarvis/tools/messaging_contacts.py", "a": "phone", "d": "Your contact book: names, nicknames like Papa and Maa, and phone numbers.", "n": 181}, {"p": "jarvis/tools/phonefiles.py", "a": "phone", "d": "Sends a file from the PC to your phone, and opens what the phone sent.", "n": 117}, {"p": "jarvis/webpush.py", "a": "phone", "d": "Notifications sent by the Athena phone app itself.", "n": 93}, {"p": "jarvis/circuits/make.py", "a": "study", "d": "Builds Athena's library of circuit drawings.", "n": 287}, {"p": "jarvis/deadlines.py", "a": "study", "d": "Finds assignment and exam dates in your email and calendar and adds them to Tasks.", "n": 183}, {"p": "jarvis/diagram.py", "a": "study", "d": "Draws diagrams inside study answers.", "n": 274}, {"p": "jarvis/figures.py", "a": "study", "d": "Finds a real circuit drawing when Athena's own library doesn't have one.", "n": 186}, {"p": "jarvis/goals.py", "a": "study", "d": "Long goals such as “prepare me for the end-sem by Friday”, split into tasks for each day.", "n": 560}, {"p": "jarvis/plot.py", "a": "study", "d": "Draws graphs inside answers.", "n": 233}, {"p": "jarvis/quiz.py", "a": "study", "d": "Quizzes you with questions from your own course files and marks your answers.", "n": 285}, {"p": "jarvis/studyauto.py", "a": "study", "d": "Study autopilot: plans for assignments, primers for tomorrow's classes, revision plans for exams.", "n": 202}, {"p": "jarvis/tools/labreports.py", "a": "study", "d": "Makes lab reports by voice, using your lab report builder.", "n": 68}, {"p": "jarvis/tools/study.py", "a": "study", "d": "Explains class topics properly, as a readable page with diagrams and working.", "n": 779}, {"p": "jarvis/tools/study_models.py", "a": "study", "d": "Which AI model answers study questions, and switching to another.", "n": 117}, {"p": "jarvis/tools/study_reuse.py", "a": "study", "d": "Ask the same question twice and get the page that's already written.", "n": 50}, {"p": "jarvis/tools/teams.py", "a": "study", "d": "Microsoft Teams: today's online classes, and joining them with mic and camera off.", "n": 468}, {"p": "jarvis/upes.py", "a": "study", "d": "Your UPES portal (MyUPES): attendance, today's classes, and “can I skip this class?”.", "n": 622}, {"p": "jarvis/upes_browser.py", "a": "study", "d": "The private Chrome window Athena uses for UPES, where you signed in once.", "n": 70}, {"p": "jarvis/upes_lms.py", "a": "study", "d": "The UPES LMS (Moodle): assignment deadlines added to Tasks, new course files downloaded.", "n": 199}, {"p": "jarvis/vault.py", "a": "study", "d": "Saves Athena's notes into your Obsidian vault.", "n": 93}, {"p": "jarvis/alarm.py", "a": "auto", "d": "Rings an alarm for a reminder until you say stop or snooze.", "n": 162}, {"p": "jarvis/alerts.py", "a": "auto", "d": "Decides when something matters enough to reach your phone (a class soon, a missed alarm, a timed Deck item), with quiet hours and a daily limit.", "n": 483}, {"p": "jarvis/attention.py", "a": "auto", "d": "One list of everything waiting on you, such as a console that needs your answer.", "n": 198}, {"p": "jarvis/backup.py", "a": "auto", "d": "A daily backup of your Athena data to OneDrive.", "n": 113}, {"p": "jarvis/gaming.py", "a": "auto", "d": "Gaming mode: frees the graphics card for your games.", "n": 26}, {"p": "jarvis/gestures.py", "a": "auto", "d": "Controls by hand gestures through the webcam.", "n": 261}, {"p": "jarvis/habits.py", "a": "auto", "d": "Notices things you do at the same time most days and offers to automate them.", "n": 128}, {"p": "jarvis/health.py", "a": "auto", "d": "A nightly self-check, small fixes Athena can make herself, and a morning report.", "n": 256}, {"p": "jarvis/loops.py", "a": "auto", "d": "Jobs Athena repeats on a schedule until their goal is met, then stops by herself.", "n": 243}, {"p": "jarvis/mapsearch.py", "a": "auto", "d": "Reads Google Maps results: places, ratings, and whether each has its own website.", "n": 113}, {"p": "jarvis/mcp.py", "a": "auto", "d": "Plug-ins (MCP servers): adds outside tool sets, like the hidden browser and GitHub, as Athena's own tools. Actions that click, type or send ask you first.", "n": 225}, {"p": "jarvis/missions.py", "a": "auto", "d": "Missions: big jobs, such as building a website, done in the background by Claude or Gemini while you carry on.", "n": 761}, {"p": "jarvis/missions_argon.py", "a": "auto", "d": "Runs Gemini Argon by driving the Gemini desktop app.", "n": 285}, {"p": "jarvis/missions_chain.py", "a": "auto", "d": "Missions in several steps, such as research first and then build, one after another.", "n": 174}, {"p": "jarvis/missions_publish.py", "a": "auto", "d": "Publishing a mission's website, only when you say yes.", "n": 108}, {"p": "jarvis/missions_store.py", "a": "auto", "d": "Keeps the list of missions and how far each has got.", "n": 86}, {"p": "jarvis/presence.py", "a": "auto", "d": "Notices whether you're at the PC, and welcomes you back.", "n": 365}, {"p": "jarvis/rules.py", "a": "auto", "d": "“When this happens, do that” rules that Athena runs on her own.", "n": 652}, {"p": "jarvis/usage.py", "a": "auto", "d": "Shows where your Claude usage goes.", "n": 122}, {"p": "jarvis/videorender.py", "a": "auto", "d": "Turns an animated page into a real MP4 video.", "n": 137}, {"p": "jarvis/chats.py", "a": "memory", "d": "Saved conversations, like ChatGPT's chat list, shared by the phone and the PC.", "n": 465}, {"p": "jarvis/db.py", "a": "memory", "d": "The searchable memory database (athena.db), searched by meaning and by exact words.", "n": 455}, {"p": "jarvis/memory.py", "a": "memory", "d": "The conversation so far, plus small facts Athena keeps.", "n": 478}, {"p": "jarvis/profile.py", "a": "memory", "d": "What Athena has learned about you over the weeks.", "n": 455}, {"p": "jarvis/recall.py", "a": "memory", "d": "Searches past conversations, and learns how you write.", "n": 355}, {"p": "jarvis/store.py", "a": "memory", "d": "Saves small data files safely, so a crash never leaves one half-written.", "n": 94}, {"p": "jarvis/ocr.py", "a": "plumbing", "d": "Reads text inside pictures using Windows' own built-in text recognition.", "n": 44}, {"p": "jarvis/uia.py", "a": "plumbing", "d": "Reads and presses controls inside other programs, the way screen readers do.", "n": 205}, {"p": "jarvis/vision.py", "a": "plumbing", "d": "Looks at pictures: the webcam, and images you attach.", "n": 308}, {"p": "jarvis/winapi.py", "a": "plumbing", "d": "Direct Windows calls: finding and moving windows, pressing keys, taking screenshots.", "n": 358}, {"p": "deck/__init__.py", "a": "deck", "d": "Marks the Deck folder as a package and says what the Deck is.", "n": 14}, {"p": "deck/__main__.py", "a": "deck", "d": "Starts the Deck: its server, then its window.", "n": 92}, {"p": "deck/board.py", "a": "deck", "d": "The board itself: workspaces and everything on them, saved after every change so quitting loses nothing.", "n": 374}, {"p": "deck/consoles.py", "a": "deck", "d": "Real terminals (Claude Code, Codex, PowerShell) inside the board, each marked working, resting or needs you.", "n": 462}, {"p": "deck/flows.py", "a": "deck", "d": "Flows: boxes wired together, Langflow-style, run step by step with checks.", "n": 383}, {"p": "deck/gitcard.py", "a": "deck", "d": "A Git card for one project: branches, changes, commit, pull and push.", "n": 109}, {"p": "deck/handoff.py", "a": "deck", "d": "Passes one console's work to another AI agent.", "n": 139}, {"p": "deck/hook.py", "a": "deck", "d": "Tells the board what a Claude Code console is doing right now.", "n": 35}, {"p": "deck/loops.py", "a": "deck", "d": "Types the same message into a console again and again until a goal is met.", "n": 195}, {"p": "deck/server.py", "a": "deck", "d": "The Deck's local server: serves the board and lets Athena control it.", "n": 522}, {"p": "deck/shell/main.js", "a": "deck", "d": "The Deck's app window (Electron), so web tiles on the board can be real browsers.", "n": 142}, {"p": "deck/shell/preload.js", "a": "deck", "d": "The short list of things the board page may ask its window for.", "n": 11}, {"p": "deck/studio.py", "a": "deck", "d": "The studios' back end: reading a project's files and saving notes.", "n": 275}, {"p": "deck/usage.py", "a": "deck", "d": "Counts how many tokens each AI tool used, from their own logs; nothing is sent anywhere.", "n": 163}, {"p": "deck/web/index.html", "a": "deck", "d": "The empty page the board screen is built into.", "n": 12}, {"p": "deck/web/src/App.jsx", "a": "deck", "d": "The board screen: workspaces, the top bar and the canvas everything sits on.", "n": 374}, {"p": "deck/web/src/Composer.jsx", "a": "deck", "d": "Line up a team of agents and launch them in one go.", "n": 107}, {"p": "deck/web/src/Ink.jsx", "a": "deck", "d": "Freehand drawing over the board, to mark things up.", "n": 132}, {"p": "deck/web/src/MissionMap.jsx", "a": "deck", "d": "A map of every console on every workspace; click one to jump to it.", "n": 55}, {"p": "deck/web/src/NodeCard.jsx", "a": "deck", "d": "One item on the board (console, note, checklist, image…): dragging and resizing it.", "n": 116}, {"p": "deck/web/src/Terminal.jsx", "a": "deck", "d": "The live terminal inside a console card.", "n": 75}, {"p": "deck/web/src/Usage.jsx", "a": "deck", "d": "Charts of token use for each AI tool.", "n": 91}, {"p": "deck/web/src/api.js", "a": "deck", "d": "How the board screen talks to the Deck server.", "n": 83}, {"p": "deck/web/src/continuity.jsx", "a": "deck", "d": "Second accounts for Claude Code or Codex, and project memory every agent should know.", "n": 104}, {"p": "deck/web/src/deck.css", "a": "deck", "d": "The board's look: a dark control room with glass cards.", "n": 492}, {"p": "deck/web/src/flows.jsx", "a": "deck", "d": "The Flows screen: drag from one box's dot to another to wire them together.", "n": 131}, {"p": "deck/web/src/lib/diagram.js", "a": "deck", "d": "Lays out and draws diagrams from the Diagram studio, and exports them as pictures.", "n": 193}, {"p": "deck/web/src/lib/hl.js", "a": "deck", "d": "Colours code in previews (syntax highlighting), safely.", "n": 52}, {"p": "deck/web/src/lib/md.js", "a": "deck", "d": "Turns Markdown notes into formatted text, safely.", "n": 83}, {"p": "deck/web/src/main.jsx", "a": "deck", "d": "Starts the board screen.", "n": 7}, {"p": "deck/web/src/nodes.jsx", "a": "deck", "d": "What each kind of item shows inside: notes, checklists, kanban, images, web tiles.", "n": 283}, {"p": "deck/web/src/orchestration.jsx", "a": "deck", "d": "Teams, roles (planner, builder, reviewer…) and a console's loops.", "n": 110}, {"p": "deck/web/src/studios/CodeStudio.jsx", "a": "deck", "d": "Code studio: a project's files as a tree, with the chosen file shown.", "n": 86}, {"p": "deck/web/src/studios/MakeStudios.jsx", "a": "deck", "d": "Docs and Diagram studios: an AI agent writes documentation or draws the project.", "n": 153}, {"p": "deck/web/src/studios/NotesStudio.jsx", "a": "deck", "d": "Notes studio: Obsidian-style notes with links, backlinks and a graph.", "n": 160}, {"p": "deck/web/src/studios/Studios.jsx", "a": "deck", "d": "The studios panel over the board.", "n": 33}, {"p": "deck/web/vite.config.js", "a": "deck", "d": "Settings for building the board screen from its source files.", "n": 10}, {"p": "jarvis/deck_link.py", "a": "deck", "d": "Athena's remote control for the Deck: open it, start consoles, report what they're doing, and read, tick and add to your Deck checklists.", "n": 763}, {"p": "tests/alertstest.py", "a": "tests", "d": "When Athena alerts your phone, and, mostly, when she must not.", "n": 346}, {"p": "tests/answerpagetest.py", "a": "tests", "d": "Do study answers become correct, readable pages?", "n": 68}, {"p": "tests/decklisttest.py", "a": "tests", "d": "Deck checklists (read, tick, add, timed alerts) on a made-up board; your real board is never touched.", "n": 94}, {"p": "tests/filestest.py", "a": "tests", "d": "Opening files and folders the way people ask for them, and what file tools may change.", "n": 296}, {"p": "tests/importcheck.py", "a": "tests", "d": "Finds code that uses something it never imported, a mistake that only crashes when that line finally runs.", "n": 111}, {"p": "tests/mcp_echo_server.py", "a": "tests", "d": "That tiny pretend plug-in server.", "n": 30}, {"p": "tests/mcptest.py", "a": "tests", "d": "Plug-ins, against a tiny pretend plug-in server, with nothing installed.", "n": 69}, {"p": "tests/memorydbtest.py", "a": "tests", "d": "The memory database: search by meaning and by words, working when Ollama is off.", "n": 253}, {"p": "tests/mobiletest.py", "a": "tests", "d": "What a phone actually asks, and where each request should end up (223 cases).", "n": 508}, {"p": "tests/opentest.py", "a": "tests", "d": "Windows open only when you ask, and nothing real opens during the test.", "n": 58}, {"p": "tests/phonefilestest.py", "a": "tests", "d": "Files between the PC and the phone: shares, downloads, uploads.", "n": 255}, {"p": "tests/routetest.py", "a": "tests", "d": "The biggest check: do 292 groups of commands reach the right tool, and does the AI model see the right tools?", "n": 649}, {"p": "tests/storeroutetest.py", "a": "tests", "d": "RAGAZZA store requests reach the right store tool.", "n": 61}, {"p": "tests/studybench.py", "a": "tests", "d": "A benchmark, not a test: compares which AI model answers class work best.", "n": 177}, {"p": "tests/telegramtest.py", "a": "tests", "d": "Telegram chat and alerts, against a fake Telegram, with no real messages sent.", "n": 167}, {"p": "tests/verifytest.py", "a": "tests", "d": "Does the arithmetic checker catch mistakes without inventing new ones?", "n": 144}, {"p": "tests/voicetest.py", "a": "tests", "d": "The voice pieces that need no microphone: speaking in order, stopping, follow-ups, hold-to-talk.", "n": 286}, {"p": "tests/wakedatatest.py", "a": "tests", "d": "The wake-word data collector, tested on your own recorded “Athena”s.", "n": 69}, {"p": "tests/waketest.py", "a": "tests", "d": "Is Athena really being addressed? Near-names like “Atheno” count; noise like “Artha” doesn't.", "n": 54}];
+const AREAS = [{"id": "start", "name": "Starting Athena and her settings", "intro": "How Athena is switched on, where her settings live, and where secret keys are kept. If you only ever open two files, open config.yaml and routines.yaml.", "count": 8}, {"id": "brain", "name": "The brain: understanding and deciding", "intro": "When you ask for something, this part works out what you mean. Clear commands take a shortcut straight to the right tool. Everything else goes to an AI model, which picks tools to use. Her safety rules live here too.", "count": 23}, {"id": "voice", "name": "Hearing and speaking", "intro": "The microphone, recognising her name, turning speech into text (Whisper), and speaking back (Kokoro). This is the voice program, the one you talk to.", "count": 14}, {"id": "screens", "name": "What you see: the HUD, the phone app and windows", "intro": "Athena's screens: the HUD dashboard, the phone app, the floating Stage panel, the hotkey popup and the chat windows. The web server that serves them is here too.", "count": 27}, {"id": "tools", "name": "Things she can do (tools)", "intro": "Each tool is one action Athena can take: open an app, set the volume, find a file, read a web page, do maths. She has 192 of them. The AI model chooses tools; the shortcuts call them directly.", "count": 23}, {"id": "phone", "name": "Your phone, messages and alerts", "intro": "Everything that reaches your phone or other people: alerts, Telegram, WhatsApp, email drafts, files sent to the phone, and controlling the phone itself.", "count": 10}, {"id": "study", "name": "College and study", "intro": "Your UPES portal and LMS, Teams classes, study answers as readable pages, quizzes, goals, deadlines and lab reports.", "count": 17}, {"id": "auto", "name": "Automation and background jobs", "intro": "Things Athena does by herself: rules, loops, alarms, deciding when to alert you, missions (big jobs done by Claude), self-checks, backups and plug-ins.", "count": 20}, {"id": "memory", "name": "Memory and saved data", "intro": "What Athena remembers: your conversations, facts about you and the searchable memory. Everything here is saved in the data folder on your PC and never goes to GitHub.", "count": 6}, {"id": "plumbing", "name": "Talking to Windows", "intro": "Low-level helpers that let Athena press buttons inside other programs, manage windows, read text from pictures and look through the webcam.", "count": 4}, {"id": "deck", "name": "Athena Deck", "intro": "A separate app: a board of real AI terminals (Claude Code, Codex, Gemini, PowerShell) with notes, checklists, kanban, git and flows. Athena can drive it by voice through deck_link.py.", "count": 38}, {"id": "tests", "name": "Tests: the automatic checks", "intro": "Small programs that check Athena still behaves correctly after a change. You never need them to use Athena. They are how I make sure an edit didn't break something.", "count": 19}];
+const $ = id => document.getElementById(id);
+let area = "all";
+
+function pathHtml(p) {
+  const i = p.lastIndexOf("/");
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  return i < 0 ? `<b>${esc(p)}</b>` : `<span class="dir">${esc(p.slice(0, i + 1))}</span><b>${esc(p.slice(i + 1))}</b>`;
+}
+const plain = h => h.replace(/<[^>]+>/g, "");
+
+function chips() {
+  const all = [{ id: "all", name: "All", count: FILES.length }, ...AREAS];
+  $("chips").innerHTML = all.map(a =>
+    `<button type="button" data-a="${a.id}" aria-pressed="${a.id === area}">${a.id === "all" ? "All" : a.name.split(":")[0]}<span>${a.count}</span></button>`).join("");
+}
+
+function render() {
+  const q = $("q").value.trim().toLowerCase();
+  let shown = 0;
+  const html = AREAS.filter(a => area === "all" || a.id === area).map(a => {
+    const rows = FILES.filter(f => f.a === a.id && (!q || (f.p + " " + plain(f.d) + " " + a.name).toLowerCase().includes(q)));
+    shown += rows.length;
+    if (!rows.length) return "";
+    return `<div class="area"><div class="area-head"><h3>${a.name}<small>${rows.length} file${rows.length > 1 ? "s" : ""}</small></h3><p>${a.intro}</p></div>
+      <div class="rows">${rows.map(f => `<div class="row"><div class="path">${pathHtml(f.p)}</div><div class="what">${f.d}</div><div class="n">${f.n} lines</div></div>`).join("")}</div></div>`;
+  }).join("");
+  $("list").innerHTML = html || `<p class="empty">No file matches &ldquo;${q.replace(/</g, "&lt;")}&rdquo;. Try a shorter word, or pick All.</p>`;
+  $("shown").textContent = shown === FILES.length ? `Showing all ${shown} files` : `Showing ${shown} of ${FILES.length} files`;
+}
+
+$("chips").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  area = b.dataset.a;
+  chips();
+  render();
+});
+$("q").addEventListener("input", render);
+chips();
+render();
+</script>

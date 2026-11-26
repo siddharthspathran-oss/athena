@@ -139,6 +139,28 @@ telegram.save_json(telegram.STATE, {"code": "123456"})
 if "123456" not in telegram.telegram_status():
     bad.append("status doesn't give the code")
 
+# -- alerts out to the linked chat (telegram.alert, from phone.push)
+out = []
+telegram.call = lambda token, method, api=telegram.API, _wait=0, **p: out.append((method, p.get("chat_id"), p.get("text"), _wait)) or {}
+telegram.save_json(telegram.STATE, {"owner": 7})
+if not telegram.alert("Class in 10 minutes", "Athena") or out[-1][1:3] != (7, "Class in 10 minutes") or out[-1][3] > 15:
+    bad.append(f"an alert didn't reach the linked chat quickly: {out[-1:]}")
+telegram.alert("Signals at 10:00.", "Your Tuesday brief")
+if not out[-1][2].startswith("Your Tuesday brief\n\nSignals"):
+    bad.append(f"the alert's title was lost: {out[-1][2]!r}")
+telegram.save_json(telegram.STATE, {"code": "123456"})
+n = len(out)
+if telegram.alert("x") or len(out) != n:
+    bad.append("an alert went out before a chat was linked")
+
+from jarvis import phone, webpush  # noqa: E402
+webpush.subscribers = lambda: []
+phone.contact = lambda: {}
+telegram.alert = lambda m, t="": True
+ok, words = phone.push("Missed alarm: lab report", topic="")
+if not ok or "Telegram" not in words:
+    bad.append(f"phone.push didn't count Telegram: {ok} {words!r}")
+
 for x in bad:
     print("FAIL", x)
 print(f"telegram: {len(bad)} failure(s)")

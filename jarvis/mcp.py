@@ -161,8 +161,11 @@ def _tool_name(server: str, tool: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]+", "_", f"{server}_{tool}")[:60].strip("_")
 
 
-def register(server: Server, words: str = "") -> list[str]:
-    """The server's tools, as Athena's own - shown with the server's name, or by meaning."""
+def register(server: Server, words: str = "", hint: str = "") -> list[str]:
+    """The server's tools, as Athena's own - shown with the server's name, or by meaning.
+    hint: what the model can't know, on every tool (whose account it is, which tool
+    answers what) - without it "what changed in my athena repo" went to a CI tool
+    with an invented run ID, twice (28 Oct 2026)."""
     names = []
     for t in server.tools:
         name = _tool_name(server.name, t["name"])
@@ -171,7 +174,8 @@ def register(server: Server, words: str = "") -> list[str]:
             return server.call(_tool, kw)
         params = t.get("inputSchema") or {"type": "object", "properties": {}}
         params.setdefault("properties", {})
-        desc = f"{(t.get('description') or t['name']).strip()[:400]} (from the {server.name} MCP server)"
+        desc = (f"{(t.get('description') or t['name']).strip()[:400]} (from the {server.name} MCP server)"
+                + (f" {hint}" if hint else ""))
         writes = bool(WRITES.search(t["name"]))
         registry.REGISTRY[name] = registry.Tool(
             name=name, description=desc, fn=call, destructive=writes, tags=["mcp", server.name], timeout=120,
@@ -200,7 +204,7 @@ def start_all(log=print) -> None:
         try:
             s.start(float(spec.get("timeout", 45)))
             SERVERS[name] = s
-            log(f"[mcp] {name}: {len(register(s, spec.get('words', '')))} tools")
+            log(f"[mcp] {name}: {len(register(s, spec.get('words', ''), spec.get('hint', '')))} tools")
         except Exception as e:
             s.error = str(e)[:200]
             s.stop()

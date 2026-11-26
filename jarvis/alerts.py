@@ -42,6 +42,7 @@ import time
 import uuid
 from typing import Callable
 
+from . import server
 from .config import DATA, cfg
 from .store import load_json, save_json
 
@@ -239,6 +240,18 @@ class Engine:
 
 # ---------- watchers ----------
 
+def deck_alerts(items: list[dict], now: dt.datetime, lead_minutes: float) -> list[tuple[str, str]]:
+    """(key, message) for each timed item on today's Deck list (deck_link.timed_today)
+    coming up within the lead time - "12:30 YT clip 11" planned and forgotten (31 Oct 2026)."""
+    lead = dt.timedelta(minutes=lead_minutes)
+    out = []
+    for it in items:
+        if it["at"] - lead <= now < it["at"]:
+            mins = max(1, round((it["at"] - now).total_seconds() / 60))
+            out.append((it["key"], f"In {mins} minute{'s' if mins != 1 else ''} ({it['at']:%H:%M}): {it['text']}"))
+    return out
+
+
 def class_alerts(events: list[dict], now: dt.datetime, lead_minutes: float) -> list[tuple[str, str]]:
     """(key, message) for every class starting within the lead time."""
     out = []
@@ -251,7 +264,7 @@ def class_alerts(events: list[dict], now: dt.datetime, lead_minutes: float) -> l
             mins = max(1, round((start - now).total_seconds() / 60))
             where = f", room {e['where']}" if e.get("where") else ""
             key = f"class:{start.isoformat(timespec='minutes')}:{e['what']}"
-            out.append((key, f"{e['what']} in {mins} minutes{where}."))
+            out.append((key, f"{e['what']} in {mins} minute{'s' if mins != 1 else ''}{where}."))
     return out
 
 
@@ -284,7 +297,7 @@ class _Watch:
         self.battery_armed = True
 
     def classes(self, now: dt.datetime) -> None:
-        if not _kind_on("classes"):
+        if not _kind_on("classes") or server.elsewhere():     # athena-server rings for these
             return
         from .tools.brief import _timetable_events
 
@@ -292,8 +305,17 @@ class _Watch:
         for key, message in class_alerts(_timetable_events(now.date()), now, lead):
             self.engine.offer("classes", key, message, now)
 
+    def deck(self, now: dt.datetime) -> None:
+        if not _kind_on("deck") or server.ACTIVE:               # the Deck is on the laptop
+            return
+        from . import deck_link
+
+        lead = float(cfg.get("alerts.deck.minutes_before", 5))
+        for key, message in deck_alerts(deck_link.timed_today(), now, lead):
+            self.engine.offer("deck", key, message, now)
+
     def mail(self, now: dt.datetime) -> None:
-        if not _kind_on("email"):
+        if not _kind_on("email") or server.elsewhere():       # athena-server rings for these
             return
         every = float(cfg.get("alerts.email.poll_minutes", 5)) * 60
         if time.time() - self.last_mail < every:
@@ -412,7 +434,7 @@ def start(note: Callable[[str], None] | None = None) -> None:
     def loop() -> None:
         while True:
             now = dt.datetime.now()
-            for step in (watch.inbox, watch.classes, watch.mail, watch.battery):
+            for step in (watch.inbox, watch.classes, watch.deck, watch.mail, watch.battery):
                 try:
                     step(now)
                 except Exception as e:

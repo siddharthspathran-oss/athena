@@ -88,6 +88,9 @@ def _run_step(step, say: list[str]) -> str:
         else:
             first = next(iter(inspect.signature(t.fn).parameters), None)
             args = {first: val} if first else {}
+    g = getattr(registry._guard, "agent", None)
+    if t is not None and t.name in registry.OPENS and g is not None:
+        g._opens_left = getattr(g, "_opens_left", 0) + 1      # a routine you wrote asked for this window
     return t.run(**args)
 
 
@@ -96,18 +99,24 @@ def _run_step(step, say: list[str]) -> str:
 # routine: next time the name alone runs it, no model involved. Never steps that reach
 # another person, can't be undone, or touch private things - a skill runs without asking.
 
+def unsafe(name: str) -> bool:
+    """A step no skill replays: it reaches another person, can't be undone, touches private
+    things, runs only from its exact phrase, or is about skills themselves."""
+    from .. import registry
+    from ..routes import PRIVATE_TOOLS
+    t = registry.get(name)
+    return (t is None or t.destructive or name in registry.OUTWARD or name in PRIVATE_TOOLS
+            or "route_only" in t.tags or name in ("run_routine", "save_skill", "skill_ideas", "save_skill_idea"))
+
+
 def skill_steps(steps: list[tuple[str, dict, str]]) -> list[dict] | None:
     """The planner's steps (tool, args, result) as routine steps, or None when they
     shouldn't become a skill: fewer than two that worked, or one that isn't safe to replay."""
-    from .. import registry
-    from ..routes import PRIVATE_TOOLS
     good: list[tuple[str, dict]] = []
     for name, args, result in steps:
         if str(result).startswith("ERROR"):
             continue
-        t = registry.get(name)
-        if (t is None or t.destructive or name in registry.OUTWARD or name in PRIVATE_TOOLS
-                or "route_only" in t.tags or name in ("run_routine", "save_skill")):
+        if unsafe(name):
             return None
         if not good or good[-1] != (name, args):                     # the same call twice is one step
             good.append((name, dict(args or {})))
@@ -187,7 +196,8 @@ def run_routine(name: str) -> str:
 # Steps whose output is information to pass on, not an action to confirm.
 _REPORTS = {"daily_brief", "get_weather", "battery", "system_info", "get_datetime",
             "list_reminders", "web_search", "read_webpage", "browser_read",
-            "list_running_apps", "show_timetable", "recall"}
+            "list_running_apps", "show_timetable", "recall",
+            "open_lms", "open_upes_login"}     # "you're signed out - sign in first" must reach you
 
 
 @tool(tags=TAG)

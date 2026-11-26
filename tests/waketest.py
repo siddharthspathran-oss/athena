@@ -27,14 +27,26 @@ CASES = [
 ]
 
 
+# Near-names, matched against "athena" itself: real mishearings wake her; noise
+# that only resembles the name ("Artha", "Atten" - both ran as commands in Oct
+# 2026) and real words ("Athens") don't.
+NEAR = [
+    ("Atheno, play music.", True),
+    ("Attena, lock my screen.", True),
+    ("Artha, mister, from a mermaid who put on security.", False),
+    ("Atten, make your next step actions.", False),
+    ("Athens is the capital of Greece.", False),
+]
+
+
 def main() -> int:
     bad = 0
-    for text, want in CASES:
-        hit, _ = _strip_wake(text, "jarvis", True)
+    for text, want, wake in [(t, w, "jarvis") for t, w in CASES] + [(t, w, "athena") for t, w in NEAR]:
+        hit, _ = _strip_wake(text, wake, True)
         ok = hit == want
         bad += not ok
         print(f"{'ok  ' if ok else 'FAIL'} {str(hit):5} {text}")
-    print(f"\n{len(CASES)} cases, {bad} failure(s)")
+    print(f"\n{len(CASES) + len(NEAR)} cases, {bad} failure(s)")
     return 1 if bad else 0
 
 

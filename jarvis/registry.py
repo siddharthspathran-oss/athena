@@ -48,6 +48,14 @@ OUTWARD = {"whatsapp_message", "whatsapp_call", "call_number", "compose_email", 
            "run_powershell", "delete_file", "move_file", "organize_folder", "write_file", "power_action",
            "add_rule", "add_watch", "remember", "remember_about_me", "add_contact", "remove_contact",
            "forget", "clear_index", "type_text", "app_type", "app_click"}
+# These put a window in front of you, so only when you asked for one
+# (Agent.hold_open): a half-heard "find me a Samsung Galaxy S24 with" opened
+# four pages and a file (28 Oct 2026).
+OPENS = {"open_url", "open_file", "open_folder"}
+
+# The only tools that may run, or None for all of them. Set by athena-server
+# (server.py), which has no screen, no files of yours and no laptop to drive.
+ONLY: set[str] | None = None
 
 
 @dataclass
@@ -132,7 +140,13 @@ class Tool:
         sentence, the model, the planner - so the permission check lives here
         too. The split path and the planner used to skip the old one entirely
         (9 Oct 2026 audit)."""
+        if ONLY is not None and self.name not in ONLY:
+            return "ERROR: that needs the laptop, which is asleep right now. Tell the user; don't try another way."
         g = getattr(_guard, "agent", None)
+        if g is not None and self.name in OPENS and hasattr(g, "hold_open"):
+            held = g.hold_open(kwargs)
+            if held:
+                return held
         if g is not None and not g.allowed(self, kwargs):
             return ("ERROR: not done - this needs the user's OK and they have not given it. "
                     "Do not try again; tell the user.")
@@ -434,13 +448,15 @@ TOOL_GROUPS: list[tuple[str, re.Pattern, list[str]]] = [
      ["mission_chain", "mission_start", "mission_status", "mission_stop", "mission_follow_up", "mission_publish", "mission_draft", "site_open"]),
     ("deck", re.compile(r"\b(?:deck|board|codex|chat\s*gpt|consoles?|terminals?|agents?|flows?\b)" + _W, re.I),
      ["deck_open", "deck_spawn", "deck_browse", "deck_status", "deck_send", "deck_read", "deck_focus",
-      "deck_handoff", "deck_loop", "deck_loop_stop", "deck_flow_run"]),
+      "deck_handoff", "deck_loop", "deck_loop_stop", "deck_flow_run", "deck_list"]),
+    ("checklist", re.compile(r"\b(?:check\s*lists?|tick(?:ed)?|untick|deck\s+list)" + _W, re.I),
+     ["deck_list", "deck_tick", "deck_add_item"]),
     ("loops", re.compile(r"\b(?:loops?|looping|until|keep\s+checking|repeat)" + _W, re.I),
      ["loop_start", "loop_stop", "loop_status"]),
     ("attention", re.compile(r"\b(?:needs?\s+(?:me|you)|waiting\s+(?:for|on)\s+me|stuck)" + _W, re.I),
      ["needs_me"]),
-    ("routines", re.compile(r"\b(?:routines?|workflows?|mode)\b", re.I),
-     ["run_routine", "list_routines", "set_mode"]),
+    ("routines", re.compile(r"\b(?:routines?|workflows?|mode|skills?|ideas?)\b", re.I),
+     ["run_routine", "list_routines", "set_mode", "skill_ideas", "save_skill_idea"]),
     ("screen", re.compile(
         r"\b(?:screens?|monitors?|display|looking\s+at|(?:can\s+you|do\s+you)\s+see|see\s+(?:this|that|what)|"
         r"(?:this|that)\s+(?:page|tab|window|error|image|picture|photo|chart|graph|diagram|code|message|popup|dialog))\b",
@@ -463,7 +479,8 @@ def _visible(t: Tool, shop: bool) -> bool:
     when the request is about the shop: asked "what can you do?", the local
     model once made up a "mark order RGZ1004 shipped" call (27 Sep 2026).
     """
-    return "route_only" not in t.tags and ("store" not in t.tags or shop)
+    return ("route_only" not in t.tags and ("store" not in t.tags or shop)
+            and (ONLY is None or t.name in ONLY))
 
 
 def select(request: str = "", everything: bool = False) -> list[str]:

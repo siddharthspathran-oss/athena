@@ -65,13 +65,13 @@ def _files_named(answer: str) -> str:
     return _SHARE.sub(name, answer)
 
 
-def call(token: str, method: str, api: str = API, **params) -> dict | list:
+def call(token: str, method: str, api: str = API, _wait: float = POLL_SECONDS + 15, **params) -> dict | list:
     # The URL holds the token, so it is never logged or put in an error.
     req = urllib.request.Request(api.format(token=token, method=method),
                                  data=json.dumps(params).encode(),
                                  headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=POLL_SECONDS + 15) as r:
+        with urllib.request.urlopen(req, timeout=_wait) as r:
             data = json.loads(r.read())
     except urllib.error.HTTPError as e:
         try:
@@ -187,6 +187,26 @@ class TelegramError(RuntimeError):
     def __init__(self, code: int, description: str) -> None:
         super().__init__(description)
         self.code, self.description = code, description
+
+
+def alert(text: str, title: str = "") -> bool:
+    """One of Athena's alerts to your linked chat (phone.push sends every alert
+    here too), from any process - sending needs no poller. A reply comes back
+    to her like any message: "snooze 10 minutes", "remind me again at 6".
+    False when Telegram isn't set up or didn't take it."""
+    from . import cloud
+    owner = load_json(STATE, {}).get("owner")
+    token = cloud.get_key("telegram") if owner else ""
+    if not token:
+        return False
+    body = f"{title}\n\n{text}" if title and title != "Athena" else text
+    try:
+        for part in chunks(body):
+            call(token, "sendMessage", _wait=10, chat_id=owner, text=part, disable_web_page_preview=True)
+        return True
+    except Exception as e:
+        print(f"[telegram alert: {str(e)[:80]}]")
+        return False
 
 
 def check(token: str) -> str:

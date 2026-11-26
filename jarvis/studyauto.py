@@ -28,14 +28,8 @@ _WORK = re.compile(r"\b(assignment|lab|record|report|project|quiz|exam|test|viva
 
 def _remind(text: str, when: dt.datetime) -> None:
     """A one-off reminder at an exact time (the spoken-time parser has no dates)."""
-    import uuid
     from .tools import scheduler
-    jobs = scheduler._load()
-    if any(j["text"] == text for j in jobs):
-        return
-    jobs.append({"id": uuid.uuid4().hex[:8], "text": text, "fire_at": when.isoformat(timespec="seconds"),
-                 "repeat": "once", "created": dt.datetime.now().isoformat(timespec="seconds")})
-    scheduler._save(jobs)
+    scheduler.add_at(text, when)
 
 
 def _ask(prompt: str) -> str:

@@ -35,3 +35,10 @@ good night:
     - music: pause
     - set_volume: 15
     - daily_brief: tomorrow
+
+# Saved by Athena 10 Nov 2026: a skill idea from your history
+uni stuff:
+  steps:
+  - open_lms:
+      what: ''
+  - open_upes_login: {}

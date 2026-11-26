@@ -229,10 +229,19 @@ def push(message: str, topic: str | None = None, title: str = "Athena",
                 app = bool(webpush.send(title, message or "", where, urgent=(priority == "urgent")))
         except Exception as e:
             print(f"[web push: {str(e)[:120]}]")
+    # And your Telegram chat, where a reply goes straight back to her (telegram.py).
+    tg = False
+    if _retry and cfg.get("alerts.telegram_bot", True):
+        try:
+            from . import telegram
+            tg = telegram.alert(message or "", title)
+        except Exception as e:
+            print(f"[telegram alert: {str(e)[:120]}]")
+    got = " and ".join(n for n, ok in (("the Athena app", app), ("Telegram", tg)) if ok)
     topic = topic or contact().get("ntfy_topic", "")
     if not topic:
-        if app:
-            return True, "Pushed to the Athena app."
+        if got:
+            return True, f"Sent to {got}."
         return False, "no ntfy topic set up (python run.py alerts setup)."
     server = str(cfg.get("alerts.ntfy.server", "https://ntfy.sh")).rstrip("/")
     try:
@@ -248,12 +257,13 @@ def push(message: str, topic: str | None = None, title: str = "Athena",
                     if push(message, topic, title, priority, _retry=False, click=click, tags=tags)[0]:
                         return
             threading.Thread(target=again, daemon=True, name="athena-push-retry").start()
-        return False, f"could not reach ntfy ({str(e)[:120] or 'network error'}) - will retry."
+        return bool(got), f"could not reach ntfy ({str(e)[:120] or 'network error'}) - will retry." + (
+            f" Sent to {got}." if got else "")
     if r.status_code == 429:
-        return app, "ntfy is rate-limiting this PC; try again in a minute."
+        return bool(got), "ntfy is rate-limiting this PC; try again in a minute." + (f" Sent to {got}." if got else "")
     if r.status_code >= 400:
-        return app, f"ntfy refused the push (HTTP {r.status_code})." + (" The Athena app got it." if app else "")
-    return True, "Pushed to ntfy and the Athena app." if app else "Push sent."
+        return bool(got), f"ntfy refused the push (HTTP {r.status_code})." + (f" Sent to {got}." if got else "")
+    return True, f"Pushed to ntfy and {got}." if got else "Pushed to ntfy."
 
 
 # ---------- both ----------

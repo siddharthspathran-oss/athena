@@ -207,7 +207,8 @@ def check_hold_to_talk(bad):
     marked as meant for her - no loudness gate, no silence wait. A key
     pressed with it (a shortcut) throws the recording away."""
     import queue as _queue
-    voice._orb_state = voice._orb_level = lambda *_: None
+    from jarvis.ui import voice_mic                 # the Listener looks them up there
+    voice_mic._orb_state = voice_mic._orb_level = lambda *_: None
     block = np.full((voice.BLOCK, 1), 0.001, dtype=np.float32)     # under any loudness gate
 
     def listen(held_from, held_to, abort_at=None):

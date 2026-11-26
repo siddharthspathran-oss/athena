@@ -326,7 +326,9 @@ class DeckServer:
     async def patch_node(self, request):
         d = await self._body(request)
         n = self.board.update_node(request.match_info["id"], **d)
-        if n and {"team", "role"} & d.keys():                    # others show it (chips, mission map); typing doesn't reload
+        # others show it (chips, mission map); typing doesn't reload - but a change from
+        # outside (Athena ticking a checklist, "refresh") must show on the open board
+        if n and ({"team", "role"} & d.keys() or d.get("refresh")):
             self.emit({"type": "board"})
         return web.json_response(n or {"error": "no such node"}, status=200 if n else 404)
 

@@ -527,6 +527,13 @@ def daily_brief(day: str = "today", full: bool = False) -> str:
             lines += goals.brief_lines()
         except Exception:
             pass
+        try:                            # today's checklist on Athena Deck (deck_link.py)
+            from .. import deck_link
+            line = deck_link.today_line()
+            if line:
+                lines.append(line)
+        except Exception:
+            pass
         try:                            # spaced review of missed quiz questions (quiz.py)
             from .. import quiz
             if quiz.brief_line():
